@@ -1,0 +1,62 @@
+---
+# ================================================
+# CIS Hardening – Filesystem & Kernel Config
+# ================================================
+
+# 1. Disable unused filesystems (CIS 1.1.x)
+- name: Disable uncommon filesystem types
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/disable-uncommon-fs.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      install cramfs /bin/true
+      install freevxfs /bin/true
+      install jffs2 /bin/true
+      install hfs /bin/true
+      install hfsplus /bin/true
+      install squashfs /bin/true
+      install udf /bin/true
+  tags: filesystem
+
+# 2. Ensure /tmp is mounted with secure options
+- name: Ensure /tmp has secure mount flags
+  ansible.builtin.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: rw,nosuid,nodev,noexec,relatime
+    state: mounted
+  tags: filesystem
+
+# 3. Ensure /var/tmp is secure
+- name: Bind mount /var/tmp to /tmp
+  ansible.builtin.mount:
+    path: /var/tmp
+    src: /tmp
+    fstype: none
+    opts: bind
+    state: mounted
+  tags: filesystem
+
+# 4. Ensure kernel parameters (sysctl)
+- name: Harden network kernel parameters
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-cis-hardening.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      net.ipv4.ip_forward = 0
+      net.ipv4.conf.all.send_redirects = 0
+      net.ipv4.conf.default.send_redirects = 0
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv4.conf.all.secure_redirects = 0
+      net.ipv4.conf.default.secure_redirects = 0
+      net.ipv4.conf.all.log_martians = 1
+      net.ipv4.conf.default.log_martians = 1
+      net.ipv4.tcp_syncookies = 1
+  notify: reload_sysctl
+  tags: filesystem
