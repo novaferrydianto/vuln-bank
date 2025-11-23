@@ -14,6 +14,6 @@
 
     - name: Ensure SSH keys exist
       ansible.builtin.file:
-        path: /home/{{ ansible_user }}/.ssh
+        path: /home/{{ current_user }}/.ssh
         state: directory
         mode: '0700'
