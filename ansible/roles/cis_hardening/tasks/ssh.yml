@@ -10,7 +10,6 @@
     regexp: '^Protocol'
     line: 'Protocol 2'
 
-- name: Restart SSH
-  systemd:
-    name: sshd
-    state: restarted
+- name: Apply SSH hardening config
+  notify: restart_ssh_service
+

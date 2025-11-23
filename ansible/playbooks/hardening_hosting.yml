@@ -1,4 +1,16 @@
-- hosts: all
+---
+- name: Apply CIS Hardening to all nodes
+  hosts: all
   become: true
+
   roles:
     - cis_hardening
+
+  handlers:
+    - name: restart_ssh_service
+      service:
+        name: sshd
+        state: restarted
+
+    - name: flush_handlers_now
+      meta: flush_handlers

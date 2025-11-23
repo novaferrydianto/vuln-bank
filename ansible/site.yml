@@ -1,18 +1,34 @@
 ---
-# 🔧 1. (Optional) Setup bastion tools, runner, dll
+# ================================================
+# 1. Setup Bastion Node (optional)
+# ================================================
 - import_playbook: playbooks/setup_bastion.yml
 
-# 🗄️ 2. Setup DB node - PostgreSQL 16 + DB vulnbank
+# ================================================
+# 2. Setup DB Node (PostgreSQL 16 + Schema VulnBank)
+# ================================================
 - import_playbook: playbooks/setup_db.yml
 
-# 🖥️ 3. Setup hosting node - Docker + Docker Compose
+# ================================================
+# 3. Setup Hosting Node (Docker + Docker Compose)
+# ================================================
 - import_playbook: playbooks/setup_hosting.yml
 
-# 🛡️ 4. Hardening hosting node (CIS + OpenSCAP scan)
+# ================================================
+# 4. Hardening Server (CIS Benchmark + OpenSCAP)
+# ================================================
+# ⚠ NOTE:
+# Handler flush ADA DI DALAM hardening_hosting.yml
+# agar SSH restart hanya terjadi SETELAH SELURUH Hardening selesai.
+# ================================================
 - import_playbook: playbooks/hardening_hosting.yml
 
-# ✅ 5. Verifikasi laporan OpenSCAP (cek status / copy report, dll)
+# ================================================
+# 5. Verifikasi hasil OpenSCAP (Report + Compliance)
+# ================================================
 - import_playbook: playbooks/verify_openscap.yml
 
-# 🚀 6. Deploy aplikasi Vuln Bank (pull code / rsync + docker compose up)
+# ================================================
+# 6. Deploy Vuln Bank App (pull repo / rsync + docker compose up)
+# ================================================
 - import_playbook: playbooks/deploy_app.yml

@@ -30,17 +30,16 @@
     state: mounted
   tags: filesystem
 
-# 3. Ensure /var/tmp is secure
-- name: Bind mount /var/tmp to /tmp
-  ansible.builtin.mount:
-    path: /var/tmp
-    src: /tmp
-    fstype: none
-    opts: bind
-    state: mounted
-  tags: filesystem
+# - name: Bind mount /var/tmp to /tmp
+#   mount:
+#     path: /var/tmp
+#     src: /tmp
+#     fstype: none
+#     opts: bind
+#     state: mounted
 
-# 4. Ensure kernel parameters (sysctl)
+
+# 3. Ensure kernel parameters (sysctl)
 - name: Harden network kernel parameters
   ansible.builtin.copy:
     dest: /etc/sysctl.d/99-cis-hardening.conf
