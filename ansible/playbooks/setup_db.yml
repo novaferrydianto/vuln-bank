@@ -157,7 +157,8 @@
     # 8. Install postgres_exporter for monitoring
     # ---------------------------------------------------------
     - name: Pull postgres_exporter
-      ansible.builtin.command: "docker pull prom/postgres-exporter"
+      ansible.builtin.command: "docker pull quay.io/prometheuscommunity/postgres-exporter"
+      register: pull_output_exporter
       changed_when: false
 
     - name: Ensure postgres_exporter container exists
@@ -167,7 +168,7 @@
         --restart unless-stopped
         -p {{ exporter_port }}:9187
         -e DATA_SOURCE_NAME=postgres://{{ pg_user }}:{{ pg_password }}@localhost:{{ pg_port }}/{{ pg_db }}?sslmode=disable
-        prom/postgres-exporter
+        quay.io/prometheuscommunity/postgres-exporter
       register: exporter_status
       failed_when: false
       changed_when: "'Unable to find image' in exporter_status.stdout"
