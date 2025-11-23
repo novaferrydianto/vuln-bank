@@ -1,0 +1,91 @@
+---
+# ===============================================
+#  FULL PIPELINE — VULN BANK DEVSECOPS 3-VM LAB
+#  by Nova F
+# ===============================================
+
+# -----------------------------------------------
+# 1) Bastion Bootstrap (optional)
+# -----------------------------------------------
+- name: Setup Bastion Node
+  hosts: bastion
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../vars/main.yml
+
+  roles:
+    - common
+    - hardening
+    - bastion
+
+
+# -----------------------------------------------
+# 2) Database Provisioning (PostgreSQL 16)
+# -----------------------------------------------
+- name: Setup PostgreSQL DB
+  hosts: db
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../vars/db.yml
+
+  tasks:
+    - include_role:
+        name: postgres
+      vars:
+        postgres_version: "16"
+        postgres_listen_ip: "192.168.107.130"
+        postgres_network_allow: "192.168.107.0/24"
+
+
+# -----------------------------------------------
+# 3) Hosting Server (Rocky 9 + Docker Compose)
+# -----------------------------------------------
+- name: Setup Hosting Server
+  hosts: hosting
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../vars/hosting.yml
+
+  tasks:
+    - include_role:
+        name: docker
+
+    - include_role:
+        name: compose
+
+    - include_role:
+        name: hosting
+
+
+# -----------------------------------------------
+# 4) CIS Hardening + OpenSCAP Scan
+# -----------------------------------------------
+- name: Apply CIS Hardening + OpenSCAP
+  hosts: hosting
+  become: true
+  gather_facts: true
+
+  tasks:
+    - include_role:
+        name: cis_hardening
+
+    - include_role:
+        name: openscap_scan
+
+
+# -----------------------------------------------
+# 5) Deploy VulnBank App
+# -----------------------------------------------
+- name: Deploy VulnBank Application
+  hosts: hosting
+  become: true
+  gather_facts: true
+
+  tasks:
+    - include_tasks: deploy_app.yml
