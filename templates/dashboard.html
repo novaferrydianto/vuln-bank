@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard - Vulnerable Bank</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-16.svg') }}" sizes="16x16">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <!-- Mobile menu toggle -->
+    <button class="menu-toggle" onclick="toggleSidePanel()">☰</button>
+
+    <!-- Side panel navigation -->
+    <div class="side-panel">
+        <div class="bank-logo">
+            <h1>Vulnerable Bank</h1>
+        </div>
+        <nav>
+            <a href="#profile" class="nav-link" onclick="setActiveLink(this)">
+                <span class="nav-link-icon">👤</span>
+                Profile
+            </a>
+            <a href="#transfers" class="nav-link" onclick="setActiveLink(this)">
+                <span class="nav-link-icon">↗️</span>
+                Money Transfer
+            </a>
+            <a href="#loans" class="nav-link" onclick="setActiveLink(this)">
+                <span class="nav-link-icon">💰</span>
+                Loans
+            </a>
+            <a href="#transactions" class="nav-link" onclick="setActiveLink(this)">
+                <span class="nav-link-icon">📊</span>
+                Transaction History
+            </a>
+            <a href="#virtual-cards" class="nav-link" onclick="setActiveLink(this)">
+                <span class="nav-link-icon">💳</span>
+                Virtual Cards
+            </a>
+            <a href="#bill-payments" class="nav-link" onclick="setActiveLink(this)">
+                <span class="nav-link-icon">📃</span>
+                Bill Payments
+            </a>
+            {% if is_admin %}
+            <a href="{{ url_for('admin_panel') }}" class="nav-link">
+                <span class="nav-link-icon">⚙️</span>
+                Admin Panel
+            </a>
+            {% endif %}
+            <a href="#" onclick="logout()" class="nav-link">
+                <span class="nav-link-icon">🔒</span>
+                Logout
+            </a>
+        </nav>
+    </div>
+
+    <!-- Main content area -->
+    <div class="main-content">
+        <!-- Greeting section with balance card -->
+        <div class="greeting-section">
+            <div class="greeting-text">
+                <!-- Vulnerability: XSS possible in username -->
+                <h1>Welcome back, {{ username | safe }}</h1>
+                <p id="current-date"></p>
+            </div>
+            <div class="account-card">
+                <div class="account-label">Current Balance</div>
+                <!-- Vulnerability: Sensitive information exposure -->
+                <div class="account-balance" id="balance">${{ balance }}</div>
+                <div class="account-number-display">
+                    Account Number: <span id="account-number">{{ account_number }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Global message div for all notifications -->
+        <div id="message"></div>
+
+        <!-- Quick actions section -->
+        <div class="quick-actions">
+            <div class="action-card" onclick="document.querySelector('.nav-link[href=\'#transfers\']').click()">
+                <div class="action-icon">↗️</div>
+                <div class="action-title">Send Money</div>
+                <div class="action-description">Transfer money to another account quickly and securely.</div>
+            </div>
+            <div class="action-card" onclick="document.querySelector('.nav-link[href=\'#loans\']').click()">
+                <div class="action-icon">💰</div>
+                <div class="action-title">Request Loan</div>
+                <div class="action-description">Need funds? Apply for a loan with competitive rates.</div>
+            </div>
+            <div class="action-card" onclick="document.querySelector('.nav-link[href=\'#virtual-cards\']').click()">
+                <div class="action-icon">💳</div>
+                <div class="action-title">Virtual Cards</div>
+                <div class="action-description">Create and manage your virtual payment cards.</div>
+            </div>
+            <div class="action-card" onclick="document.querySelector('.nav-link[href=\'#bill-payments\']').click()">
+                <div class="action-icon">📃</div>
+                <div class="action-title">Pay Bills</div>
+                <div class="action-description">Pay your bills easily from your account.</div>
+            </div>
+        </div>
+
+        <!-- Profile section -->
+        <div class="dashboard-section profile-section" id="profile">
+            <div class="section-header">
+                <h2 class="section-title">Profile</h2>
+            </div>
+
+            <div class="profile-picture-wrapper">
+                <!-- Vulnerability: Path traversal possible in profile picture -->
+                <img id="profile-picture"
+                     class="profile-picture"
+                     src="{{ url_for('static', filename='uploads/' + user.profile_picture) if user.profile_picture else url_for('static', filename='uploads/user.png') }}"
+                     alt="Profile Picture">
+                <div class="profile-picture-edit" onclick="document.getElementById('profile_picture').click()">
+                        ✏️
+                </div>
+            </div>
+                        <!-- Vulnerability: No file type validation -->
+                        <!-- Vulnerability: No file size limits -->
+                     <form id="profileUploadForm" enctype="multipart/form-data">
+                        <input type="file" id="profile_picture" name="profile_picture" accept="image/*" style="display: none;" onchange="document.getElementById('profileUploadForm').requestSubmit();">
+                        <button type="button" onclick="document.getElementById('profile_picture').click()">Change Profile Picture</button>
+                        <button type="button" id="profileUrlButton">Import from URL</button>
+                    </form>
+                    <div id="upload-message" ></div>
+        </div>
+        
+        <!-- Money transfer section -->
+        <div class="dashboard-section" id="transfers">
+            <div class="section-header">
+                <h2 class="section-title">Money Transfer</h2>
+            </div>
+            <!-- Vulnerability: No CSRF protection -->
+            <!-- Vulnerability: No amount validation -->
+            <form id="transferForm" class="form-section">
+                <div class="form-group">
+                    <label for="to_account">Recipient Account Number</label>
+                    <input type="text" id="to_account" name="to_account" placeholder="Enter recipient's account number" required>
+                </div>
+                <div class="form-group">
+                    <label for="amount">Amount</label>
+                    <input type="number" id="amount" name="amount" placeholder="Enter amount to transfer" step="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label for="description">Description (optional)</label>
+                    <textarea id="description" name="description" placeholder="Add a note about this transfer" rows="3"></textarea>
+                </div>
+                <button type="submit">Send Money</button>
+            </form>
+        </div>
+
+        <!-- Loan request section -->
+        <div class="dashboard-section" id="loans">
+            <div class="section-header">
+                <h2 class="section-title">Request a Loan</h2>
+            </div>
+            <!-- Vulnerability: No loan amount validation -->
+            <form id="loanForm" class="form-section">
+                <div class="form-group">
+                    <label for="loan_amount">Loan Amount</label>
+                    <input type="number" id="loan_amount" name="amount" placeholder="Enter the amount you need" step="0.01" required>
+                </div>
+                <button type="submit">Submit Loan Request</button>
+            </form>
+            
+            {% if loans %}
+            <div class="loans-section" style="margin-top: 2rem;">
+                <h3 style="margin-bottom: 1rem;">Your Loan Applications</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Amount</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for loan in loans %}
+                        <tr>
+                            <td>${{ loan[2] }}</td>
+                            <td>
+                                {% if loan[3] == 'pending' %}
+                                <span class="status-pending">{{ loan[3] }}</span>
+                                {% else %}
+                                <span class="status-approved">{{ loan[3] }}</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+        
+        <!-- Transaction history section -->
+        <div class="dashboard-section" id="transactions">
+            <div class="section-header">
+                <h2 class="section-title">Transaction History</h2>
+            </div>
+            <!-- Vulnerability: No pagination for transactions -->
+            <div id="transaction-list">
+                <div style="text-align: center; padding: 2rem;">
+                    <div class="loading-spinner"></div>
+                    <p>Loading transactions...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Virtual cards section -->
+        <div class="dashboard-section" id="virtual-cards">
+            <div class="section-header">
+                <h2 class="section-title">Virtual Cards</h2>
+                <button onclick="showCreateCardModal()">Create New Card</button>
+            </div>
+            
+            <!-- Virtual Cards List -->
+            <div id="virtual-cards-list" class="cards-container">
+                <!-- Cards will be populated here -->
+            </div>
+
+            <!-- Create Card Modal -->
+            <div id="createCardModal" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Create Virtual Card</h3>
+                        <button class="modal-close" onclick="hideCreateCardModal()">&times;</button>
+                    </div>
+                    <form id="createCardForm">
+                        <div class="form-group">
+                            <label for="card_limit">Card Limit</label>
+                            <input type="number" id="card_limit" name="card_limit" placeholder="Enter card limit" step="0.01" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="card_type">Card Type</label>
+                            <select id="card_type" name="card_type" required>
+                                <option value="standard">Standard</option>
+                                <option value="premium">Premium</option>
+                            </select>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="submit">Create Card</button>
+                            <button type="button" onclick="hideCreateCardModal()">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Card Details Modal -->
+            <div id="cardDetailsModal" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Card Details</h3>
+                        <button class="modal-close" onclick="hideCardDetailsModal()">&times;</button>
+                    </div>
+                    <div id="cardDetailsContent"></div>
+                    <div class="modal-footer">
+                        <button onclick="hideCardDetailsModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bill Payments section -->
+        <div class="dashboard-section" id="bill-payments">
+            <div class="section-header">
+                <h2 class="section-title">Bill Payments</h2>
+                <button onclick="showPayBillModal()">Pay Bill</button>
+            </div>
+            
+            <!-- Bill Payments History -->
+            <div id="bill-payments-list" class="payments-container">
+                <!-- Payments will be populated here -->
+                <div style="text-align: center; padding: 2rem;">
+                    <div class="loading-spinner"></div>
+                    <p>Loading bill payment history...</p>
+                </div>
+            </div>
+
+            <!-- Pay Bill Modal -->
+            <div id="payBillModal" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Pay Bill</h3>
+                        <button class="modal-close" onclick="hidePayBillModal()">&times;</button>
+                    </div>
+                    <form id="payBillForm">
+                        <div class="form-group">
+                            <label for="billCategory">Bill Category</label>
+                            <select id="billCategory" onchange="loadBillers(this.value)" required>
+                                <option value="">Select Category</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="biller">Biller</label>
+                            <select id="biller" name="biller_id" required disabled>
+                                <option value="">Select Biller</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="bill_amount">Amount</label>
+                            <input type="number" id="bill_amount" name="amount" step="0.01" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="payment_method">Payment Method</label>
+                            <select id="payment_method" name="payment_method" onchange="toggleCardSelection(this.value)" required>
+                                <option value="balance">Account Balance</option>
+                                <option value="virtual_card">Virtual Card</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group" id="cardSelection" style="display: none;">
+                            <label for="card_id">Select Card</label>
+                            <select id="card_id" name="card_id">
+                                <option value="">Select Card</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="bill_description">Description (Optional)</label>
+                            <input type="text" id="bill_description" name="description">
+                        </div>
+                        
+                        <div class="modal-footer">
+                            <button type="submit">Pay Now</button>
+                            <button type="button" onclick="hidePayBillModal()">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Customer Support Chat Widget -->
+    <div id="chatWidget" class="chat-widget">
+        <!-- Chat Toggle Button -->
+        <div id="chatToggle" class="chat-toggle" onclick="toggleChat()">
+            <svg width="24" height="24" fill="white" viewBox="0 0 24 24">
+                <path d="M12,2A2,2 0 0,1 14,4C14,4.74 13.6,5.39 13,5.73V7H14A7,7 0 0,1 21,14H22A1,1 0 0,1 23,15V18A1,1 0 0,1 22,19H21V20A2,2 0 0,1 19,22H5A2,2 0 0,1 3,20V19H2A1,1 0 0,1 1,18V15A1,1 0 0,1 2,14H3A7,7 0 0,1 10,7H11V5.73C10.4,5.39 10,4.74 10,4A2,2 0 0,1 12,2M7.5,13A2.5,2.5 0 0,0 5,15.5A2.5,2.5 0 0,0 7.5,18A2.5,2.5 0 0,0 10,15.5A2.5,2.5 0 0,0 7.5,13M16.5,13A2.5,2.5 0 0,0 14,15.5A2.5,2.5 0 0,0 16.5,18A2.5,2.5 0 0,0 19,15.5A2.5,2.5 0 0,0 16.5,13Z"/>
+            </svg>
+            <span id="chatBadge" class="chat-badge" style="display: none;">1</span>
+            <div class="chat-tooltip" id="chatTooltip">Chat with Support</div>
+        </div>
+
+        <!-- Chat Window -->
+        <div id="chatWindow" class="chat-window" style="display: none;">
+            <!-- Chat Header -->
+            <div class="chat-header">
+                <div class="chat-agent-info">
+                    <div class="agent-avatar">
+                        <svg width="20" height="20" fill="white" viewBox="0 0 24 24">
+                            <path d="M12,2A2,2 0 0,1 14,4C14,4.74 13.6,5.39 13,5.73V7H14A7,7 0 0,1 21,14H22A1,1 0 0,1 23,15V18A1,1 0 0,1 22,19H21V20A2,2 0 0,1 19,22H5A2,2 0 0,1 3,20V19H2A1,1 0 0,1 1,18V15A1,1 0 0,1 2,14H3A7,7 0 0,1 10,7H11V5.73C10.4,5.39 10,4.74 10,4A2,2 0 0,1 12,2M7.5,13A2.5,2.5 0 0,0 5,15.5A2.5,2.5 0 0,0 7.5,18A2.5,2.5 0 0,0 10,15.5A2.5,2.5 0 0,0 7.5,13M16.5,13A2.5,2.5 0 0,0 14,15.5A2.5,2.5 0 0,0 16.5,18A2.5,2.5 0 0,0 19,15.5A2.5,2.5 0 0,0 16.5,13Z"/>
+                        </svg>
+                    </div>
+                    <div class="agent-details">
+                        <div class="agent-name">AI Support</div>
+                        <div class="agent-status">Online</div>
+                    </div>
+                </div>
+                <button class="chat-close" onclick="toggleChat()">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Chat Mode Toggle -->
+            <div class="chat-mode-toggle">
+                <div class="mode-selector">
+                    <label class="mode-option">
+                        <input type="radio" name="chatMode" value="authenticated" checked>
+                        <span>🔐 Authenticated</span>
+                    </label>
+                    <label class="mode-option">
+                        <input type="radio" name="chatMode" value="anonymous">
+                        <span>👤 Anonymous</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Chat Messages -->
+            <div class="chat-messages" id="chatMessages">
+                <div class="message bot-message">
+                    <div class="message-avatar">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12,2A2,2 0 0,1 14,4C14,4.74 13.6,5.39 13,5.73V7H14A7,7 0 0,1 21,14H22A1,1 0 0,1 23,15V18A1,1 0 0,1 22,19H21V20A2,2 0 0,1 19,22H5A2,2 0 0,1 3,20V19H2A1,1 0 0,1 1,18V15A1,1 0 0,1 2,14H3A7,7 0 0,1 10,7H11V5.73C10.4,5.39 10,4.74 10,4A2,2 0 0,1 12,2M7.5,13A2.5,2.5 0 0,0 5,15.5A2.5,2.5 0 0,0 7.5,18A2.5,2.5 0 0,0 10,15.5A2.5,2.5 0 0,0 7.5,13M16.5,13A2.5,2.5 0 0,0 14,15.5A2.5,2.5 0 0,0 16.5,18A2.5,2.5 0 0,0 19,15.5A2.5,2.5 0 0,0 16.5,13Z"/>
+                        </svg>
+                    </div>
+                    <div class="message-content">
+                        <div class="message-text">Hi {{ username }}! I'm your AI banking assistant. I can help you with account inquiries, balance checks, and transaction history. 
+                        <br><br>
+                        🔐 <strong>Authenticated Mode</strong>: I have access to your account details
+                        <br>👤 <strong>Anonymous Mode</strong>: No personal data, but still vulnerable to attacks</div>
+                        <div class="message-time" id="initialTime"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Input -->
+            <div class="chat-input">
+                <div class="input-container">
+                    <input type="text" id="chatMessageInput" placeholder="Type your message..." autocomplete="off">
+                    <button id="sendChatBtn" onclick="sendChatMessage()">
+                        <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M3.4 20.4l17.45-7.48c.81-.35.81-1.49 0-1.84L3.4 3.6c-.66-.29-1.39.2-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.49-.87.99l.01 4.61c0 .71.73 1.2 1.39.91z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="typing-indicator" id="typingIndicator" style="display: none;">
+                    <span>AI Support is typing</span>
+                    <div class="typing-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Include the dashboard JavaScript file -->
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

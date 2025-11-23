@@ -1,0 +1,19 @@
+- hosts: bastion
+  become: true
+  tasks:
+    - name: Install essential tools
+      dnf:
+        name:
+          - git
+          - ansible
+          - python3-pip
+          - rsync
+          - openscap
+          - scap-security-guide
+        state: present
+
+    - name: Ensure SSH keys exist
+      ansible.builtin.file:
+        path: /home/{{ ansible_user }}/.ssh
+        state: directory
+        mode: '0700'

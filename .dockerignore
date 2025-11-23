@@ -1,0 +1,72 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+
+# Tests & tools
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+reports/
+tests/
+test/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+logs/
+tmp/
+*.tmp
+
+# Node / frontend (just in case)
+node_modules/
+dist/
+build/
+
+# Terraform / IaC (DevSecOps style)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfplan
+
+# Security / scan outputs
+.trivy/
+.trufflehog/
+.security/
+sbom-*.json
+*.sarif
+security-reports/
+scan-reports/
+
+# Docker stuff
+Dockerfile-*
+docker-compose.override.yml
+
+# Local env
+.env
+.env.*
+!.env.example
+.secrets/

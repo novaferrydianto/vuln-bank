@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login - Vulnerable Bank</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-16.svg') }}" sizes="16x16">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome Back</h1>
+        <div id="message"></div>
+        <!-- Vulnerability: No CSRF protection -->
+        <!-- Vulnerability: No rate limiting -->
+        <form id="loginForm">
+            <input type="text" name="username" placeholder="Username" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit">Login</button>
+        </form>
+        <div class="links">
+            <a href="{{ url_for('register') }}">Don't have an account? Register</a>
+            <br>
+            <a href="{{ url_for('forgot_password') }}">Forgot Password? Reset here</a>
+        </div>
+    </div>
+
+    <script>
+        // Vulnerability: Token stored in localStorage
+        // Vulnerability: No XSS protection
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('loginForm').addEventListener('submit', async (event) => {
+                event.preventDefault();
+                
+                const formData = new FormData(event.target);
+                const jsonData = {};
+                formData.forEach((value, key) => jsonData[key] = value);
+                
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(jsonData)
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success' && data.token) {
+                        // Vulnerability: Token stored in localStorage (intentionally vulnerable)
+                        localStorage.setItem('jwt_token', data.token);
+                        window.location.href = '/dashboard';
+                    } else {
+                        // Vulnerability: innerHTML used instead of textContent
+                        document.getElementById('message').innerHTML = data.message || 'Login failed';
+                        document.getElementById('message').style.color = 'red';
+                        document.getElementById('message').className = 'error';
+                    }
+                } catch (error) {
+                    document.getElementById('message').innerHTML = 'Login failed. Please try again.';
+                    document.getElementById('message').style.color = 'red';
+                    document.getElementById('message').className = 'error';
+                }
+            });
+        });
+    </script>
+</body>
+</html>

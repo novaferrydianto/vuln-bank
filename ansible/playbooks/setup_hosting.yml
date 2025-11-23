@@ -1,0 +1,80 @@
+# ansible/playbooks/setup_hosting.yml
+---
+- name: Setup hosting server (Rocky 9 + Docker + Docker Compose)
+  hosts: hosting
+  become: true
+  vars:
+    app_root: /opt/vuln-bank
+    docker_user: "{{ ansible_user | default('hosting') }}"
+    docker_compose_path: /usr/local/bin/docker-compose
+    repo_url: "https://github.com/Commando-X/vuln-bank.git"  # optional clone
+
+  pre_tasks:
+    - name: Ensure required system packages are installed
+      ansible.builtin.dnf:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+        state: present
+
+    - name: Add Docker CE repository
+      ansible.builtin.yum_repository:
+        name: docker-ce
+        description: Docker CE Stable - $releasever
+        baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
+        gpgcheck: yes
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        enabled: yes
+
+  tasks:
+    - name: Install Docker Engine and compose plugin
+      ansible.builtin.dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Enable and start Docker service
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ensure docker group exists
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Add hosting user to docker group
+      ansible.builtin.user:
+        name: "{{ docker_user }}"
+        groups: docker
+        append: true
+
+    - name: Create application root directory
+      ansible.builtin.file:
+        path: "{{ app_root }}"
+        state: directory
+        owner: "{{ docker_user }}"
+        group: "{{ docker_user }}"
+        mode: "0755"
+
+    - name: (Optional) Clone VulnBank repo (if you want infra-driven deploy)
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_root }}"
+        version: main
+        update: yes
+      when: repo_url is defined and repo_url != ""
+
+    - name: Ensure docker compose works (docker compose v2)
+      ansible.builtin.command: docker compose version
+      register: compose_version
+      changed_when: false
+
+    - name: Show docker compose version (debug)
+      ansible.builtin.debug:
+        var: compose_version.stdout

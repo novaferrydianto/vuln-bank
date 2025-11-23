@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    container_name: vuln-db
+    restart: always
+    environment:
+      POSTGRES_DB: vulnerable_bank
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    container_name: vuln-bank
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.vuln
+    ports:
+      - "5000:5000"
+
+volumes:
+  pgdata:

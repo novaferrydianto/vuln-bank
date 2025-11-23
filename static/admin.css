@@ -1,0 +1,250 @@
+:root {
+    --primary-dark: #002147;
+    --sidebar-width: 250px;
+    --header-height: 70px;
+}
+
+body {
+    background-color: var(--background-color);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+/* Admin Header */
+.admin-header {
+    background: linear-gradient(140deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+    color: white;
+    border-radius: 15px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.08);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+}
+
+.admin-header::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 70%);
+    transform: rotate(30deg);
+    pointer-events: none;
+}
+
+.admin-title {
+    margin: 0;
+    font-size: 2.2rem;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    position: relative;
+    z-index: 1;
+}
+
+/* Profile section */
+.profile-section {
+    text-align: center;
+    margin: 20px auto 40px;
+}
+
+.profile-picture {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 4px solid var(--primary-color);
+    box-shadow: 0 6px 15px rgba(0, 0, 0, 0.1);
+    margin: 0 auto 1rem;
+}
+
+/* Admin Sections */
+.section {
+    background-color: white;
+    border-radius: 15px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+}
+
+.section h2 {
+    margin-top: 0;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.75rem;
+    font-size: 1.5rem;
+    color: var(--text-dark);
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+th, td {
+    padding: 1rem;
+    text-align: left;
+    border: none;
+}
+
+th {
+    background-color: #f5f7fa;
+    font-weight: 600;
+    color: var(--text-dark);
+}
+
+tr:nth-child(even) {
+    background-color: #f9fafc;
+}
+
+tr:hover {
+    background-color: #f0f4f9;
+}
+
+/* Forms */
+form {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: var(--text-dark);
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+select,
+textarea {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: #fafafa;
+    font-family: inherit;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+select:focus,
+textarea:focus {
+    border-color: var(--primary-color);
+    background-color: white;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 84, 166, 0.1);
+}
+
+/* Buttons */
+.button, button {
+    display: inline-block;
+    padding: 0.75rem 1.5rem;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.3s, transform 0.2s;
+}
+
+.button:hover, button:hover {
+    background-color: var(--primary-dark);
+    transform: translateY(-2px);
+}
+
+button[type="submit"] {
+    margin-right: 1rem;
+}
+
+table button {
+    padding: 0.5rem 1rem;
+    margin: 0;
+    min-width: auto;
+    font-size: 0.9rem;
+}
+
+/* Delete button */
+form.delete-account-form button {
+    background-color: var(--danger-color);
+}
+
+form.delete-account-form button:hover {
+    background-color: #d32f2f;
+}
+
+/* Approve button */
+form.approve-loan-form button {
+    background-color: var(--success-color);
+}
+
+form.approve-loan-form button:hover {
+    background-color: #2e7d32;
+}
+
+/* Message Notification */
+#message {
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 8px;
+    text-align: center;
+    font-weight: 500;
+}
+
+#message.success {
+    background-color: #e8f5e9;
+    color: var(--success-color);
+    border-left: 4px solid var(--success-color);
+}
+
+#message.error {
+    background-color: #fdedeb;
+    color: var(--danger-color);
+    border-left: 4px solid var(--danger-color);
+}
+
+/* Back button */
+a.button {
+    display: inline-block;
+    text-align: center;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem;
+    }
+    
+    table {
+        display: block;
+        overflow-x: auto;
+    }
+    
+    .admin-header {
+        padding: 1.5rem;
+    }
+}

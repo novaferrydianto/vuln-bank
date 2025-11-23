@@ -1,0 +1,16 @@
+- name: Disable root SSH login
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^PermitRootLogin'
+    line: 'PermitRootLogin no'
+
+- name: Enforce SSH protocol 2
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^Protocol'
+    line: 'Protocol 2'
+
+- name: Restart SSH
+  systemd:
+    name: sshd
+    state: restarted

@@ -1,0 +1,13 @@
+- hosts: hosting
+  become: true
+  tasks:
+    - name: Copy project files
+      synchronize:
+        src: ../vuln-bank/
+        dest: /opt/vuln-bank/
+        delete: yes
+
+    - name: Start app
+      command: docker compose up -d --build
+      args:
+        chdir: /opt/vuln-bank/

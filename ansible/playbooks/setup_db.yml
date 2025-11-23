@@ -1,0 +1,83 @@
+# ansible/playbooks/setup_db.yml
+---
+- name: Setup DB server with PostgreSQL 16 (Docker)
+  hosts: db
+  become: true
+  vars:
+    postgres_container_name: vulnbank-postgres
+    postgres_image: postgres:16
+    postgres_data_dir: /opt/postgres/data
+    postgres_port: 5432
+
+    # Ganti sesuai kebutuhan lab
+    postgres_user: vulnbank
+    postgres_password: vulnbank-secret
+    postgres_db: vulnbank
+
+  pre_tasks:
+    - name: Ensure required system packages are installed
+      ansible.builtin.dnf:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+        state: present
+
+    - name: Add Docker CE repository
+      ansible.builtin.yum_repository:
+        name: docker-ce
+        description: Docker CE Stable - $releasever
+        baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
+        gpgcheck: yes
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        enabled: yes
+
+  roles: []
+  tasks:
+    - name: Install Docker Engine on Rocky 9
+      ansible.builtin.dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: Enable and start Docker service
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create data directory for PostgreSQL
+      ansible.builtin.file:
+        path: "{{ postgres_data_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Ensure community.docker collection is installed (local, manual step)
+      ansible.builtin.debug:
+        msg: >
+          Make sure you have `community.docker` installed on control node:
+          `ansible-galaxy collection install community.docker`
+
+    - name: Pull PostgreSQL 16 image
+      community.docker.docker_image:
+        name: "{{ postgres_image }}"
+        source: pull
+
+    - name: Run PostgreSQL 16 container
+      community.docker.docker_container:
+        name: "{{ postgres_container_name }}"
+        image: "{{ postgres_image }}"
+        restart_policy: always
+        env:
+          POSTGRES_USER: "{{ postgres_user }}"
+          POSTGRES_PASSWORD: "{{ postgres_password }}"
+          POSTGRES_DB: "{{ postgres_db }}"
+        volumes:
+          - "{{ postgres_data_dir }}:/var/lib/postgresql/data"
+        published_ports:
+          - "{{ postgres_port }}:5432"
+        state: started

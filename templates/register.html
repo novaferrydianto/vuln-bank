@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Register - Vulnerable Bank</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-16.svg') }}" sizes="16x16">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <div class="container">
+        <h1>Create Account</h1>
+        <div id="message"></div>
+        <!-- Vulnerability: Form doesn't validate input on client side -->
+        <!-- Vulnerability: No CSRF protection -->
+        <form id="registerForm">
+            <input type="text" name="username" placeholder="Username" required>
+            <!-- Vulnerability: No password complexity requirements -->
+            <!-- Vulnerability: Password in plain text -->
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit">Register</button>
+        </form>
+        <div class="links">
+            <a href="{{ url_for('login') }}">Already have an account? Login</a>
+        </div>
+    </div>
+
+    <script>
+        // Vulnerability: No input sanitization
+        // Vulnerability: No XSS protection
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('registerForm').addEventListener('submit', async (event) => {
+                event.preventDefault();
+                
+                const formData = new FormData(event.target);
+                const jsonData = {};
+                formData.forEach((value, key) => jsonData[key] = value);
+                
+                try {
+                    const response = await fetch('/register', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(jsonData)
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        // Vulnerability: innerHTML used instead of textContent
+                        document.getElementById('message').innerHTML = data.message;
+                        document.getElementById('message').style.color = 'green';
+                        document.getElementById('message').className = 'success';
+                        
+                        // Redirect to login after 2 seconds
+                        setTimeout(() => {
+                            window.location.href = '/login';
+                        }, 2000);
+                    } else {
+                        document.getElementById('message').innerHTML = data.message;
+                        document.getElementById('message').style.color = 'red';
+                        document.getElementById('message').className = 'error';
+                    }
+                } catch (error) {
+                    document.getElementById('message').innerHTML = 'Registration failed. Please try again.';
+                    document.getElementById('message').style.color = 'red';
+                    document.getElementById('message').className = 'error';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
