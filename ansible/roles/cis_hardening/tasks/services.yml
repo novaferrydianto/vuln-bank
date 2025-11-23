@@ -43,25 +43,17 @@
     state: stopped
   ignore_errors: true
 
-- name: Ensure vsftpd is disabled
-  ansible.builtin.service:
-    name: vsftpd
-    enabled: no
-    state: stopped
-  ignore_errors: true
-
 - name: Ensure chronyd is enabled (CIS recommended)
   ansible.builtin.service:
     name: chronyd
     enabled: yes
     state: started
-  ignore_errors: true
 
-- name: Validate running services
+- name: Validate failed services
   ansible.builtin.command: systemctl --failed
-  register: failed_services
   changed_when: false
+  register: failed_services
 
-- name: Debug failed services (if any)
+- name: Debug failed services
   ansible.builtin.debug:
     var: failed_services.stdout
