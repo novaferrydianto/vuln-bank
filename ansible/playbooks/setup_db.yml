@@ -1,4 +1,3 @@
-# ansible/playbooks/setup_db.yml
 ---
 - name: Setup DB server with PostgreSQL 16 (Docker)
   hosts: db
@@ -8,10 +7,9 @@
     postgres_image: postgres:16
     postgres_data_dir: /opt/postgres/data
     postgres_port: 5432
-
-    # Ganti sesuai kebutuhan lab
     postgres_user: vulnbank
-    postgres_password: vulnbank-secret
+    # ⚠️ REKOMENDASI KEAMANAN: Pindahkan secret ini ke Ansible Vault
+    postgres_password: vulnbank-secret 
     postgres_db: vulnbank
 
   pre_tasks:
@@ -32,7 +30,6 @@
         gpgkey: https://download.docker.com/linux/centos/gpg
         enabled: yes
 
-  roles: []
   tasks:
     - name: Install Docker Engine on Rocky 9
       ansible.builtin.dnf:
@@ -47,7 +44,21 @@
         name: docker
         state: started
         enabled: true
-
+    
+    # 🚨 PERBAIKAN KRITIS UNTUK DOCKER ERROR: 'http+docker'
+    - name: Add remote user to the docker group
+      ansible.builtin.user:
+        # Menggunakan ansible_user yang terdefinisi di inventory (yaitu 'db')
+        name: "{{ ansible_user }}" 
+        groups: docker
+        append: yes
+        
+    - name: Force Ansible connection to reset for new group permissions
+      # Kritis agar izin grup 'docker' baru berlaku tanpa login ulang manual
+      ansible.builtin.meta: reset_connection 
+      
+    # --- END OF CRITICAL FIX ---
+    
     - name: Create data directory for PostgreSQL
       ansible.builtin.file:
         path: "{{ postgres_data_dir }}"
@@ -57,10 +68,9 @@
         mode: "0755"
 
     - name: Ensure community.docker collection is installed (local, manual step)
+      # Task ini ok=membantu karena hanya debug, tetapi harus diinstal di Bastion VM
       ansible.builtin.debug:
-        msg: >
-          Make sure you have `community.docker` installed on control node:
-          `ansible-galaxy collection install community.docker`
+        msg: "Pastikan `community.docker` terinstal di Bastion: `ansible-galaxy collection install community.docker`"
 
     - name: Pull PostgreSQL 16 image
       community.docker.docker_image:
@@ -81,3 +91,13 @@
         published_ports:
           - "{{ postgres_port }}:5432"
         state: started
+
+    # 🔒 REKOMENDASI KEAMANAN: Firewalld untuk DB
+    - name: Configure Firewalld to allow traffic ONLY from Hosting VM (192.168.107.131)
+      ansible.posix.firewalld:
+        zone: public
+        # Hanya izinkan koneksi dari IP Hosting (192.168.107.131) pada port 5432
+        rich_rule: 'rule family="ipv4" source address="192.168.107.131" port protocol="tcp" port="5432" accept'
+        state: present
+        permanent: true
+        immediate: true
