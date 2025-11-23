@@ -86,11 +86,11 @@
       args:
         creates: /var/lib/docker/containers
 
-    - name: Show running containers
-      community.docker.docker_container_info:
-        name: vuln-postgres
-      register: db_info
+    - name: Get running container status via CLI
+      ansible.builtin.command: "docker ps -f name=postgres16"
+      register: container_status_cli
+      changed_when: false
 
     - name: Display container info
-      debug:
-        var: db_info
+      ansible.builtin.debug:
+        var: container_status_cli.stdout
