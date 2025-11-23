@@ -41,10 +41,14 @@
         enabled: yes
 
     - name: Add DB user to docker group
-      user:
+      ansible.builtin.user:
         name: "{{ ansible_user }}"
         groups: docker
         append: yes
+
+    - name: Force Ansible connection to reset for new group permissions
+      # Kritis: Memaksa sesi SSH diakhiri dan dibuka kembali untuk memuat ulang izin grup 'docker'.
+      ansible.builtin.meta: reset_connection
 
     - name: Create PostgreSQL data dir
       ansible.builtin.file:
