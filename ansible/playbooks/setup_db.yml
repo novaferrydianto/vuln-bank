@@ -47,11 +47,11 @@
         append: yes
 
     - name: Create PostgreSQL data dir
-      file:
+      ansible.builtin.file:
         path: "{{ pg_data_dir }}"
         state: directory
-        owner: "{{ pg_user }}"
-        group: "{{ pg_user }}"
+        owner: 999
+        group: 999
         mode: '0755'
 
     # ===============================================================
