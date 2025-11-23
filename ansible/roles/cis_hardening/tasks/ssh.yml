@@ -7,7 +7,6 @@
     regexp: '^PermitRootLogin'
     line: 'PermitRootLogin no'
     state: present
-  notify: restart_ssh_service
 
 - name: Enforce SSH protocol 2
   ansible.builtin.lineinfile:
@@ -15,9 +14,8 @@
     regexp: '^Protocol'
     line: 'Protocol 2'
     state: present
-  notify: restart_ssh_service
 
-# ❗ Validate config BEFORE restart — but do NOT notify handler
 - name: Validate SSH config syntax before restart
   ansible.builtin.command: sshd -t
   changed_when: false
+  notify: restart_sshd
