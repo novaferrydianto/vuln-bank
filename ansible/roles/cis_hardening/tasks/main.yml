@@ -43,6 +43,6 @@
     oscap xccdf eval
     --profile xccdf_org.ssgproject.content_profile_cis
     --report /root/openscap-report.html
-    /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml  # <-- GANTI rocky9 menjadi rhel9
+    /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml  # <-- HAPUS SEMUA KOMENTAR DI BARIS INI
   register: openscap_result
   changed_when: false
