@@ -16,24 +16,20 @@
       ansible.builtin.command: >
         oscap xccdf eval
         --profile xccdf_org.ssgproject.content_profile_cis
-        --results-lds /root/openscap-results.xml
-        --report {{ report_file }}
-        {{ scap_data_path }}
+        --results /root/openscap-results.xml  # <-- DIGANTI DARI --results-lds
+        --report /root/openscap-report.html
+        /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
       register: scan_result
-      # Jangan gagal di sini: RC 2 berarti non-compliant, bukan fatal.
-      failed_when: scan_result.rc not in [0, 2] 
+      failed_when: scan_result.rc not in [0, 2]
       
     # -------------------------------------------------------------
     # 2. FETCH REPORT & EXTRACT SCORE
     # -------------------------------------------------------------
     - name: Fetch OpenSCAP XML Results to Bastion
-      # Ambil hasil scan (XML) ke Control Node untuk diproses
       ansible.builtin.fetch:
-        src: /root/openscap-results.xml
+        src: /root/openscap-results.xml # <-- Pastikan ini sesuai
         dest: /tmp/scap_results/{{ inventory_hostname }}/
         flat: yes
-      delegate_to: bastion-node
-      run_once: true # Hanya ambil sekali per host
 
     - name: Process XML and Extract Compliance Score
       # Menggunakan xmllint (yang harus diinstal di Bastion) untuk mendapatkan skor
