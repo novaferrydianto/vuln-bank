@@ -77,9 +77,9 @@
         docker run -d
         --name postgres16
         --restart unless-stopped
-        -e POSTGRES_PASSWORD={{ db_password }}
-        -e POSTGRES_USER={{ db_user }}
-        -e POSTGRES_DB={{ db_name }}
+        -e POSTGRES_PASSWORD={{ pg_password }}
+        -e POSTGRES_USER={{ pg_user }}
+        -e POSTGRES_DB={{ pg_db }}
         -v {{ pg_data_dir }}:/var/lib/postgresql/data
         -p 5432:5432
         postgres:16
