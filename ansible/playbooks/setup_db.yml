@@ -1,103 +1,98 @@
 ---
-- name: Setup DB server with PostgreSQL 16 (Docker)
-  hosts: db
-  become: true
+- name: Setup DB server with PostgreSQL 16 (stable docker_container)
+  hosts: db-node
+  become: yes
   vars:
-    postgres_container_name: vulnbank-postgres
-    postgres_image: postgres:16
-    postgres_data_dir: /opt/postgres/data
-    postgres_port: 5432
-    postgres_user: vulnbank
-    # ⚠️ REKOMENDASI KEAMANAN: Pindahkan secret ini ke Ansible Vault
-    postgres_password: vulnbank-secret 
-    postgres_db: vulnbank
-
-  pre_tasks:
-    - name: Ensure required system packages are installed
-      ansible.builtin.dnf:
-        name:
-          - yum-utils
-          - device-mapper-persistent-data
-          - lvm2
-        state: present
-
-    - name: Add Docker CE repository
-      ansible.builtin.yum_repository:
-        name: docker-ce
-        description: Docker CE Stable - $releasever
-        baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
-        gpgcheck: yes
-        gpgkey: https://download.docker.com/linux/centos/gpg
-        enabled: yes
+    pg_version: "16"
+    pg_user: "postgres"
+    pg_password: "postgres"
+    pg_db: "vulnerable_bank"
+    pg_port: "5432"
+    pg_data_dir: "/opt/postgres-data"
 
   tasks:
-    - name: Install Docker Engine on Rocky 9
-      ansible.builtin.dnf:
+
+    - name: Ensure required system packages are installed
+      dnf:
+        name:
+          - dnf-plugins-core
+          - python3
+          - python3-pip
+        state: present
+
+    - name: Install Docker CE repo
+      ansible.builtin.command: >
+        dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
+
+    - name: Install Docker Engine
+      dnf:
         name:
           - docker-ce
           - docker-ce-cli
           - containerd.io
         state: present
 
-    - name: Enable and start Docker service
-      ansible.builtin.service:
+    - name: Enable + start Docker service
+      service:
         name: docker
         state: started
-        enabled: true
-    
-    # 🚨 PERBAIKAN KRITIS UNTUK DOCKER ERROR: 'http+docker'
-    - name: Add remote user to the docker group
-      ansible.builtin.user:
-        # Menggunakan ansible_user yang terdefinisi di inventory (yaitu 'db')
-        name: "{{ ansible_user }}" 
+        enabled: yes
+
+    - name: Add DB user to docker group
+      user:
+        name: "{{ ansible_user }}"
         groups: docker
         append: yes
-        
-    - name: Force Ansible connection to reset for new group permissions
-      # Kritis agar izin grup 'docker' baru berlaku tanpa login ulang manual
-      ansible.builtin.meta: reset_connection 
-      
-    # --- END OF CRITICAL FIX ---
-    
-    - name: Create data directory for PostgreSQL
-      ansible.builtin.file:
-        path: "{{ postgres_data_dir }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
 
-    - name: Ensure community.docker collection is installed (local, manual step)
-      # Task ini ok=membantu karena hanya debug, tetapi harus diinstal di Bastion VM
-      ansible.builtin.debug:
-        msg: "Pastikan `community.docker` terinstal di Bastion: `ansible-galaxy collection install community.docker`"
+    - name: Create PostgreSQL data dir
+      file:
+        path: "{{ pg_data_dir }}"
+        state: directory
+        owner: "{{ pg_user }}"
+        group: "{{ pg_user }}"
+        mode: '0755'
+
+    # ===============================================================
+    #  PULL IMAGE
+    # ===============================================================
 
     - name: Pull PostgreSQL 16 image
       community.docker.docker_image:
-        name: "{{ postgres_image }}"
+        name: "postgres:{{ pg_version }}"
         source: pull
 
-    - name: Run PostgreSQL 16 container
+    # ===============================================================
+    #  RUN POSTGRES CONTAINER (STABLE)
+    # ===============================================================
+
+    - name: Run PostgreSQL 16 container (stable mode)
       community.docker.docker_container:
-        name: "{{ postgres_container_name }}"
-        image: "{{ postgres_image }}"
+        name: vuln-postgres
+        image: "postgres:{{ pg_version }}"
+        state: started
         restart_policy: always
         env:
-          POSTGRES_USER: "{{ postgres_user }}"
-          POSTGRES_PASSWORD: "{{ postgres_password }}"
-          POSTGRES_DB: "{{ postgres_db }}"
+          POSTGRES_DB: "{{ pg_db }}"
+          POSTGRES_USER: "{{ pg_user }}"
+          POSTGRES_PASSWORD: "{{ pg_password }}"
+          PGDATA: "/var/lib/postgresql/data"
         volumes:
-          - "{{ postgres_data_dir }}:/var/lib/postgresql/data"
+          - "{{ pg_data_dir }}:/var/lib/postgresql/data"
         published_ports:
-          - "{{ postgres_port }}:5432"
-        state: started
+          - "{{ pg_port }}:5432"
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U {{ pg_user }}"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
 
-    # 🔒 REKOMENDASI KEAMANAN: Firewalld untuk DB
-    - name: Configure Firewalld to allow traffic ONLY from Hosting VM (192.168.107.131)
-      ansible.posix.firewalld:
-        zone: public
-        # Hanya izinkan koneksi dari IP Hosting (192.168.107.131) pada port 5432
-        rich_rule: 'rule family="ipv4" source address="192.168.107.131" port protocol="tcp" port="5432" accept'
-        state: present
-        permanent: true
-        immediate: true
+    - name: Show running containers
+      community.docker.docker_container_info:
+        name: vuln-postgres
+      register: db_info
+
+    - name: Display container info
+      debug:
+        var: db_info
