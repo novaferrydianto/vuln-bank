@@ -1,10 +1,37 @@
-- include_tasks: ssh.yml
-- include_tasks: filesystem.yml
-- include_tasks: services.yml
+---
+# =================================================================
+# TAHAP 1 — SSH Hardening (with notify → restart sshd)
+# =================================================================
 
-- name: Run OpenSCAP scan (CIS)
-  command: >
+- name: Apply SSH Hardening (PermitRootLogin, Protocol, Validasi sshd)
+  ansible.builtin.include_tasks: ssh.yml
+
+# =================================================================
+# TAHAP 1.5 — FLUSH HANDLERS (restart sshd di titik aman)
+# =================================================================
+
+- name: Flush handlers to restart SSH service before continuing
+  ansible.builtin.meta: flush_handlers
+
+# =================================================================
+# TAHAP 2 — Filesystem & Services Hardening
+# =================================================================
+
+- name: Apply Filesystem Hardening (/tmp, nodev, nosuid, dll)
+  ansible.builtin.include_tasks: filesystem.yml
+
+- name: Apply Services Hardening (disable unused services)
+  ansible.builtin.include_tasks: services.yml
+
+# =================================================================
+# TAHAP 3 — OpenSCAP Scan (CIS Benchmark)
+# =================================================================
+
+- name: Run OpenSCAP scan (CIS Benchmark Verification)
+  ansible.builtin.command: >
     oscap xccdf eval
     --profile xccdf_org.ssgproject.content_profile_cis
     --report /root/openscap-report.html
     /usr/share/xml/scap/ssg/content/ssg-rocky9-xccdf.xml
+  register: openscap_result
+  changed_when: false

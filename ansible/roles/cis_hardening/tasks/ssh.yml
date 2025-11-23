@@ -1,15 +1,23 @@
+---
+# roles/cis_hardening/tasks/ssh.yml
+
 - name: Disable root SSH login
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^PermitRootLogin'
     line: 'PermitRootLogin no'
+    state: present
+  notify: restart_ssh_service
 
 - name: Enforce SSH protocol 2
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^Protocol'
     line: 'Protocol 2'
-
-- name: Apply SSH hardening config
+    state: present
   notify: restart_ssh_service
 
+# ❗ Validate config BEFORE restart — but do NOT notify handler
+- name: Validate SSH config syntax before restart
+  ansible.builtin.command: sshd -t
+  changed_when: false
