@@ -1,9 +1,66 @@
-- hosts: all
+---
+- name: Verify CIS Compliance Post-Hardening
+  hosts: hosting-node # Hanya perlu memverifikasi host yang akan di-deploy
   become: true
+  vars:
+    scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml # Path yang sudah kita validasi
+    report_file: /root/openscap-report.html
+    # Ambang batas gagal: Misalnya, Playbook gagal jika compliance score di bawah 90%
+    compliance_threshold: 90 
+    
   tasks:
-    - name: Run OpenSCAP report
-      command: >
+    # -------------------------------------------------------------
+    # 1. GENERATE FINAL SCAN REPORT (Pastikan report terbaru)
+    # -------------------------------------------------------------
+    - name: Run OpenSCAP Compliance Scan
+      ansible.builtin.command: >
         oscap xccdf eval
         --profile xccdf_org.ssgproject.content_profile_cis
-        --report /root/openscap-final-report.html
-        /usr/share/xml/scap/ssg/content/ssg-rocky9-xccdf.xml
+        --results-lds /root/openscap-results.xml
+        --report {{ report_file }}
+        {{ scap_data_path }}
+      register: scan_result
+      # Jangan gagal di sini: RC 2 berarti non-compliant, bukan fatal.
+      failed_when: scan_result.rc not in [0, 2] 
+      
+    # -------------------------------------------------------------
+    # 2. FETCH REPORT & EXTRACT SCORE
+    # -------------------------------------------------------------
+    - name: Fetch OpenSCAP XML Results to Bastion
+      # Ambil hasil scan (XML) ke Control Node untuk diproses
+      ansible.builtin.fetch:
+        src: /root/openscap-results.xml
+        dest: /tmp/scap_results/{{ inventory_hostname }}/
+        flat: yes
+      delegate_to: bastion-node
+      run_once: true # Hanya ambil sekali per host
+
+    - name: Process XML and Extract Compliance Score
+      # Menggunakan xmllint (yang harus diinstal di Bastion) untuk mendapatkan skor
+      ansible.builtin.command: >
+        xmllint --xpath 'string(//TestResult/score)' /tmp/scap_results/{{ inventory_hostname }}/root/openscap-results.xml
+      register: compliance_score_raw
+      delegate_to: bastion-node
+
+    - name: Convert score to float and Set Fact
+      # Ansible memerlukan JINJA filter untuk konversi string -> float
+      ansible.builtin.set_fact:
+        final_compliance_score: "{{ compliance_score_raw.stdout | float | round(2) }}"
+      delegate_to: bastion-node
+      run_once: true
+      
+    # -------------------------------------------------------------
+    # 3. SECURITY GATE CHECK (Fail the Playbook)
+    # -------------------------------------------------------------
+    - name: FAIL if Compliance Score is below {{ compliance_threshold }}%
+      ansible.builtin.fail:
+        msg: "HARDENING FAILED! Compliance score ({{ final_compliance_score }}%) is below the required threshold ({{ compliance_threshold }}%). Deployment stopped."
+      when: final_compliance_score < compliance_threshold
+      delegate_to: bastion-node
+      run_once: true
+
+    - name: Send Notification (Assuming success and score is passed)
+      ansible.builtin.debug:
+        msg: "✅ SECURITY GATE PASSED. Compliance Score: {{ final_compliance_score }}%. Proceeding to Deployment."
+      delegate_to: bastion-node
+      run_once: true
