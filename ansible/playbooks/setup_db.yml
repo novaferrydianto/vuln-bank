@@ -62,35 +62,29 @@
     #  PULL IMAGE
     # ===============================================================
 
-    - name: Pull PostgreSQL 16 image
-      community.docker.docker_image:
-        name: "postgres:{{ pg_version }}"
-        source: pull
+    - name: Pull PostgreSQL 16 image via CLI (stable)
+      ansible.builtin.command: "docker pull postgres:16"
+      register: pull_output
+      changed_when: "'Downloaded' in pull_output.stdout or 'Pulling' in pull_output.stdout"
+
 
     # ===============================================================
     #  RUN POSTGRES CONTAINER (STABLE)
     # ===============================================================
 
-    - name: Run PostgreSQL 16 container (stable mode)
-      community.docker.docker_container:
-        name: vuln-postgres
-        image: "postgres:{{ pg_version }}"
-        state: started
-        restart_policy: always
-        env:
-          POSTGRES_DB: "{{ pg_db }}"
-          POSTGRES_USER: "{{ pg_user }}"
-          POSTGRES_PASSWORD: "{{ pg_password }}"
-          PGDATA: "/var/lib/postgresql/data"
-        volumes:
-          - "{{ pg_data_dir }}:/var/lib/postgresql/data"
-        published_ports:
-          - "{{ pg_port }}:5432"
-        healthcheck:
-          test: ["CMD-SHELL", "pg_isready -U {{ pg_user }}"]
-          interval: 10s
-          timeout: 5s
-          retries: 5
+    - name: Run PostgreSQL 16 container
+      ansible.builtin.command: >
+        docker run -d
+        --name postgres16
+        --restart unless-stopped
+        -e POSTGRES_PASSWORD={{ db_password }}
+        -e POSTGRES_USER={{ db_user }}
+        -e POSTGRES_DB={{ db_name }}
+        -v {{ pg_data_dir }}:/var/lib/postgresql/data
+        -p 5432:5432
+        postgres:16
+      args:
+        creates: /var/lib/docker/containers
 
     - name: Show running containers
       community.docker.docker_container_info:
