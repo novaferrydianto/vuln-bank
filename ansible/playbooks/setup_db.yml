@@ -1,7 +1,7 @@
 ---
 - name: Setup DB server with PostgreSQL 16 (stable docker_container)
   hosts: db-node
-  become: yes
+  become: true
   vars:
     pg_version: "16"
     pg_user: "postgres"
