@@ -53,19 +53,25 @@
         final_compliance_score: "{{ compliance_score_raw.stdout | float | round(2) }}"
       delegate_to: localhost
 
+    - name: Debug score type
+      debug:
+        msg: "Type: {{ final_compliance_score | type_debug }}"
+      delegate_to: localhost
+      run_once: true
+
     # -------------------------------------------------------------
     # 4. SECURITY GATE CHECK
     # -------------------------------------------------------------
     - name: FAIL if compliance score is below threshold
       ansible.builtin.fail:
         msg: "❌ HARDENING FAILED — Score {{ final_compliance_score }}% < Threshold {{ compliance_threshold }}%"
-      when: final_compliance_score < compliance_threshold
+      when: (final_compliance_score | float) < (compliance_threshold | float)
       run_once: true
 
     - name: SUCCESS — Compliance passed!
       ansible.builtin.debug:
         msg: "✅ SECURITY GATE PASSED — Score: {{ final_compliance_score }}%"
-      when: final_compliance_score >= compliance_threshold
+      when: (final_compliance_score | float) >= (compliance_threshold | float)
       run_once: true
 
     # -------------------------------------------------------------
