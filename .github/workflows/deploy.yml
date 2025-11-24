@@ -39,7 +39,7 @@ jobs:
       # 1. Secret Scanning (TruffleHog) - FAIL-FAST ENFORCEMENT
       # -------------------------------------------------------------
       - name: TruffleHog Secret Scanning (FAIL-FAST)
-        uses: trufflesecurity/trufflehog-action@main
+        uses: trufflesecurity/trufflehog-action@v1 # ✅ FIX: Menggunakan tag versi stabil @v1
         with:
           path: ./ # Memindai seluruh repositori
           base: ${{ github.event.repository.default_branch }}
