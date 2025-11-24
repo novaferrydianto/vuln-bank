@@ -1,15 +1,13 @@
 ---
-- name: Verify CIS Compliance Post-Hardening (v5)
-  hosts: hosting-node
+- name: Verify CIS Compliance Post-Hardening (v5-final)
+  hosts: hosting
   become: true
 
   vars:
     scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
-    profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
-
-    scap_results_xml: /root/openscap-results.xml
-    scap_report_html: /root/openscap-report.html
-
+    cis_profile: xccdf_org.ssgproject.content_profile_cis_server_l1
+    results_xml: /root/openscap-results.xml
+    report_html: /root/openscap-report.html
     compliance_threshold: 90
 
   tasks:
@@ -21,106 +19,63 @@
     - name: Run OpenSCAP CIS Server Level 1 Scan
       ansible.builtin.command: >
         oscap xccdf eval
-        --profile {{ profile_id }}
-        --results {{ scap_results_xml }}
-        --report {{ scap_report_html }}
+        --profile {{ cis_profile }}
+        --results {{ results_xml }}
+        --report {{ report_html }}
         {{ scap_data_path }}
-      register: scan_result
-      failed_when: scan_result.rc not in [0,2]
+      register: oscap_result
       changed_when: true
+      failed_when: oscap_result.rc not in [0, 2]
 
-    - name: Check XML exists
-      stat:
-        path: "{{ scap_results_xml }}"
-      register: xml_stat
+    - name: Check results XML exists
+      ansible.builtin.stat:
+        path: "{{ results_xml }}"
+      register: results_xml_stat
 
     - name: Fail if XML missing
-      fail:
-        msg: "OpenSCAP XML missing — scan failed."
-      when: not xml_stat.stat.exists
+      ansible.builtin.fail:
+        msg: "❌ OpenSCAP results XML not found at {{ results_xml }}"
+      when: not results_xml_stat.stat.exists
 
-    # -------------------------------------------------------------
-    # XML PARSING (PRIMARY)
-    # -------------------------------------------------------------
-    - name: Extract score from XML (namespace-agnostic)
-      command: >
-        xmllint --xpath
-        'string(//*[local-name()="score"][1])'
-        {{ scap_results_xml }}
-      register: xml_score_raw_cmd
-      failed_when: false
+    - name: Extract CIS score from XML (namespace-agnostic)
+      ansible.builtin.command: >
+        xmllint --xpath "string(//*[local-name()='score'][1])" {{ results_xml }}
+      register: score_cmd
       changed_when: false
+      failed_when: score_cmd.rc != 0
 
-    - name: Normalize XML score
-      set_fact:
-        xml_score_raw: "{{ xml_score_raw_cmd.stdout | trim }}"
+    - name: Convert CIS score
+      ansible.builtin.set_fact:
+        cis_score_raw: "{{ score_cmd.stdout | trim }}"
+        cis_score_percent: "{{ (score_cmd.stdout | float) | round(1) }}"
 
-    - name: Extract numeric XML score
-      set_fact:
-        xml_score_num: "{{ xml_score_raw | regex_search('([0-9]+(?:\\.[0-9]+)?)', '\\1') }}"
-      when: xml_score_raw | length > 0
-
-    # -------------------------------------------------------------
-    # HTML PARSING (FALLBACK)
-    # -------------------------------------------------------------
-    - name: Slurp HTML
-      slurp:
-        path: "{{ scap_report_html }}"
-      register: html_raw
-      when: xml_score_num is not defined
-
-    - name: Decode HTML
-      set_fact:
-        html_text: "{{ html_raw.content | b64decode }}"
-      when: html_raw is defined
-
-    - name: Extract score from HTML
-      set_fact:
-        html_score_num: "{{ html_text | regex_search('([0-9]+(?:\\.[0-9]+)?)%', '\\1') }}"
-      when: html_text is defined
-
-    # -------------------------------------------------------------
-    # FINAL SCORE DECISION
-    # -------------------------------------------------------------
-    - name: Final score string
-      set_fact:
-        final_score_str: >-
-          {% if xml_score_num is defined and xml_score_num|length > 0 %}
-          {{ xml_score_num }}
-          {% elif html_score_num is defined and html_score_num|length > 0 %}
-          {{ html_score_num }}
-          {% else %}
-          ''
-          {% endif %}
-
-    - name: Convert to float (if exists)
-      set_fact:
-        final_score_num: "{{ final_score_str | float }}"
-      when: final_score_str | length > 0
-
-    # -------------------------------------------------------------
-    # SUMMARY
-    # -------------------------------------------------------------
-    - name: Summary
-      debug:
+    - name: Debug score
+      ansible.builtin.debug:
         msg:
-          - "XML score raw : {{ xml_score_raw | default('N/A') }}"
-          - "XML numeric   : {{ xml_score_num | default('N/A') }}"
-          - "HTML numeric  : {{ html_score_num | default('N/A') }}"
-          - "Final score   : {{ final_score_str | default('unknown') }}"
-          - "Threshold     : {{ compliance_threshold }}"
+          - "CIS Score : {{ cis_score_percent }}%"
+          - "Threshold : {{ compliance_threshold }}%"
 
-    # -------------------------------------------------------------
-    # DECISION GATE
-    # -------------------------------------------------------------
-    - name: Fail only if valid score < threshold
-      fail:
-        msg: "❌ HARDENING FAILED — Score {{ final_score_num }} < Threshold {{ compliance_threshold }}"
-      when:
-        - final_score_num is defined
-        - final_score_num < compliance_threshold
+    - name: FAIL if below threshold
+      ansible.builtin.fail:
+        msg: "❌ HARDENING FAILED — Score {{ cis_score_percent }}% < Threshold {{ compliance_threshold }}%"
+      when: cis_score_percent | float < compliance_threshold | float
 
-    - name: Warn if score cannot be parsed
-      debug:
-        msg: "⚠ Score could not be parsed; check HTML manually. Pipeline not failed."
-      when: final_score_num is not defined
+    # GitHub Actions Summary Output
+    - name: Set summary path
+      ansible.builtin.set_fact:
+        gha_summary_path: "{{ lookup('env', 'GITHUB_STEP_SUMMARY') | default('', true) }}"
+
+    - name: Publish CIS score to GitHub Actions Summary
+      ansible.builtin.shell: |
+        cat << EOF >> "{{ gha_summary_path }}"
+        ## 🛡️ CIS OpenSCAP Result — Rocky Linux 9
+        - Host: {{ inventory_hostname }}
+        - Score: **{{ cis_score_percent }}%**
+        - Threshold: **{{ compliance_threshold }}%**
+        - Status: {{ '✅ PASS' if cis_score_percent | float >= compliance_threshold | float else '❌ FAIL' }}
+        EOF
+      args:
+        executable: /bin/bash
+      when: gha_summary_path | length > 0
+      delegate_to: localhost
+      changed_when: false
