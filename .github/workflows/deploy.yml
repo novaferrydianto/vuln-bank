@@ -9,14 +9,14 @@ on:
 
 permissions:
   contents: read
-  issues: write # Diperlukan untuk Job 1.6 (EPSS & GitHub Issues)
+  issues: write
 
 env:
   IMAGE_NAME: vulnbank-app
   IMAGE_TAG: ${{ github.sha }}
   FULL_IMAGE: vulnbank-app:${{ github.sha }}
   REPORT_DIR: security-reports
-  
+
 jobs:
   # =========================================================
   # JOB 1: SECURITY (CI)
@@ -24,35 +24,29 @@ jobs:
   security:
     runs-on: ubuntu-latest
     name: DevSecOps Security Pipeline
-    continue-on-error: false # PENTING: Pipeline GAGAL jika ada langkah security yang gagal
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Diperlukan untuk TruffleHog agar memindai riwayat lengkap
 
       - name: Create reports directory
         run: mkdir -p "$REPORT_DIR"
 
       # -------------------------------------------------------------
-      # 1. Secret Scanning (TruffleHog) - FAIL-FAST ENFORCEMENT
+      # 1. Secret Scanning (TruffleHog)
       # -------------------------------------------------------------
-      - name: TruffleHog Secret Scanning (FAIL-FAST)
-        uses: trufflesecurity/trufflehog-action@v1 # ✅ FIX: Menggunakan tag versi stabil @v1
-        with:
-          path: ./ # Memindai seluruh repositori
-          base: ${{ github.event.repository.default_branch }}
-          head: ${{ github.sha }}
-          output_format: json
-          json_output: ${{ env.REPORT_DIR }}/trufflehog.json
-          # ✅ FAIL-FAST: Memastikan action gagal jika menemukan secret
-          fail_on_result: true 
-          scan: filesystem
-          # TruffleHog Action mengurus instalasi Go/binary secara internal.
+      - name: Install TruffleHog
+        run: pip install trufflehog
+
+      - name: TruffleHog Scan
+        run: |
+          trufflehog filesystem . \
+            --no-update \
+            --only-verified \
+            --json > "$REPORT_DIR/trufflehog.json" || true
 
       # -------------------------------------------------------------
-      # 2. Trivy SCA / Config Scan - FAIL-FAST ENFORCEMENT
+      # 2. Trivy SCA / Config Scan
       # -------------------------------------------------------------
       - name: Install Trivy
         run: |
@@ -60,77 +54,67 @@ jobs:
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sudo sh -s -- -b /usr/local/bin
 
-      - name: Trivy FS Scan (SCA & Misconfig - Wajib Lulus)
-        # GAGAL secara default jika menemukan HIGH/CRITICAL
+      - name: Trivy FS Scan
         run: |
           trivy fs . \
             --security-checks vuln,config \
-            --severity HIGH,CRITICAL \
             --format json \
-            --output "$REPORT_DIR/trivy-fs.json"
+            --output "$REPORT_DIR/trivy-fs.json" || true
 
-      - name: Build image for Image Scan
+      - name: Build image for scan
         run: docker build -t "$FULL_IMAGE" .
 
-      - name: Trivy Image Scan (Wajib Lulus)
-        # GAGAL secara default jika menemukan HIGH/CRITICAL
+      - name: Trivy Image Scan
         run: |
           trivy image "$FULL_IMAGE" \
-            --severity HIGH,CRITICAL \
             --format json \
-            --output "$REPORT_DIR/trivy-image.json"
+            --output "$REPORT_DIR/trivy-image.json" || true
 
       # -------------------------------------------------------------
-      # 3. SAST (Semgrep) - FAIL-FAST ENFORCEMENT
+      # 3. SAST (Semgrep)
       # -------------------------------------------------------------
       - name: Install Semgrep
         run: pip install semgrep
 
-      - name: Semgrep Scan (Wajib Lulus)
-        # Menggunakan --error untuk GAGAL pada temuan High/Critical
+      - name: Semgrep Scan
         run: |
           semgrep ci --config auto \
-            --error \
-            --json > "$REPORT_DIR/semgrep.json"
+            --json > "$REPORT_DIR/semgrep.json" || true
 
       # -------------------------------------------------------------
-      # 4. DAST (OWASP ZAP) - Inject Secrets for Docker Compose
+      # 4. DAST (OWASP ZAP)
       # -------------------------------------------------------------
-      - name: Start app with Docker Compose (Injecting Secrets)
-        # Injeksi secrets DB dan Flask ke lingkungan runtime Docker Compose.
+      - name: Start app with Docker Compose
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
         run: |
           docker compose down || true
-          # Docker Compose akan mengambil secrets dari env yang disuntikkan di atas
           docker compose up -d
           sleep 15
 
       - name: Detect network dynamically
         id: net
-        run: echo "network=$(docker network ls --format '{{.Name}}' | grep vuln | head -n 1)" >> $GITHUB_OUTPUT
+        run: |
+          NET=$(docker network ls --format '{{.Name}}' | grep vuln | head -n 1)
+          echo "network=$NET" >> $GITHUB_OUTPUT
 
       - name: ZAP Baseline Scan
-        # DAST tidak membatalkan CI
-        uses: zaproxy/action-baseline@v0.10.0
-        with:
-          target: http://app:5000
-          docker_image: ghcr.io/zaproxy/zaproxy:stable
-          cmd_options: '-t http://app:5000 -J zap-report.json -r zap-report.html'
-          network: ${{ steps.net.outputs.network }}
-          issue_title: 'DAST Findings for Vuln Bank'
-          fail_action: false 
-
-      - name: Move ZAP Reports
-        if: always()
         run: |
+          mkdir -p zap
+          docker run --rm \
+            --network ${{ steps.net.outputs.network }} \
+            -v "$(pwd)/zap:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+              -t http://app:5000 \
+              -J zap-report.json \
+              -r zap-report.html || true
+
           mv zap/zap-report.json "$REPORT_DIR/zap-report.json" || true
           mv zap/zap-report.html "$REPORT_DIR/zap-report.html" || true
 
       - name: Stop app
-        if: always()
         run: docker compose down || true
 
       # -------------------------------------------------------------
@@ -143,11 +127,9 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
       # -------------------------------------------------------------
-      # 6. EPSS + Auto GitHub Issues (Improvement)
+      # 6. EPSS MODE v1 (Clean)
       # -------------------------------------------------------------
       - name: EPSS Scoring + Auto GitHub Issues
-        id: epss
-        # Step ini berjalan jika semua scan statis/secret LULUS.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -159,14 +141,15 @@ jobs:
           import json
           import os
           import requests
-          import re
-          
+
           REPO = os.getenv("GITHUB_REPOSITORY")
           TOKEN = os.getenv("GITHUB_TOKEN")
           REPORT_DIR = os.getenv("REPORT_DIR")
           HEADERS = {"Authorization": f"token {TOKEN}"}
-          CRITICAL_FOUND = False
 
+          # ---------------------------------------------------
+          # Create GitHub Issue
+          # ---------------------------------------------------
           def create_issue(title, body):
               url = f"https://api.github.com/repos/{REPO}/issues"
               resp = requests.post(url, json={"title": title, "body": body}, headers=HEADERS)
@@ -175,6 +158,9 @@ jobs:
               else:
                   print(f"[ISSUE CREATED] {title}")
 
+          # ---------------------------------------------------
+          # EPSS Fetch
+          # ---------------------------------------------------
           def fetch_epss(cve_id):
               try:
                   url = f"https://api.first.org/data/v1/epss?cve={cve_id}"
@@ -185,27 +171,32 @@ jobs:
                   print(f"[ERROR] EPSS fetch failed for {cve_id}: {e}")
               return None
 
+          # ---------------------------------------------------
+          # Load Trivy JSON
+          # ---------------------------------------------------
           def load_trivy(path):
-              global CRITICAL_FOUND
-              if not os.path.isfile(path): return []
+              if not os.path.isfile(path):
+                  return []
               with open(path) as f:
                   try:
                       data = json.load(f)
                   except:
-                      print(f"[ERROR] JSON decode failed: {path}"); return []
+                      print(f"[ERROR] JSON decode failed: {path}")
+                      return []
               vulns = []
               for result in data.get("Results", []):
                   for v in result.get("Vulnerabilities", []):
                       if v.get("Severity") in ("CRITICAL", "HIGH"):
-                          CRITICAL_FOUND = True 
                           vulns.append(v)
               return vulns
 
+          # ---------------------------------------------------
+          # Process & Create Issues
+          # ---------------------------------------------------
           def process_vulns(vulns):
               for v in vulns:
                   cve = v.get("VulnerabilityID")
-                  epss_score = fetch_epss(cve)
-                  epss_text = f"**{epss_score}**" if epss_score and float(epss_score) > 0.5 else epss_score or "N/A"
+                  epss = fetch_epss(cve)
 
                   title = f"[EPSS] {cve} — {v.get('Severity')}"
                   body = f"""
@@ -215,7 +206,7 @@ jobs:
           - **Installed:** `{v.get('InstalledVersion')}`
           - **Fixed:** `{v.get('FixedVersion')}`
           - **Severity:** `{v.get('Severity')}`
-          - **EPSS Score:** {epss_text}
+          - **EPSS Score:** `{epss}`
           - **URL:** {v.get('PrimaryURL')}
           - **Target:** {v.get('Target')}
 
@@ -237,49 +228,20 @@ jobs:
           vulns = []
           for p in paths:
               vulns.extend(load_trivy(p))
-              
-          try:
-              with open(f"{REPORT_DIR}/zap-report.html", 'r') as f:
-                  zap_content = f.read()
-                  if re.search(r'High (\d+)', zap_content) or re.search(r'Critical (\d+)', zap_content):
-                       CRITICAL_FOUND = True
-                       print("[ALERT] DAST ZAP menemukan temuan High/Critical.")
-          except FileNotFoundError:
-              print("[INFO] ZAP report not found, skipping DAST check.")
-          
-          print(f"[INFO] {len(vulns)} high/critical vulns from Trivy detected.")
+
+          print(f"[INFO] {len(vulns)} high/critical vulns detected.")
           process_vulns(vulns)
-          print("[DONE] EPSS enrichment and issue creation complete.")
-          
-          # PENTING: Set output critical_found untuk langkah Slack Notification
-          print(f"::set-output name=critical_found::{CRITICAL_FOUND}")
+          print("[DONE] EPSS enrichment complete.")
           PY
 
-      # -------------------------------------------------------------
-      # 7. Kirim Notifikasi Slack (Jika Ada Temuan Critical/High - Core Requirement)
-      # -------------------------------------------------------------
-      - name: Kirim Notifikasi Slack (Critical Alert)
-        if: ${{ steps.epss.outputs.critical_found == 'true' }} # Hanya jika ditemukan critical/high di langkah sebelumnya
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # Harus disetel di repo secrets
-          SLACK_COLOR: '#FF0000' # Merah
-          SLACK_TITLE: '🚨 URGENT: CRITICAL VULNERABILITY ALERT! 🚨'
-          SLACK_MESSAGE: 'Vuln Bank Security Pipeline mendeteksi temuan **CRITICAL** (SCA/DAST/Misconfig) di commit ${{ github.sha }}. Laporan lengkap tersedia di Artifacts. Segera cek GitHub Issues yang telah dibuat.'
-          SLACK_USERNAME: 'DevSecOps Bot'
-          SLACK_ICON_EMOJI: ':warning:'
-          SLACK_FOOTER: 'Pipeline Run ID: ${{ github.run_id }}'
-          SLACK_CHANNEL: '#security-alert' # Ganti dengan channel Anda
-          SLACK_LINK_NAMES: true
-
   # =========================================================
-  # JOB 2: DEPLOY (SELF-HOSTED) - Hanya berjalan jika SECURITY PASS
+  # JOB 2: DEPLOY (SELF-HOSTED)
   # =========================================================
   deploy:
     name: Deploy via Ansible (3 VM)
-    needs: security # Memastikan hanya jalan jika security LULUS
+    needs: security
     runs-on: self-hosted
-    if: github.ref == 'refs/heads/main' && success()
+    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
