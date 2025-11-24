@@ -1,13 +1,50 @@
-- hosts: hosting
+---
+- name: Deploy VulnBank App to Hosting
+  hosts: hosting
   become: true
-  tasks:
-    - name: Copy project files
-      synchronize:
-        src: ../vuln-bank/
-        dest: /opt/vuln-bank/
-        delete: yes
 
-    - name: Start app
-      command: docker compose up -d --build
+  vars:
+    app_dir: /opt/vuln-bank
+    local_repo_path: "{{ lookup('env', 'GITHUB_WORKSPACE') | default('../', true) }}"
+
+  tasks:
+    - name: Sync project files from bastion to hosting
+      ansible.posix.synchronize:
+        src: "{{ local_repo_path }}/"
+        dest: "{{ app_dir }}/"
+        delete: yes
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.github"
+          - "--exclude=ansible"
+          - "--exclude=*.md"
+      delegate_to: bastion-node
+
+    - name: Ensure .env exists (bootstrap from example)
+      ansible.builtin.command: cp .env.example .env
       args:
-        chdir: /opt/vuln-bank/
+        chdir: "{{ app_dir }}"
+        creates: "{{ app_dir }}/.env"
+
+    - name: Docker compose down
+      ansible.builtin.command: docker compose down
+      args:
+        chdir: "{{ app_dir }}"
+      ignore_errors: true
+
+    - name: Docker compose up -d --build
+      ansible.builtin.command: docker compose up -d --build
+      args:
+        chdir: "{{ app_dir }}"
+
+    - name: Prune dangling images
+      ansible.builtin.command: docker image prune -f
+
+    - name: Wait for app to be ready
+      ansible.builtin.pause:
+        seconds: 20
+
+    - name: Health check HTTP
+      ansible.builtin.command: curl -f http://localhost:5000
+      register: health
+      failed_when: health.rc != 0
