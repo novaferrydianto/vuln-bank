@@ -8,16 +8,21 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+# Permissions supaya bisa bikin GitHub Issues
+permissions:
+  contents: read
+  issues: write
+
 env:
   IMAGE_NAME: vulnbank-app
   IMAGE_TAG: ${{ github.sha }}
   FULL_IMAGE: vulnbank-app:${{ github.sha }}
   REPORT_DIR: security-reports
 
-# =========================================================
-# JOB 1: SECURITY (CI) - jalan di ubuntu-latest (GitHub runner)
-# =========================================================
 jobs:
+  # =========================================================
+  # JOB 1: SECURITY (CI) - jalan di ubuntu-latest
+  # =========================================================
   security:
     name: DevSecOps Security Pipeline
     runs-on: ubuntu-latest
@@ -90,21 +95,16 @@ jobs:
           sleep 25
 
       - name: ZAP Baseline Scan
-        run: |
-          docker run --rm --network host \
-            ghcr.io/zaproxy/zap-stable:latest \
-              zap-baseline.py \
-                -t http://localhost:5000 \
-                -r zap-report.html \
-                -J zap-report.json || true
-          
-          mkdir -p "$REPORT_DIR"
-          mv zap-report.html "$REPORT_DIR/zap-report.html" || true
-          mv zap-report.json "$REPORT_DIR/zap-report.json" || true
+        uses: zaproxy/action-baseline@v0.13.0
+        with:
+          target: "http://host.docker.internal:5000"
+          cmd_options: "-a"
+          fail_action: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Copy ZAP reports
         run: |
-          # action-baseline taruh report di ./zap.wrk/, kita pindah ke REPORT_DIR
           if [ -d "zap.wrk" ]; then
             mv zap.wrk/*.html "$REPORT_DIR/" 2>/dev/null || true
             mv zap.wrk/*.json "$REPORT_DIR/" 2>/dev/null || true
@@ -124,18 +124,15 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
       # ----------------------------------------
-      # 6. Evaluate findings + Discord alert
+      # 6. Summary basic (severity only, NO FAIL)
       # ----------------------------------------
-      - name: Evaluate findings & send alert
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      - name: Summary (severity-only)
         run: |
           sudo apt-get install -y jq || true
 
           CRIT_COUNT=0
           HIGH_COUNT=0
 
-          # Trivy FS
           if [ -f "$REPORT_DIR/trivy-fs.json" ]; then
             TF_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT_DIR/trivy-fs.json" 2>/dev/null || echo 0)
             TF_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT_DIR/trivy-fs.json" 2>/dev/null || echo 0)
@@ -143,7 +140,6 @@ jobs:
             HIGH_COUNT=$((HIGH_COUNT + TF_HIGH))
           fi
 
-          # Trivy Image
           if [ -f "$REPORT_DIR/trivy-image.json" ]; then
             TI_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT_DIR/trivy-image.json" 2>/dev/null || echo 0)
             TI_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT_DIR/trivy-image.json" 2>/dev/null || echo 0)
@@ -151,43 +147,209 @@ jobs:
             HIGH_COUNT=$((HIGH_COUNT + TI_HIGH))
           fi
 
-          # Simple Semgrep count
           if [ -f "$REPORT_DIR/semgrep.json" ]; then
             SG_FINDINGS=$(jq '.results | length' "$REPORT_DIR/semgrep.json" 2>/dev/null || echo 0)
           else
             SG_FINDINGS=0
           fi
 
-          echo "Critical vulns: $CRIT_COUNT"
-          echo "High vulns    : $HIGH_COUNT"
-          echo "Semgrep issues: $SG_FINDINGS"
+          echo "Critical vulns (all): $CRIT_COUNT"
+          echo "High vulns     (all): $HIGH_COUNT"
+          echo "Semgrep issues      : $SG_FINDINGS"
 
-          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            STATUS="❌ HIGH/CRITICAL vulnerabilities detected"
-          else
-            STATUS="✅ No HIGH/CRITICAL vulnerabilities found"
-          fi
+          echo "crit=$CRIT_COUNT" >> $GITHUB_OUTPUT
+          echo "high=$HIGH_COUNT" >> $GITHUB_OUTPUT
+          echo "semgrep=$SG_FINDINGS" >> $GITHUB_OUTPUT
+        id: sev_summary
 
-          if [ -n "$DISCORD_WEBHOOK" ]; then
-            CONTENT="Vuln Bank Security Scan → Critical: $CRIT_COUNT | High: $HIGH_COUNT | Semgrep: $SG_FINDINGS"
+      # ----------------------------------------
+      # 7. EPSS MODE:
+      #    - Enrich CVE dengan EPSS
+      #    - Auto GitHub Issues (priority queue)
+      #    - Fail pipeline hanya untuk
+      #      HIGH/CRITICAL dengan EPSS tinggi
+      # ----------------------------------------
+      - name: EPSS Prioritization + Auto GitHub Issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REPORT_DIR: ${{ env.REPORT_DIR }}
+        run: |
+          pip install requests
 
-            curl -X POST -H "Content-Type: application/json" \
-              -d "{\"content\": \"${STATUS}\n${CONTENT}\"}" \
-              "$DISCORD_WEBHOOK" || true
-          fi
+          python << 'PY'
+          import os, json, requests, textwrap, time
 
-          echo "## DevSecOps Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Critical: $CRIT_COUNT" >> "$GITHUB_STEP_SUMMARY"
-          echo "- High: $HIGH_COUNT" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Semgrep Findings: $SG_FINDINGS" >> "$GITHUB_STEP_SUMMARY"
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          TOKEN = os.environ["GITHUB_TOKEN"]
+          REPORT_DIR = os.environ.get("REPORT_DIR", "security-reports")
 
-          # Fail build kalau ada HIGH / CRITICAL
-          if [ "$CRIT_COUNT" -gt 0 ]; then
-            echo "Blocking deployment because CRITICAL vulnerabilities detected"
-            exit 1
-          fi
+          # Threshold EPSS (bisa lo tweak)
+          EPSS_THRESHOLD_HIGH = 0.50
+          EPSS_THRESHOLD_CRIT = 0.30
 
-          echo "High vulns found but allowed (lab mode). Deployment continues."
+          TRIVY_FILES = [
+              os.path.join(REPORT_DIR, "trivy-fs.json"),
+              os.path.join(REPORT_DIR, "trivy-image.json"),
+          ]
+
+          def load_trivy(path):
+              if not os.path.exists(path):
+                  return []
+              try:
+                  with open(path, "r") as f:
+                      data = json.load(f)
+              except Exception:
+                  return []
+              vulns = []
+              for result in data.get("Results", []):
+                  target = result.get("Target")
+                  for v in result.get("Vulnerabilities", []) or []:
+                      vulns.append({
+                          "cve": v.get("VulnerabilityID"),
+                          "severity": v.get("Severity"),
+                          "pkg": v.get("PkgName"),
+                          "installed": v.get("InstalledVersion"),
+                          "fixed": v.get("FixedVersion"),
+                          "title": v.get("Title") or v.get("Description"),
+                          "target": target,
+                      })
+              return vulns
+
+          all_vulns = []
+          for path in TRIVY_FILES:
+              all_vulns.extend(load_trivy(path))
+
+          # Filter hanya yang punya CVE ID
+          cves = sorted({v["cve"] for v in all_vulns if v.get("cve", "").startswith("CVE-")})
+          if not cves:
+              print("No CVEs found in Trivy reports, skip EPSS.")
+              raise SystemExit(0)
+
+          print(f"Found {len(cves)} CVEs from Trivy. Querying EPSS API...")
+
+          def fetch_epss(cve_list):
+              epss_map = {}
+              # batch biar nggak kepentok URL length
+              for i in range(0, len(cve_list), 50):
+                  chunk = cve_list[i:i+50]
+                  params = {"cve": ",".join(chunk)}
+                  resp = requests.get("https://api.first.org/data/v1/epss", params=params, timeout=15)
+                  if resp.status_code != 200:
+                      print("EPSS API error:", resp.status_code, resp.text[:200])
+                      continue
+                  data = resp.json()
+                  for row in data.get("data", []):
+                      try:
+                          epss_map[row["cve"]] = float(row["epss"])
+                      except Exception:
+                          continue
+                  time.sleep(1)  # kecilin rate
+              return epss_map
+
+          epss_scores = fetch_epss(cves)
+
+          # Join EPSS ke Trivy vulns
+          prioritized = []
+          for v in all_vulns:
+              cve = v.get("cve")
+              if not cve:
+                  continue
+              epss = epss_scores.get(cve, 0.0)
+              sev = (v.get("severity") or "").upper()
+              if sev not in ("HIGH", "CRITICAL"):
+                  continue
+              if sev == "HIGH" and epss < EPSS_THRESHOLD_HIGH:
+                  continue
+              if sev == "CRITICAL" and epss < EPSS_THRESHOLD_CRIT:
+                  continue
+              v["epss"] = epss
+              prioritized.append(v)
+
+          prioritized.sort(key=lambda x: x["epss"], reverse=True)
+
+          print(f"EPSS-prioritized vulns (HIGH/CRIT over threshold): {len(prioritized)}")
+
+          if not prioritized:
+              print("No HIGH/CRITICAL vulns above EPSS thresholds. Skipping issue creation.")
+              raise SystemExit(0)
+
+          session = requests.Session()
+          session.headers.update({
+              "Authorization": f"Bearer {TOKEN}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+
+          def issue_exists(cve):
+              q = f'repo:{REPO} "{cve}" in:title state:open'
+              r = session.get("https://api.github.com/search/issues", params={"q": q})
+              if r.status_code != 200:
+                  return False
+              data = r.json()
+              return data.get("total_count", 0) > 0
+
+          def create_issue(v):
+              cve = v["cve"]
+              sev = v["severity"].upper()
+              epss = v["epss"]
+              pkg = v.get("pkg")
+              target = v.get("target")
+
+              if issue_exists(cve):
+                  print(f"Issue already exists for {cve}, skip.")
+                  return
+
+              if epss >= 0.80:
+                  label_epss = "EPSS-CRITICAL"
+              elif epss >= 0.60:
+                  label_epss = "EPSS-HIGH"
+              elif epss >= 0.40:
+                  label_epss = "EPSS-MEDIUM"
+              else:
+                  label_epss = "EPSS-LOW"
+
+              title = f"[EPSS {epss:.2f}] {sev} - {cve} in {pkg or 'unknown package'}"
+              body = textwrap.dedent(f"""
+              🔐 **EPSS-prioritized vulnerability detected**
+
+              - **CVE**: {cve}
+              - **Severity**: {sev}
+              - **EPSS score**: `{epss:.4f}`
+              - **Package**: `{pkg or '-'}`
+              - **Installed version**: `{v.get('installed') or '-'}`
+              - **Fixed version**: `{v.get('fixed') or '-'}`
+              - **Target**: `{target or '-'}`
+
+              **Source**: Trivy security scan (CI pipeline).
+              **EPSS**: Exploit Prediction Scoring System — probability that this CVE will be exploited in the wild.
+              More info: https://www.first.org/epss/
+
+              👉 Recommended next steps:
+              1. Validate impact on Vuln Bank environment.
+              2. Plan upgrade / patch for the affected package.
+              3. Link this issue to related PR / change request.
+              """)
+
+              payload = {
+                  "title": title,
+                  "body": body,
+                  "labels": ["security", "devsecops", "trivy", label_epss, sev],
+              }
+
+              r = session.post(f"https://api.github.com/repos/{REPO}/issues", json=payload)
+              if r.status_code >= 300:
+                  print("Failed to create issue for", cve, "status:", r.status_code, r.text[:200])
+              else:
+                  print("Created issue for", cve, "→", r.json().get("html_url"))
+
+          for v in prioritized:
+              create_issue(v)
+
+          # Kalau ada EPSS-prioritized HIGH/CRIT → fail pipeline
+          print("Failing pipeline because EPSS-prioritized HIGH/CRITICAL vulns exist.")
+          raise SystemExit(1)
+          PY
 
   # =========================================================
   # JOB 2: DEPLOY – jalan di self-hosted runner (bastion-node)

@@ -1,0 +1,9 @@
+cis_skip_services:
+  - rpcbind
+  - telnet.socket
+  - tftp
+  - nfs-server
+  - vsftpd
+  - snmpd
+  - ypserv
+  - cups

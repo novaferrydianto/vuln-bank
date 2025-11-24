@@ -17,9 +17,9 @@
       ansible.builtin.command: >
         oscap xccdf eval
         --profile xccdf_org.ssgproject.content_profile_cis_server_l1
-        --results {{ result_xml }}
-        --report {{ result_html }}
-        {{ scap_data_path }}
+        --results /root/openscap-results.xml
+        --report /root/openscap-report.html
+        /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
       register: scan_result
       failed_when: scan_result.rc not in [0, 2]
 
@@ -41,17 +41,15 @@
     # -------------------------------------------------------------
     # 3. PARSE SCORE (LOCALHOST)
     # -------------------------------------------------------------
-    - name: Extract compliance score from XML
-      ansible.builtin.command: >
-        xmllint --xpath 'string(//TestResult/score)'
-        /tmp/scap_results/{{ inventory_hostname }}/openscap-results.xml
-      register: compliance_score_raw
-      delegate_to: localhost
+    - name: Extract compliance score
+      shell: |
+        xmllint --xpath "string(/Benchmark/test-result/rule-result/@compliance)" /root/openscap-results.xml
+      register: score
+      changed_when: false
 
-    - name: Convert score to usable float
-      ansible.builtin.set_fact:
-        final_compliance_score: "{{ compliance_score_raw.stdout | float | round(2) }}"
-      delegate_to: localhost
+    - name: Convert score
+      set_fact:
+        compliance_score: "{{ score.stdout | float * 100 }}"
 
     - name: Debug score type
       debug:
