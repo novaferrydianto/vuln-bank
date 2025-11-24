@@ -1,3 +1,4 @@
+# .github/workflows/devsecops-vulnbank.yml
 name: DevSecOps Vuln Bank
 
 on:
@@ -13,105 +14,104 @@ env:
   FULL_IMAGE: vulnbank-app:${{ github.sha }}
   REPORT_DIR: security-reports
 
+# =========================================================
+# JOB 1: SECURITY (CI) - jalan di ubuntu-latest (GitHub runner)
+# =========================================================
 jobs:
   security:
     name: DevSecOps Security Pipeline
-    runs-on: self-hosted   # ALL JOBS RUN ON BASTION
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Create reports directory
-        run: mkdir -p $REPORT_DIR
+        run: mkdir -p "$REPORT_DIR"
 
       # ----------------------------------------
       # 1. SECRET SCANNING (TruffleHog)
       # ----------------------------------------
-      - name: Install Trufflehog
-        run: |
-          sudo dnf install -y python3-pip
-          pip3 install trufflehog
+      - name: Install TruffleHog
+        run: pip install trufflehog
 
-      - name: Run Trufflehog
+      - name: Secret Scanning - TruffleHog
         run: |
           trufflehog filesystem . \
             --no-update \
             --only-verified \
-            --json > $REPORT_DIR/trufflehog.json || true
+            --json > "$REPORT_DIR/trufflehog.json" || true
 
       # ----------------------------------------
-      # 2. INSTALL TRIVY (Rocky/CentOS)
+      # 2. SCA + CONFIG + IMAGE SCAN (Trivy)
       # ----------------------------------------
-      - name: Install Trivy (RHEL/Rocky)
+      - name: Install Trivy (Official Script)
         run: |
-          sudo dnf install -y curl wget
-          sudo rpm --import https://get.trivy.dev/public.key
-          sudo tee /etc/yum.repos.d/trivy.repo << 'EOF'
-          [trivy]
-          name=Trivy Repository
-          baseurl=https://get.trivy.dev/rpm/releases/$basearch/
-          enabled=1
-          gpgcheck=1
-          gpgkey=https://get.trivy.dev/public.key
-          EOF
+          sudo apt-get update -y
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin
 
-          sudo dnf update -y
-          sudo dnf install -y trivy
-
-      - name: Trivy FS Scan
+      - name: Trivy FS (code + config)
         run: |
           trivy fs . \
             --security-checks vuln,config \
             --format json \
-            --output $REPORT_DIR/trivy-fs.json || true
+            --output "$REPORT_DIR/trivy-fs.json" || true
 
       - name: Build Docker Image
         run: |
-          docker build -t $FULL_IMAGE .
+          docker build -t "$FULL_IMAGE" .
 
       - name: Trivy Image Scan
         run: |
-          trivy image $FULL_IMAGE \
+          trivy image "$FULL_IMAGE" \
             --format json \
-            --output $REPORT_DIR/trivy-image.json || true
+            --output "$REPORT_DIR/trivy-image.json" || true
 
       # ----------------------------------------
       # 3. SAST (Semgrep)
       # ----------------------------------------
-      - name: Install Semgrep (pip)
-        run: pip3 install semgrep
+      - name: Install Semgrep
+        run: pip install semgrep
 
-      - name: Run Semgrep
+      - name: SAST Scan (Semgrep)
         run: |
           semgrep ci \
             --config auto \
-            --json > $REPORT_DIR/semgrep.json || true
+            --json > "$REPORT_DIR/semgrep.json" || true
 
       # ----------------------------------------
-      # 4. DAST (OWASP ZAP)
+      # 4. DAST (OWASP ZAP) – pakai GitHub Action resmi
       # ----------------------------------------
-      - name: Start app for DAST
+      - name: Start app with Docker Compose (for DAST)
         run: |
           docker compose down || true
           docker compose up -d
-          sleep 20
+          sleep 25
 
-      - name: Run ZAP Baseline Scan
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.13.0
+        with:
+          target: "http://host.docker.internal:5000"
+          cmd_options: "-a"
+          fail_action: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy ZAP reports
         run: |
-          docker run --rm --network host \
-            owasp/zap2docker-stable zap-baseline.py \
-              -t http://localhost:5000 \
-              -r zap-report.html \
-              -J zap-report.json || true
-          mv zap-report.html $REPORT_DIR/zap-report.html
-          mv zap-report.json $REPORT_DIR/zap-report.json
+          # action-baseline taruh report di ./zap.wrk/, kita pindah ke REPORT_DIR
+          if [ -d "zap.wrk" ]; then
+            mv zap.wrk/*.html "$REPORT_DIR/" 2>/dev/null || true
+            mv zap.wrk/*.json "$REPORT_DIR/" 2>/dev/null || true
+          fi
 
-      - name: Stop app
-        run: docker compose down || true
+      - name: Stop app after DAST
+        run: |
+          docker compose down || true
 
       # ----------------------------------------
-      # 5. Upload all reports
+      # 5. Upload laporan sebagai artifact
       # ----------------------------------------
       - name: Upload security reports
         uses: actions/upload-artifact@v4
@@ -120,44 +120,86 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
       # ----------------------------------------
-      # 6. Evaluate + Discord alert
+      # 6. Evaluate findings + Discord alert
       # ----------------------------------------
       - name: Evaluate findings & send alert
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          sudo dnf install -y jq
+          sudo apt-get install -y jq || true
 
-          CRIT=$(jq '.. | objects | select(.Severity=="CRITICAL") | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
-          HIGH=$(jq '.. | objects | select(.Severity=="HIGH") | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
+          CRIT_COUNT=0
+          HIGH_COUNT=0
 
-          echo "CRITICAL: $CRIT"
-          echo "HIGH    : $HIGH"
-
-          if [ "$DISCORD_WEBHOOK" != "" ]; then
-            curl -H "Content-Type: application/json" \
-              -d "{\"content\": \"Security Scan → CRITICAL: $CRIT | HIGH: $HIGH\"}" \
-              "$DISCORD_WEBHOOK"
+          # Trivy FS
+          if [ -f "$REPORT_DIR/trivy-fs.json" ]; then
+            TF_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT_DIR/trivy-fs.json" 2>/dev/null || echo 0)
+            TF_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT_DIR/trivy-fs.json" 2>/dev/null || echo 0)
+            CRIT_COUNT=$((CRIT_COUNT + TF_CRIT))
+            HIGH_COUNT=$((HIGH_COUNT + TF_HIGH))
           fi
 
-          if [ "$CRIT" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+          # Trivy Image
+          if [ -f "$REPORT_DIR/trivy-image.json" ]; then
+            TI_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT_DIR/trivy-image.json" 2>/dev/null || echo 0)
+            TI_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT_DIR/trivy-image.json" 2>/dev/null || echo 0)
+            CRIT_COUNT=$((CRIT_COUNT + TI_CRIT))
+            HIGH_COUNT=$((HIGH_COUNT + TI_HIGH))
+          fi
+
+          # Simple Semgrep count
+          if [ -f "$REPORT_DIR/semgrep.json" ]; then
+            SG_FINDINGS=$(jq '.results | length' "$REPORT_DIR/semgrep.json" 2>/dev/null || echo 0)
+          else
+            SG_FINDINGS=0
+          fi
+
+          echo "Critical vulns: $CRIT_COUNT"
+          echo "High vulns    : $HIGH_COUNT"
+          echo "Semgrep issues: $SG_FINDINGS"
+
+          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+            STATUS="❌ HIGH/CRITICAL vulnerabilities detected"
+          else
+            STATUS="✅ No HIGH/CRITICAL vulnerabilities found"
+          fi
+
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            CONTENT="Vuln Bank Security Scan → Critical: $CRIT_COUNT | High: $HIGH_COUNT | Semgrep: $SG_FINDINGS"
+
+            curl -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"${STATUS}\n${CONTENT}\"}" \
+              "$DISCORD_WEBHOOK" || true
+          fi
+
+          echo "## DevSecOps Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Critical: $CRIT_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- High: $HIGH_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Semgrep Findings: $SG_FINDINGS" >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail build kalau ada HIGH / CRITICAL
+          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+            echo "Breaking build due to HIGH/CRITICAL vulnerabilities"
             exit 1
           fi
 
+  # =========================================================
+  # JOB 2: DEPLOY – jalan di self-hosted runner (bastion-node)
+  # =========================================================
   deploy:
-    name: Deploy via Ansible (Bastion)
+    name: Deploy via Ansible (3-VM Lab)
     needs: security
     runs-on: self-hosted
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Ansible (Rocky)
+      - name: Ensure Ansible installed (Rocky / RHEL)
         run: |
-          sudo dnf install -y epel-release
-          sudo dnf install -y ansible python3-pip
+          sudo dnf install -y epel-release || true
+          sudo dnf install -y ansible python3-pip || true
 
       - name: Run Ansible site.yml
         working-directory: ansible
