@@ -39,11 +39,12 @@ jobs:
       # 1. Secret Scanning (TruffleHog) - FAIL-FAST ENFORCEMENT
       # -------------------------------------------------------------
       - name: Install TruffleHog (Official Binary)
-        # FIX: Mengganti pip install dengan instalasi binary resmi yang mendukung 'filesystem .'
+        # FIX: Update versi dan URL download
         run: |
-          # Mengunduh dan menginstal binary TruffleHog versi v3.42.0 untuk Linux
-          curl -sL https://github.com/trufflesecurity/trufflehog/releases/download/v3.42.0/trufflehog_3.42.0_Linux_x86_64.tar.gz | tar xz
-          sudo mv trufflehog /usr/local/bin/
+          TRUFFLEHOG_VERSION="3.74.0" # Menggunakan versi terbaru
+          # Mengunduh dan menginstal binary TruffleHog
+          curl -sL "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_Linux_x86_64.tar.gz" | sudo tar -xz -C /usr/local/bin/
+          sudo chmod +x /usr/local/bin/trufflehog
 
       - name: TruffleHog Scan (Wajib Lulus)
         # Menambahkan flag --fail agar proses eksis dengan error code jika secrets ditemukan
@@ -103,7 +104,6 @@ jobs:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
-          # DEEPSEEK_API_KEY tidak diinjeksikan karena tidak digunakan oleh aplikasi
         run: |
           docker compose down || true
           # Docker Compose akan mengambil secrets dari env yang disuntikkan di atas
@@ -262,19 +262,19 @@ jobs:
       # -------------------------------------------------------------
       # 7. Kirim Notifikasi Slack (Jika Ada Temuan Critical/High - Core Requirement)
       # -------------------------------------------------------------
-      #- name: Kirim Notifikasi Slack (Critical Alert)
-      #  if: ${{ steps.epss.outputs.critical_found == 'true' }} # Hanya jika ditemukan critical/high di langkah sebelumnya
-      #  uses: rtCamp/action-slack-notify@v2
-      #  env:
-      #    SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # Harus disetel di repo secrets
-      #    SLACK_COLOR: '#FF0000' # Merah
-      #    SLACK_TITLE: '🚨 URGENT: CRITICAL VULNERABILITY ALERT! 🚨'
-      #    SLACK_MESSAGE: 'Vuln Bank Security Pipeline mendeteksi temuan **CRITICAL** (SCA/DAST/Misconfig) di commit ${{ github.sha }}. Laporan lengkap tersedia di Artifacts. Segera cek GitHub Issues yang telah dibuat.'
-      #    SLACK_USERNAME: 'DevSecOps Bot'
-      #    SLACK_ICON_EMOJI: ':warning:'
-      #    SLACK_FOOTER: 'Pipeline Run ID: ${{ github.run_id }}'
-      #    SLACK_CHANNEL: '#security-alert' # Ganti dengan channel Anda
-      #    SLACK_LINK_NAMES: true
+      - name: Kirim Notifikasi Slack (Critical Alert)
+        if: ${{ steps.epss.outputs.critical_found == 'true' }} # Hanya jika ditemukan critical/high di langkah sebelumnya
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # Harus disetel di repo secrets
+          SLACK_COLOR: '#FF0000' # Merah
+          SLACK_TITLE: '🚨 URGENT: CRITICAL VULNERABILITY ALERT! 🚨'
+          SLACK_MESSAGE: 'Vuln Bank Security Pipeline mendeteksi temuan **CRITICAL** (SCA/DAST/Misconfig) di commit ${{ github.sha }}. Laporan lengkap tersedia di Artifacts. Segera cek GitHub Issues yang telah dibuat.'
+          SLACK_USERNAME: 'DevSecOps Bot'
+          SLACK_ICON_EMOJI: ':warning:'
+          SLACK_FOOTER: 'Pipeline Run ID: ${{ github.run_id }}'
+          SLACK_CHANNEL: '#security-alert' # Ganti dengan channel Anda
+          SLACK_LINK_NAMES: true
 
   # =========================================================
   # JOB 2: DEPLOY (SELF-HOSTED) - Hanya berjalan jika SECURITY PASS
