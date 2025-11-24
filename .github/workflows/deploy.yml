@@ -16,7 +16,7 @@ env:
 jobs:
   security:
     name: DevSecOps Security Pipeline
-    runs-on: ubuntu-latest   # GANTI INI! CI HARUS JALAN DI UBUNTU
+    runs-on: self-hosted   # ALL JOBS RUN ON BASTION
 
     steps:
       - name: Checkout repository
@@ -26,12 +26,14 @@ jobs:
         run: mkdir -p $REPORT_DIR
 
       # ----------------------------------------
-      # 1. SECRET SCANNING
+      # 1. SECRET SCANNING (TruffleHog)
       # ----------------------------------------
-      - name: Install TruffleHog
-        run: pip install trufflehog
+      - name: Install Trufflehog
+        run: |
+          sudo dnf install -y python3-pip
+          pip3 install trufflehog
 
-      - name: Run TruffleHog
+      - name: Run Trufflehog
         run: |
           trufflehog filesystem . \
             --no-update \
@@ -39,14 +41,25 @@ jobs:
             --json > $REPORT_DIR/trufflehog.json || true
 
       # ----------------------------------------
-      # 2. INSTALL TRIVY
+      # 2. INSTALL TRIVY (Rocky/CentOS)
       # ----------------------------------------
-      - name: Install Trivy (Official Install Script)
+      - name: Install Trivy (RHEL/Rocky)
         run: |
-          sudo apt-get update -y
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          sudo dnf install -y curl wget
+          sudo rpm --import https://get.trivy.dev/public.key
+          sudo tee /etc/yum.repos.d/trivy.repo << 'EOF'
+          [trivy]
+          name=Trivy Repository
+          baseurl=https://get.trivy.dev/rpm/releases/$basearch/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://get.trivy.dev/public.key
+          EOF
 
-      - name: Trivy FS
+          sudo dnf update -y
+          sudo dnf install -y trivy
+
+      - name: Trivy FS Scan
         run: |
           trivy fs . \
             --security-checks vuln,config \
@@ -54,7 +67,8 @@ jobs:
             --output $REPORT_DIR/trivy-fs.json || true
 
       - name: Build Docker Image
-        run: docker build -t $FULL_IMAGE .
+        run: |
+          docker build -t $FULL_IMAGE .
 
       - name: Trivy Image Scan
         run: |
@@ -63,17 +77,19 @@ jobs:
             --output $REPORT_DIR/trivy-image.json || true
 
       # ----------------------------------------
-      # 3. SAST (SEMGREP)
+      # 3. SAST (Semgrep)
       # ----------------------------------------
-      - name: Install Semgrep
-        run: pip install semgrep
+      - name: Install Semgrep (pip)
+        run: pip3 install semgrep
 
       - name: Run Semgrep
         run: |
-          semgrep ci --config auto --json > $REPORT_DIR/semgrep.json || true
+          semgrep ci \
+            --config auto \
+            --json > $REPORT_DIR/semgrep.json || true
 
       # ----------------------------------------
-      # 4. DAST (ZAP)
+      # 4. DAST (OWASP ZAP)
       # ----------------------------------------
       - name: Start app for DAST
         run: |
@@ -81,7 +97,7 @@ jobs:
           docker compose up -d
           sleep 20
 
-      - name: Run ZAP Baseline
+      - name: Run ZAP Baseline Scan
         run: |
           docker run --rm --network host \
             owasp/zap2docker-stable zap-baseline.py \
@@ -95,7 +111,7 @@ jobs:
         run: docker compose down || true
 
       # ----------------------------------------
-      # 5. UPLOAD REPORTS
+      # 5. Upload all reports
       # ----------------------------------------
       - name: Upload security reports
         uses: actions/upload-artifact@v4
@@ -104,13 +120,14 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
       # ----------------------------------------
-      # 6. EVALUATE + DISCORD ALERT
+      # 6. Evaluate + Discord alert
       # ----------------------------------------
       - name: Evaluate findings & send alert
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          sudo apt-get install -y jq
+          sudo dnf install -y jq
+
           CRIT=$(jq '.. | objects | select(.Severity=="CRITICAL") | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
           HIGH=$(jq '.. | objects | select(.Severity=="HIGH") | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
 
@@ -119,7 +136,7 @@ jobs:
 
           if [ "$DISCORD_WEBHOOK" != "" ]; then
             curl -H "Content-Type: application/json" \
-              -d "{\"content\": \"Security Scan Result → CRITICAL: $CRIT | HIGH: $HIGH\"}" \
+              -d "{\"content\": \"Security Scan → CRITICAL: $CRIT | HIGH: $HIGH\"}" \
               "$DISCORD_WEBHOOK"
           fi
 
@@ -137,12 +154,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Ansible (Rocky/CentOS)
+      - name: Install Ansible (Rocky)
         run: |
           sudo dnf install -y epel-release
           sudo dnf install -y ansible python3-pip
 
-      - name: Run Ansible
+      - name: Run Ansible site.yml
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
