@@ -160,9 +160,12 @@ jobs:
           REPORT_DIR: ${{ env.REPORT_DIR }}
         run: |
           pip install requests
+
           python << 'PY'
-(isi python EPSS kamu tetap sama — aman)  
-PY
+          # --- isi script EPSS kamu di sini ---
+          # (tetap sama seperti sebelumnya)
+          # ...
+          PY
 
   # =========================================================
   # JOB 2: DEPLOY (SELF-HOSTED)
