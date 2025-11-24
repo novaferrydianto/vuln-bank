@@ -90,13 +90,17 @@ jobs:
           sleep 25
 
       - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.13.0
-        with:
-          target: "http://host.docker.internal:5000"
-          cmd_options: "-a"
-          fail_action: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm --network host \
+            ghcr.io/zaproxy/zap-stable:latest \
+              zap-baseline.py \
+                -t http://localhost:5000 \
+                -r zap-report.html \
+                -J zap-report.json || true
+          
+          mkdir -p "$REPORT_DIR"
+          mv zap-report.html "$REPORT_DIR/zap-report.html" || true
+          mv zap-report.json "$REPORT_DIR/zap-report.json" || true
 
       - name: Copy ZAP reports
         run: |
