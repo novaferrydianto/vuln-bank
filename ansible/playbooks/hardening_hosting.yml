@@ -1,20 +1,11 @@
+# playbooks/hardening_balanced.yml
 ---
-- name: Apply CIS Hardening (OS Baseline) to all nodes
-  hosts: all
+- name: Apply CIS Balanced Pack (85–90%) to all nodes
+  hosts: bastion, db, hosting
   become: true
-  gather_facts: true
 
-  tags:
-    - cis
-    - hardening
-    - baseline
+  vars_files:
+    - ../roles/cis_hardening/vars/practical_exclusions_balanced.yml
 
   roles:
     - role: cis_hardening
-      tags: cis
-
-  handlers:
-    - name: restart sshd
-      ansible.builtin.service:
-        name: sshd
-        state: restarted

@@ -1,21 +1,29 @@
 ---
-# roles/cis_hardening/tasks/ssh.yml
-
 - name: Disable root SSH login
-  ansible.builtin.lineinfile:
+  lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^PermitRootLogin'
     line: 'PermitRootLogin no'
-    state: present
 
-- name: Enforce SSH protocol 2
-  ansible.builtin.lineinfile:
+- name: Enforce Protocol 2
+  lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^Protocol'
     line: 'Protocol 2'
-    state: present
 
-- name: Validate SSH config syntax before restart
-  ansible.builtin.command: sshd -t
-  changed_when: false
-  notify: restart_sshd
+- name: Disable empty passwords
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^PermitEmptyPasswords'
+    line: 'PermitEmptyPasswords no'
+
+- name: Disable X11 forwarding
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^X11Forwarding'
+    line: 'X11Forwarding no'
+
+- name: Restart SSH
+  service:
+    name: sshd
+    state: restarted

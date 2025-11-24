@@ -1,0 +1,25 @@
+---
+- name: Enforce password minimum length 12
+  lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^minlen'
+    line: 'minlen = 12'
+
+- name: Set password complexity (min 1 upper, lower, digit)
+  blockinfile:
+    path: /etc/security/pwquality.conf
+    block: |
+      ucredit = -1
+      lcredit = -1
+      dcredit = -1
+
+- name: Enable account lockout after 5 failed logins
+  copy:
+    dest: /etc/security/faillock.conf
+    content: |
+      deny = 5
+      unlock_time = 900
+      fail_interval = 900
+
+- name: Password max days (mild)
+  command: chage --maxdays 90 root

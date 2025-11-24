@@ -1,59 +1,39 @@
 ---
-# Disable unnecessary / risky services based on CIS Benchmark
-
-- name: Ensure avahi-daemon is disabled
-  ansible.builtin.service:
+- name: Disable avahi-daemon
+  systemd:
     name: avahi-daemon
-    enabled: no
+    enabled: false
     state: stopped
-  ignore_errors: true
 
-- name: Ensure cups is disabled
-  ansible.builtin.service:
+- name: Disable cups
+  systemd:
     name: cups
-    enabled: no
+    enabled: false
     state: stopped
-  ignore_errors: true
 
-- name: Ensure rpcbind is disabled
-  ansible.builtin.service:
+- name: Disable rpcbind
+  systemd:
     name: rpcbind
-    enabled: no
+    enabled: false
     state: stopped
   ignore_errors: true
 
-- name: Ensure telnet is disabled
-  ansible.builtin.service:
+- name: Disable telnet
+  systemd:
     name: telnet.socket
-    enabled: no
+    enabled: false
     state: stopped
   ignore_errors: true
 
-- name: Ensure tftp is disabled
-  ansible.builtin.service:
+- name: Disable tftp
+  systemd:
     name: tftp
-    enabled: no
+    enabled: false
     state: stopped
   ignore_errors: true
 
-- name: Ensure nfs-server is disabled
-  ansible.builtin.service:
-    name: nfs-server
-    enabled: no
-    state: stopped
-  ignore_errors: true
-
-- name: Ensure chronyd is enabled (CIS recommended)
-  ansible.builtin.service:
+- name: Ensure chronyd enabled
+  systemd:
     name: chronyd
-    enabled: yes
+    enabled: true
     state: started
-
-- name: Validate failed services
-  ansible.builtin.command: systemctl --failed
-  changed_when: false
-  register: failed_services
-
-- name: Debug failed services
-  ansible.builtin.debug:
-    var: failed_services.stdout

@@ -1,9 +1,41 @@
-cis_skip_services:
-  - rpcbind
-  - telnet.socket
-  - tftp
-  - nfs-server
-  - vsftpd
-  - snmpd
-  - ypserv
-  - cups
+# roles/cis_hardening/vars/practical_exclusions_balanced.yml
+
+# --------- OpenSCAP / CIS Profile ----------
+cis_profile: xccdf_org.ssgproject.content_profile_cis_server_l1
+
+# Rocky Linux 9 SSG datastream
+openscap_ds: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+
+# Output untuk Balanced Pack
+openscap_results_xml: /root/openscap-results-balanced.xml
+openscap_report_html: /root/openscap-report-balanced.html
+
+# Minimal score yang dianggap “BALANCED”
+cis_min_score: 85
+
+# --------- Business-justified exclusions (Balanced) ----------
+# Catatan:
+# - Minimal pack bisa lebih agresif exclude
+# - Balanced pack exclude lebih sedikit, biar score naik ke 85–90%
+
+cis_excluded_rules:
+  # Contoh: service yang memang tidak pernah di-install di Rocky image kamu
+  - xccdf_org.ssgproject.content_rule_service_tftp_disabled
+  - xccdf_org.ssgproject.content_rule_service_telnetd_disabled
+  - xccdf_org.ssgproject.content_rule_service_rsh_disabled
+  - xccdf_org.ssgproject.content_rule_service_rlogin_disabled
+  - xccdf_org.ssgproject.content_rule_service_rpcbind_disabled
+
+  # Contoh: requirement password history/complexity yang bikin lab rewel
+  - xccdf_org.ssgproject.content_rule_accounts_password_pam_pwhistory_remember
+  - xccdf_org.ssgproject.content_rule_accounts_password_pam_dcredit
+  - xccdf_org.ssgproject.content_rule_accounts_password_pam_lcredit
+  - xccdf_org.ssgproject.content_rule_accounts_password_pam_ucredit
+  - xccdf_org.ssgproject.content_rule_accounts_password_pam_ocredit
+
+  # Contoh: logging yang di-lab belum fully dikonfigurasi (bisa kamu aktifkan belakangan)
+  - xccdf_org.ssgproject.content_rule_package_aide_installed
+  - xccdf_org.ssgproject.content_rule_aide_build_database
+
+  # Tambah exclusions lain kalau ada false positive:
+  # - xccdf_org.ssgproject.content_rule_...

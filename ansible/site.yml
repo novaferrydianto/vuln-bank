@@ -1,36 +1,16 @@
 # ansible/site.yml
 ---
-# ================================================
-# 1. Setup Bastion Node (optional)
-# ================================================
+# 1. Infra & docker base
 - import_playbook: playbooks/setup_bastion.yml
-
-# ================================================
-# 2. Setup DB Node (PostgreSQL 16 + Schema VulnBank)
-# ================================================
 - import_playbook: playbooks/setup_db.yml
-
-# ================================================
-# 3. Setup Hosting Node (Docker + Docker Compose)
-# ================================================
 - import_playbook: playbooks/setup_hosting.yml
+- import_playbook: playbooks/setup_monitoring.yml
 
-# ================================================
-# 4. Hardening Server (CIS Benchmark + OpenSCAP)
-# ================================================
-- import_playbook: playbooks/hardening_hosting.yml
+# 2. CIS Hardening — Balanced Pack
+- import_playbook: playbooks/hardening_balanced.yml
 
-# ================================================
-# 5. Verifikasi hasil OpenSCAP (Report + Compliance)
-# ================================================
+# 3. Verify CIS score via OpenSCAP (pakai cis_min_score dari vars)
 - import_playbook: playbooks/verify_openscap.yml
 
-# ================================================
-# 6. Deploy Vuln Bank App (pull repo / rsync + docker compose up)
-# ================================================
+# 4. Deploy app
 - import_playbook: playbooks/deploy_app.yml
-
-# ================================================
-# 7. Monitoring v4 (Prometheus + Grafana + Exporters)
-# ================================================
-- import_playbook: playbooks/setup_monitoring.yml

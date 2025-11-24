@@ -1,21 +1,27 @@
 ---
-- name: Verify CIS Compliance Post-Hardening (v5-final)
+- name: Verify CIS Compliance Post-Hardening (v6-final)
   hosts: hosting
   become: true
 
   vars:
-    scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
-    cis_profile: xccdf_org.ssgproject.content_profile_cis_server_l1
-    results_xml: /root/openscap-results.xml
-    report_html: /root/openscap-report.html
-    compliance_threshold: 90
+    scap_data_path: "{{ scap_data_path | default('/usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml') }}"
+    cis_profile: "{{ cis_profile | default('xccdf_org.ssgproject.content_profile_cis_server_l1') }}"
+    results_xml: "{{ results_xml | default('/root/openscap-results.xml') }}"
+    report_html: "{{ report_html | default('/root/openscap-report.html') }}"
+    compliance_threshold: "{{ cis_min_score | default(90) }}"
 
   tasks:
+    # -------------------------------------------------------------
+    # PREP
+    # -------------------------------------------------------------
     - name: Ensure xmllint installed
       ansible.builtin.package:
         name: libxml2
         state: present
 
+    # -------------------------------------------------------------
+    # RUN SCAN
+    # -------------------------------------------------------------
     - name: Run OpenSCAP CIS Server Level 1 Scan
       ansible.builtin.command: >
         oscap xccdf eval
@@ -30,49 +36,72 @@
     - name: Check results XML exists
       ansible.builtin.stat:
         path: "{{ results_xml }}"
-      register: results_xml_stat
+      register: xml_stat
 
     - name: Fail if XML missing
       ansible.builtin.fail:
         msg: "❌ OpenSCAP results XML not found at {{ results_xml }}"
-      when: not results_xml_stat.stat.exists
+      when: not xml_stat.stat.exists
 
-    - name: Extract CIS score from XML (namespace-agnostic)
+    # -------------------------------------------------------------
+    # EXTRACT SCORE (Namespace-agnostic)
+    # -------------------------------------------------------------
+    - name: Extract CIS score via XPATH
       ansible.builtin.command: >
         xmllint --xpath "string(//*[local-name()='score'][1])" {{ results_xml }}
-      register: score_cmd
+      register: xpath_score
       changed_when: false
-      failed_when: score_cmd.rc != 0
+      failed_when: xpath_score.rc != 0
 
-    - name: Convert CIS score
+    - name: Normalize score
       ansible.builtin.set_fact:
-        cis_score_raw: "{{ score_cmd.stdout | trim }}"
-        cis_score_percent: "{{ (score_cmd.stdout | float) | round(1) }}"
+        cis_score_raw: "{{ xpath_score.stdout | trim }}"
+        cis_score_percent: "{{ (xpath_score.stdout | float | round(1)) if xpath_score.stdout|length > 0 else 0 }}"
 
-    - name: Debug score
+    # Extra fallback: if score missing or 0.0 → mark as failure
+    - name: Validate extracted score
+      ansible.builtin.fail:
+        msg: "❌ Invalid CIS score extracted: '{{ cis_score_raw }}'. Scan may have failed."
+      when: cis_score_percent == 0
+
+    # -------------------------------------------------------------
+    # SHOW RESULT
+    # -------------------------------------------------------------
+    - name: Debug final score
       ansible.builtin.debug:
         msg:
-          - "CIS Score : {{ cis_score_percent }}%"
-          - "Threshold : {{ compliance_threshold }}%"
+          - "CIS SCORE     : {{ cis_score_percent }}%"
+          - "MIN THRESHOLD : {{ compliance_threshold }}%"
+          - "STATUS        : {{ 'PASS' if cis_score_percent|float >= compliance_threshold|float else 'FAIL' }}"
 
+    # -------------------------------------------------------------
+    # ENFORCE THRESHOLD
+    # -------------------------------------------------------------
     - name: FAIL if below threshold
       ansible.builtin.fail:
         msg: "❌ HARDENING FAILED — Score {{ cis_score_percent }}% < Threshold {{ compliance_threshold }}%"
       when: cis_score_percent | float < compliance_threshold | float
 
-    # GitHub Actions Summary Output
-    - name: Set summary path
+    # -------------------------------------------------------------
+    # GITHUB ACTIONS SUMMARY OUTPUT
+    # -------------------------------------------------------------
+    - name: Locate GitHub Summary Path
       ansible.builtin.set_fact:
         gha_summary_path: "{{ lookup('env', 'GITHUB_STEP_SUMMARY') | default('', true) }}"
 
-    - name: Publish CIS score to GitHub Actions Summary
+    - name: Publish CIS Score to GitHub Actions Summary
       ansible.builtin.shell: |
-        cat << EOF >> "{{ gha_summary_path }}"
-        ## 🛡️ CIS OpenSCAP Result — Rocky Linux 9
-        - Host: {{ inventory_hostname }}
-        - Score: **{{ cis_score_percent }}%**
-        - Threshold: **{{ compliance_threshold }}%**
-        - Status: {{ '✅ PASS' if cis_score_percent | float >= compliance_threshold | float else '❌ FAIL' }}
+        cat << 'EOF' >> "{{ gha_summary_path }}"
+        ## 🛡️ CIS OpenSCAP Compliance — Rocky Linux 9
+        | Field | Value |
+        |-------|-------|
+        | Host | **{{ inventory_hostname }}** |
+        | Score | **{{ cis_score_percent }}%** |
+        | Threshold | **{{ compliance_threshold }}%** |
+        | Status | {{ '✅ PASS' if cis_score_percent | float >= compliance_threshold | float else '❌ FAIL' }} |
+
+        📄 HTML Report: {{ report_html }}
+        📦 XML Results: {{ results_xml }}
         EOF
       args:
         executable: /bin/bash

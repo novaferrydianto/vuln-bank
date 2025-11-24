@@ -1,0 +1,15 @@
+---
+- name: Enable auditd
+  systemd:
+    name: auditd
+    enabled: true
+    state: started
+
+- name: Enable minimal audit rules
+  copy:
+    dest: /etc/audit/rules.d/cis.rules
+    content: |
+      -w /etc/passwd -p wa -k passwd_changes
+      -w /etc/shadow -p wa -k shadow_changes
+      -w /etc/group -p wa -k group_changes
+      -w /etc/sudoers -p wa -k sudo_changes
