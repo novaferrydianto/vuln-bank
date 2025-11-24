@@ -52,8 +52,9 @@
     - name: FAIL if Compliance Score is below threshold
       ansible.builtin.fail:
         msg: "❌ HARDENING FAILED! Compliance score ({{ final_compliance_score }}%) is below requirement ({{ compliance_threshold }}%)."
-      when: final_compliance_score < compliance_threshold
-      delegate_to: localhost
+      # 🚨 PERBAIKAN: Terapkan filter float pada kedua sisi perbandingan
+      when: final_compliance_score | float < compliance_threshold | float
+      delegate_to: bastion-node
       run_once: true
 
     - name: SUCCESS — Allow deployment
