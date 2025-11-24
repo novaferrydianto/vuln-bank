@@ -97,7 +97,10 @@ jobs:
       - name: ZAP Baseline
         run: |
           mkdir -p zap
+          chmod 777 zap
+
           docker run --rm \
+            --user 0:0 \
             --network ${{ steps.net.outputs.network }} \
             -v "$(pwd)/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
@@ -105,8 +108,19 @@ jobs:
             -J zap-report.json \
             -r zap-report.html || true
 
-          mv zap/zap-report.json "$REPORT_DIR/zap-report.json"
-          mv zap/zap-report.html "$REPORT_DIR/zap-report.html"
+          # safe copy json
+          if [ -f zap/zap-report.json ]; then
+            mv zap/zap-report.json "$REPORT_DIR/zap-report.json"
+          else
+            echo "{}" > "$REPORT_DIR/zap-report.json"
+          fi
+
+          # safe copy html
+          if [ -f zap/zap-report.html ]; then
+            mv zap/zap-report.html "$REPORT_DIR/zap-report.html"
+          else
+            echo "<h2>ZAP did not generate report</h2>" > "$REPORT_DIR/zap-report.html"
+          fi
 
       - run: docker compose down || true
 
