@@ -1,4 +1,4 @@
-# playbooks/hardening_balanced.yml
+# playbooks/hardening_hosting.yml
 ---
 - name: Apply CIS Balanced Pack (85–90%) to all nodes
   hosts: bastion, db, hosting
