@@ -32,36 +32,36 @@ jobs:
       - name: Create reports directory
         run: mkdir -p "$REPORT_DIR"
 
-      # ----------------------------------------
-      # 1. SECRET SCANNING
-      # ----------------------------------------
+      # -------------------------------------------------------------
+      # 1. Secret Scanning (TruffleHog)
+      # -------------------------------------------------------------
       - name: Install TruffleHog
         run: pip install trufflehog
 
-      - name: Secret Scanning - TruffleHog
+      - name: TruffleHog Scan
         run: |
           trufflehog filesystem . \
             --no-update \
             --only-verified \
             --json > "$REPORT_DIR/trufflehog.json" || true
 
-      # ----------------------------------------
-      # 2. SCA + IMAGE SCAN (Trivy)
-      # ----------------------------------------
+      # -------------------------------------------------------------
+      # 2. Trivy SCA / Config Scan
+      # -------------------------------------------------------------
       - name: Install Trivy
         run: |
           sudo apt-get update -y
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sudo sh -s -- -b /usr/local/bin
 
-      - name: Trivy FS
+      - name: Trivy FS Scan
         run: |
           trivy fs . \
             --security-checks vuln,config \
             --format json \
             --output "$REPORT_DIR/trivy-fs.json" || true
 
-      - name: Build Docker Image (for DAST + image scan)
+      - name: Build image for scan
         run: docker build -t "$FULL_IMAGE" .
 
       - name: Trivy Image Scan
@@ -70,32 +70,31 @@ jobs:
             --format json \
             --output "$REPORT_DIR/trivy-image.json" || true
 
-      # ----------------------------------------
+      # -------------------------------------------------------------
       # 3. SAST (Semgrep)
-      # ----------------------------------------
+      # -------------------------------------------------------------
       - name: Install Semgrep
         run: pip install semgrep
 
-      - name: SAST Scan
+      - name: Semgrep Scan
         run: |
           semgrep ci --config auto \
             --json > "$REPORT_DIR/semgrep.json" || true
 
-      # ----------------------------------------
+      # -------------------------------------------------------------
       # 4. DAST (OWASP ZAP)
-      # ----------------------------------------
+      # -------------------------------------------------------------
       - name: Start app with Docker Compose
         run: |
           docker compose down || true
           docker compose up -d
-          sleep 20
+          sleep 15
 
-      - name: Detect Docker network dynamically
+      - name: Detect network dynamically
         id: net
         run: |
-          NET=$(docker network ls --format '{{.Name}}' | grep vulnnet | head -n 1)
+          NET=$(docker network ls --format '{{.Name}}' | grep vuln | head -n 1)
           echo "network=$NET" >> $GITHUB_OUTPUT
-          echo "Detected network: $NET"
 
       - name: ZAP Baseline Scan
         run: |
@@ -108,52 +107,25 @@ jobs:
               -J zap-report.json \
               -r zap-report.html || true
 
-          mv zap/zap-report.json $REPORT_DIR/zap-report.json || true
-          mv zap/zap-report.html $REPORT_DIR/zap-report.html || true
+          mv zap/zap-report.json "$REPORT_DIR/zap-report.json" || true
+          mv zap/zap-report.html "$REPORT_DIR/zap-report.html" || true
 
-      - name: Stop app after DAST
+      - name: Stop app
         run: docker compose down || true
 
-      # ----------------------------------------
+      # -------------------------------------------------------------
       # 5. Upload reports
-      # ----------------------------------------
+      # -------------------------------------------------------------
       - name: Upload security reports
         uses: actions/upload-artifact@v4
         with:
           name: vuln-bank-security-reports
           path: ${{ env.REPORT_DIR }}
 
-      # ----------------------------------------
-      # 6. Severity Summary (NO FAIL)
-      # ----------------------------------------
-      - name: Summary (severity-only)
-        id: sev_summary
-        run: |
-          sudo apt-get install -y jq || true
-
-          CRIT=0
-          HIGH=0
-
-          if [ -f "$REPORT_DIR/trivy-fs.json" ]; then
-            CRIT=$((CRIT + $(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT_DIR/trivy-fs.json")))
-            HIGH=$((HIGH + $(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT_DIR/trivy-fs.json")))
-          fi
-
-          if [ -f "$REPORT_DIR/trivy-image.json" ]; then
-            CRIT=$((CRIT + $(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT_DIR/trivy-image.json")))
-            HIGH=$((HIGH + $(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT_DIR/trivy-image.json")))
-          fi
-
-          SEMGREP=$(jq '.results | length' "$REPORT_DIR/semgrep.json" 2>/dev/null || echo 0)
-
-          echo "crit=$CRIT" >> $GITHUB_OUTPUT
-          echo "high=$HIGH" >> $GITHUB_OUTPUT
-          echo "semgrep=$SEMGREP" >> $GITHUB_OUTPUT
-
-      # ----------------------------------------
-      # 7. EPSS MODE — enrichment + auto GitHub Issues
-      # ----------------------------------------
-      - name: EPSS Prioritization + Auto GitHub Issues
+      # -------------------------------------------------------------
+      # 6. EPSS MODE v1 (Clean)
+      # -------------------------------------------------------------
+      - name: EPSS Scoring + Auto GitHub Issues
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -162,9 +134,100 @@ jobs:
           pip install requests
 
           python << 'PY'
-          # --- isi script EPSS kamu di sini ---
-          # (tetap sama seperti sebelumnya)
-          # ...
+          import json
+          import os
+          import requests
+
+          REPO = os.getenv("GITHUB_REPOSITORY")
+          TOKEN = os.getenv("GITHUB_TOKEN")
+          REPORT_DIR = os.getenv("REPORT_DIR")
+          HEADERS = {"Authorization": f"token {TOKEN}"}
+
+          # ---------------------------------------------------
+          # Create GitHub Issue
+          # ---------------------------------------------------
+          def create_issue(title, body):
+              url = f"https://api.github.com/repos/{REPO}/issues"
+              resp = requests.post(url, json={"title": title, "body": body}, headers=HEADERS)
+              if resp.status_code >= 300:
+                  print(f"[ERROR] Issue creation failed: {resp.text}")
+              else:
+                  print(f"[ISSUE CREATED] {title}")
+
+          # ---------------------------------------------------
+          # EPSS Fetch
+          # ---------------------------------------------------
+          def fetch_epss(cve_id):
+              try:
+                  url = f"https://api.first.org/data/v1/epss?cve={cve_id}"
+                  res = requests.get(url, timeout=10).json()
+                  if res.get("data"):
+                      return res["data"][0].get("epss")
+              except Exception as e:
+                  print(f"[ERROR] EPSS fetch failed for {cve_id}: {e}")
+              return None
+
+          # ---------------------------------------------------
+          # Load Trivy JSON
+          # ---------------------------------------------------
+          def load_trivy(path):
+              if not os.path.isfile(path):
+                  return []
+              with open(path) as f:
+                  try:
+                      data = json.load(f)
+                  except:
+                      print(f"[ERROR] JSON decode failed: {path}")
+                      return []
+              vulns = []
+              for result in data.get("Results", []):
+                  for v in result.get("Vulnerabilities", []):
+                      if v.get("Severity") in ("CRITICAL", "HIGH"):
+                          vulns.append(v)
+              return vulns
+
+          # ---------------------------------------------------
+          # Process & Create Issues
+          # ---------------------------------------------------
+          def process_vulns(vulns):
+              for v in vulns:
+                  cve = v.get("VulnerabilityID")
+                  epss = fetch_epss(cve)
+
+                  title = f"[EPSS] {cve} — {v.get('Severity')}"
+                  body = f"""
+          ### 📌 Vulnerability Identified
+          - **CVE:** `{cve}`
+          - **Package:** `{v.get('PkgName')}`
+          - **Installed:** `{v.get('InstalledVersion')}`
+          - **Fixed:** `{v.get('FixedVersion')}`
+          - **Severity:** `{v.get('Severity')}`
+          - **EPSS Score:** `{epss}`
+          - **URL:** {v.get('PrimaryURL')}
+          - **Target:** {v.get('Target')}
+
+          ### 🧠 EPSS Meaning
+          EPSS > **0.50** → High probability of exploit within 30 days.
+
+          ### 🛠 Recommendation
+          - Update to fixed version ASAP.
+          - Add compensating controls (WAF/OPA/Kyverno).
+          - Audit container layers related to this package.
+          """
+                  create_issue(title, body)
+
+          paths = [
+              f"{REPORT_DIR}/trivy-fs.json",
+              f"{REPORT_DIR}/trivy-image.json",
+          ]
+
+          vulns = []
+          for p in paths:
+              vulns.extend(load_trivy(p))
+
+          print(f"[INFO] {len(vulns)} high/critical vulns detected.")
+          process_vulns(vulns)
+          print("[DONE] EPSS enrichment complete.")
           PY
 
   # =========================================================
