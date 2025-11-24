@@ -53,13 +53,13 @@
       ansible.builtin.fail:
         msg: "❌ HARDENING FAILED! Compliance score ({{ final_compliance_score }}%) is below requirement ({{ compliance_threshold }}%)."
       # 🚨 PERBAIKAN: Terapkan filter float pada kedua sisi perbandingan
-      when: final_compliance_score | float < compliance_threshold | float
+      when: (final_compliance_score | float) < (compliance_threshold | float)
       delegate_to: bastion-node
       run_once: true
 
     - name: SUCCESS — Allow deployment
       ansible.builtin.debug:
         msg: "✅ SECURITY GATE PASSED — Score: {{ final_compliance_score }}%. Proceeding..."
-      when: final_compliance_score >= compliance_threshold
+      when: (final_compliance_score | float) >= (compliance_threshold | float)
       delegate_to: localhost
       run_once: true
