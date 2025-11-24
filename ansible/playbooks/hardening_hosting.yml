@@ -1,16 +1,20 @@
 ---
-- name: Apply CIS Hardening to all nodes
+- name: Apply CIS Hardening (OS Baseline) to all nodes
   hosts: all
   become: true
+  gather_facts: true
+
+  tags:
+    - cis
+    - hardening
+    - baseline
 
   roles:
-    - cis_hardening
+    - role: cis_hardening
+      tags: cis
 
   handlers:
-    - name: restart_ssh_service
-      service:
+    - name: restart sshd
+      ansible.builtin.service:
         name: sshd
         state: restarted
-
-    - name: flush_handlers_now
-      meta: flush_handlers
