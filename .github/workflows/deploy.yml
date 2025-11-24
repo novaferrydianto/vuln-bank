@@ -41,7 +41,7 @@ jobs:
       - name: Install Go Environment
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21' # Go 1.21 adalah versi yang stabil
+          go-version: '1.24' # ✅ FIX: Diperbarui dari 1.21 ke 1.24 untuk memenuhi persyaratan TruffleHog (v3.91.1)
 
       - name: Install TruffleHog binary (Reliable Go Install)
         # Menginstal binary TruffleHog ke ~/go/bin/
