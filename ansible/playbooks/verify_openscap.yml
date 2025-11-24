@@ -2,43 +2,44 @@
 - name: Verify CIS Compliance Post-Hardening
   hosts: hosting-node
   become: true
+
   vars:
     scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
-    report_file: /root/openscap-report.html
     compliance_threshold: 90
+    result_xml: /root/openscap-results.xml
+    result_html: /root/openscap-report.html
 
   tasks:
     # -------------------------------------------------------------
     # 1. RUN FINAL SCAN
     # -------------------------------------------------------------
-    - name: Run OpenSCAP Compliance Scan
+    - name: Run OpenSCAP CIS Server Level 1 Scan
       ansible.builtin.command: >
         oscap xccdf eval
         --profile xccdf_org.ssgproject.content_profile_cis_server_l1
-        --results /root/openscap-results.xml
-        --report /root/openscap-report.html
+        --results {{ result_xml }}
+        --report {{ result_html }}
         {{ scap_data_path }}
       register: scan_result
       failed_when: scan_result.rc not in [0, 2]
 
     # -------------------------------------------------------------
-    # 2. FETCH RESULTS XML TO BASTION (LOCALHOST)
+    # 2. FETCH RESULTS TO BASTION
     # -------------------------------------------------------------
-    - name: Fetch OpenSCAP XML Results to Bastion
+    - name: Fetch OpenSCAP XML report to Bastion
       ansible.builtin.fetch:
-        src: /root/openscap-results.xml
-        dest: /tmp/scap_results/{{ inventory_hostname }}/openscap-results.xml
+        src: "{{ result_xml }}"
+        dest: "/tmp/scap_results/{{ inventory_hostname }}/openscap-results.xml"
         flat: yes
 
-    - name: Fetch OpenSCAP HTML Report to Bastion
+    - name: Fetch OpenSCAP HTML report to Bastion
       ansible.builtin.fetch:
-        src: /root/openscap-report.html
-        dest: /tmp/scap_results/{{ inventory_hostname }}/
+        src: "{{ result_html }}"
+        dest: "/tmp/scap_results/{{ inventory_hostname }}/openscap-report.html"
         flat: yes
-      delegate_to: bastion-node
 
     # -------------------------------------------------------------
-    # 3. PARSE SCORE FROM XML (LOCALHOST)
+    # 3. PARSE SCORE (LOCALHOST)
     # -------------------------------------------------------------
     - name: Extract compliance score from XML
       ansible.builtin.command: >
@@ -47,30 +48,30 @@
       register: compliance_score_raw
       delegate_to: localhost
 
-    - name: Convert score to float and set fact
+    - name: Convert score to usable float
       ansible.builtin.set_fact:
         final_compliance_score: "{{ compliance_score_raw.stdout | float | round(2) }}"
       delegate_to: localhost
-      run_once: true
 
     # -------------------------------------------------------------
     # 4. SECURITY GATE CHECK
     # -------------------------------------------------------------
-    - name: FAIL if Compliance Score is below threshold
+    - name: FAIL if compliance score is below threshold
       ansible.builtin.fail:
-        msg: "❌ HARDENING FAILED! Compliance score ({{ final_compliance_score }}%) is below requirement ({{ compliance_threshold }}%)."
-      when: (final_compliance_score | float) < (compliance_threshold | float)
-      delegate_to: bastion-node
+        msg: "❌ HARDENING FAILED — Score {{ final_compliance_score }}% < Threshold {{ compliance_threshold }}%"
+      when: final_compliance_score < compliance_threshold
       run_once: true
 
-    - name: SUCCESS — Allow deployment
+    - name: SUCCESS — Compliance passed!
       ansible.builtin.debug:
-        msg: "✅ SECURITY GATE PASSED — Score: {{ final_compliance_score }}%. Proceeding..."
-      when: (final_compliance_score | float) >= (compliance_threshold | float)
-      delegate_to: localhost
+        msg: "✅ SECURITY GATE PASSED — Score: {{ final_compliance_score }}%"
+      when: final_compliance_score >= compliance_threshold
       run_once: true
 
-    - name: Open OpenSCAP HTML report with Firefox on bastion
+    # -------------------------------------------------------------
+    # 5. Auto-open report (only on FAILURE)
+    # -------------------------------------------------------------
+    - name: Open OpenSCAP report in Firefox (optional)
       ansible.builtin.command: >
         firefox /tmp/scap_results/{{ inventory_hostname }}/openscap-report.html
       delegate_to: localhost
@@ -80,5 +81,4 @@
       ignore_errors: true
       when:
         - ansible_env.DISPLAY is defined
-        - (final_compliance_score | float) < (compliance_threshold | float) # Hanya buka jika GAGAL
-
+        - final_compliance_score < compliance_threshold
