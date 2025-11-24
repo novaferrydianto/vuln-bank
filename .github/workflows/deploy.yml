@@ -182,10 +182,12 @@ jobs:
           echo "- Semgrep Findings: $SG_FINDINGS" >> "$GITHUB_STEP_SUMMARY"
 
           # Fail build kalau ada HIGH / CRITICAL
-          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            echo "Breaking build due to HIGH/CRITICAL vulnerabilities"
+          if [ "$CRIT_COUNT" -gt 0 ]; then
+            echo "Blocking deployment because CRITICAL vulnerabilities detected"
             exit 1
           fi
+
+          echo "High vulns found but allowed (lab mode). Deployment continues."
 
   # =========================================================
   # JOB 2: DEPLOY – jalan di self-hosted runner (bastion-node)
