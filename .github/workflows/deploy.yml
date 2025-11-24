@@ -39,16 +39,12 @@ jobs:
             --json > $REPORT_DIR/trufflehog.json || true
 
       # ----------------------------------------
-      # 2. INSTALL TRIVY (UBUNTU)
+      # 2. INSTALL TRIVY
       # ----------------------------------------
-      - name: Install Trivy (Ubuntu)
+      - name: Install Trivy (Official Install Script)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo tee /etc/apt/trusted.gpg.d/trivy.asc
-          echo "deb https://aquasecurity.github.io/trivy-repo/deb stable main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -y
-          sudo apt-get install -y trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 
       - name: Trivy FS
         run: |
