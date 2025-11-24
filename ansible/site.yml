@@ -1,34 +1,47 @@
 ---
-# ================================================
+# ====================================================
+# 0. PRECHECK (Opsional)
+# ====================================================
+# Bisa dipakai untuk cek versi OS, konektivitas, Python, dll.
+# - import_playbook: playbooks/precheck.yml
+
+# ====================================================
 # 1. Setup Bastion Node (optional)
-# ================================================
+# ====================================================
 - import_playbook: playbooks/setup_bastion.yml
 
-# ================================================
+# ====================================================
 # 2. Setup DB Node (PostgreSQL 16 + Schema VulnBank)
-# ================================================
+# ====================================================
 - import_playbook: playbooks/setup_db.yml
 
-# ================================================
+# ====================================================
 # 3. Setup Hosting Node (Docker + Docker Compose)
-# ================================================
+# ====================================================
 - import_playbook: playbooks/setup_hosting.yml
 
-# ================================================
-# 4. Hardening Server (CIS Benchmark + OpenSCAP)
-# ================================================
-# ⚠ NOTE:
-# Handler flush ADA DI DALAM hardening_hosting.yml
-# agar SSH restart hanya terjadi SETELAH SELURUH Hardening selesai.
-# ================================================
+# ====================================================
+# 4. Hardening Server (CIS Baseline + SSH + Kernel)
+# ====================================================
+# IMPORTANT:
+# Handler restart SSH HARUS berfungsi hanya setelah
+# SEMUA tasks selesai (tidak memakai flush_handlers di dalam role).
+# ====================================================
 - import_playbook: playbooks/hardening_hosting.yml
 
-# ================================================
-# 5. Verifikasi hasil OpenSCAP (Report + Compliance)
-# ================================================
+# ====================================================
+# 5. OpenSCAP Compliance Verification
+# ====================================================
+# NOTE:
+# Jalankan setelah hardening SELESAI 100%.
+# Kalau tidak → nilai compliance turun.
+# ====================================================
 - import_playbook: playbooks/verify_openscap.yml
 
-# ================================================
-# 6. Deploy Vuln Bank App (pull repo / rsync + docker compose up)
-# ================================================
+# ====================================================
+# 6. Deploy Vuln Bank App (sync repo + docker compose up)
+# ====================================================
+# NOTE:
+# Ini adalah FINAL STEP dalam pipeline provisioning-deployment.
+# ====================================================
 - import_playbook: playbooks/deploy_app.yml
