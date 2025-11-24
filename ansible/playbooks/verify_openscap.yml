@@ -1,119 +1,101 @@
 ---
-# ==============================================================
-# VERIFY CIS COMPLIANCE (v3)
-# + Universal Parser
-# + Summary output
-# + Guaranteed final_compliance_score always exists
-# ==============================================================
-
-- name: Verify CIS Compliance Post-Hardening (v3)
+- name: Verify CIS Compliance Post-Hardening (v3.1)
   hosts: hosting-node
   become: true
   vars:
-    scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+    scap_profile: xccdf_org.ssgproject.content_profile_cis_server_l1
+    scap_ds: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
     report_xml: /root/openscap-results.xml
     report_html: /root/openscap-report.html
     compliance_threshold: 90
 
   tasks:
-
     # -------------------------------------------------------------
     # 1. RUN FINAL SCAN
     # -------------------------------------------------------------
     - name: Run OpenSCAP CIS Server Level 1 Scan
       command: >
         oscap xccdf eval
-        --profile xccdf_org.ssgproject.content_profile_cis_server_l1
+        --profile {{ scap_profile }}
         --results {{ report_xml }}
         --report {{ report_html }}
-        {{ scap_data_path }}
-      register: scan_result
-      failed_when: scan_result.rc not in [0, 2]
+        {{ scap_ds }}
+      register: scan_res
+      failed_when: scan_res.rc not in [0,2]
 
     # -------------------------------------------------------------
-    # 2. FETCH REPORTS KE BASTION
+    # 2. FETCH TO BASTION
     # -------------------------------------------------------------
     - name: Fetch OpenSCAP XML to Bastion
       fetch:
         src: "{{ report_xml }}"
-        dest: "./openscap-results.xml"
+        dest: "./openscap_results.xml"
         flat: yes
 
     - name: Fetch OpenSCAP HTML to Bastion
       fetch:
         src: "{{ report_html }}"
-        dest: "./openscap-report.html"
+        dest: "./openscap_report.html"
         flat: yes
 
     # -------------------------------------------------------------
-    # 3. EXTRACT SCORE (v3 — dual parser)
+    # 3. PARSE SCORE (XPATH → REGEX STRICT → REGEX LENIENT → FAILSAFE)
     # -------------------------------------------------------------
     - name: Extract score via XPATH
-      delegate_to: localhost
-      command: >
-        xmllint --xpath "string(//score[1])" openscap-results.xml
-      register: score_xpath
+      xml:
+        path: "./openscap_results.xml"
+        content: text
+        xpath: "/Benchmark/RuleResult/score | //score"
+      register: xpath_score
       failed_when: false
 
-    - name: Extract score via regex fallback
-      delegate_to: localhost
+    - name: Save XPATH score
       set_fact:
-        score_regex: >-
-          {{
-            lookup('file', 'openscap-results.xml')
-            | regex_search('(?s)<score[^>]*>([0-9.]+)</score>', '\\1')
-          }}
+        score_xpath: "{{ xpath_score.matches[0] | default('') }}"
+      failed_when: false
 
-    - name: Determine final score (v3)
-      delegate_to: localhost
+    - name: Extract score via strict regex
+      shell: "grep -Po '(?<=<score>)[0-9\\.]+(?=</score>)' ./openscap_results.xml || true"
+      register: strict_regex_score
+      changed_when: false
+
+    - name: Extract score via lenient regex
+      shell: "grep -Po '[0-9]{1,3}\\.[0-9]{1,2}' ./openscap_results.xml | head -n 1 || true"
+      register: fallback_regex_score
+      changed_when: false
+
+    - name: Finalize score (multi fallback)
       set_fact:
         final_compliance_score: >-
           {{
-            (score_xpath.stdout | trim)
-            if (score_xpath.stdout | trim != '')
-            else (score_regex | default('0') | trim)
+            score_xpath
+            if (score_xpath | string | length > 0)
+            else (
+              strict_regex_score.stdout
+              if (strict_regex_score.stdout | string | length > 0)
+              else (
+                fallback_regex_score.stdout
+                if (fallback_regex_score.stdout | string | length > 0)
+                else '0.0'
+              )
+            )
           }}
 
     - name: Debug final score
-      delegate_to: localhost
       debug:
-        msg: "🔎 FINAL SCORE: {{ final_compliance_score }}% (Threshold: {{ compliance_threshold }}%)"
+        msg:
+          - "Final Score (raw): {{ final_compliance_score }}"
+          - "Threshold      : {{ compliance_threshold }}"
 
     # -------------------------------------------------------------
-    # 4. PUSH SUMMARY KE GITHUB STEP SUMMARY
-    # -------------------------------------------------------------
-    - name: Write GitHub Summary
-      delegate_to: localhost
-      become: false
-      run_once: true
-      environment:
-        GITHUB_STEP_SUMMARY: "{{ lookup('env', 'GITHUB_STEP_SUMMARY') }}"
-      shell: |
-        if [ -n "$GITHUB_STEP_SUMMARY" ]; then
-          echo "## 🛡️ CIS Hardening Summary (OpenSCAP v3)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Final Score**: {{ final_compliance_score }}%" >> $GITHUB_STEP_SUMMARY
-          echo "- **Threshold**: {{ compliance_threshold }}%" >> $GITHUB_STEP_SUMMARY
-          echo "- **XML Report**: openscap-results.xml" >> $GITHUB_STEP_SUMMARY
-          echo "- **HTML Report**: openscap-report.html" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ $(printf "%.0f" {{ final_compliance_score }}) -lt {{ compliance_threshold }} ]; then
-            echo "❌ Hardening FAILED (score < threshold)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "✅ Hardening PASSED (score ≥ threshold)" >> $GITHUB_STEP_SUMMARY
-          fi
-        fi
-
-    # -------------------------------------------------------------
-    # 5. PASS / FAIL (Stable)
+    # 4. FAIL IF LOW SCORE
     # -------------------------------------------------------------
     - name: FAIL if compliance score is below threshold
       fail:
         msg: "❌ HARDENING FAILED — Score {{ final_compliance_score }}% < Threshold {{ compliance_threshold }}%"
-      when: final_compliance_score | float < compliance_threshold | float
+      when: (final_compliance_score | float) < (compliance_threshold | float)
 
-    - name: SUCCESS — CIS Hardening Passed
+    - name: SUCCESS summary
       debug:
-        msg: "🎉 SUCCESS — Score {{ final_compliance_score }}% ≥ Threshold {{ compliance_threshold }}%"
-      when: final_compliance_score | float >= compliance_threshold | float
+        msg: "✅ HARDENING PASS — Score {{ final_compliance_score }}%"
+      when: (final_compliance_score | float) >= (compliance_threshold | float)
