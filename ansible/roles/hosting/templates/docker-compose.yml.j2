@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  # ----------------------------------------------------
+  # DB SERVICE (Hardened)
+  # ----------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: vuln-db
+    restart: always
+    environment:
+      POSTGRES_DB: vulnerable_bank
+      POSTGRES_USER: ${DB_USER:-postgres_dev}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-insecure_dev_password}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres_dev}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - vulnnet
+    # 🔐 SECURITY: DB hanya untuk internal use
+    # ports:
+    #   - "5432:5432"
+
+  # ----------------------------------------------------
+  # APP SERVICE (Docker Hub Image)
+  # ----------------------------------------------------
+  app:
+    image: "{{ FULL_IMAGE }}"       # <— ditarik dari Github Actions → Ansible
+    container_name: vuln-bank
+    restart: always
+
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: vulnerable_bank
+      DB_USER: ${DB_USER:-postgres_dev}
+      DB_PASSWORD: ${DB_PASSWORD:-insecure_dev_password}
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    networks:
+      - vulnnet
+
+    # expose untuk DAST / manual testing
+    ports:
+      - "5000:5000"
+
+volumes:
+  pgdata:
+
+networks:
+  vulnnet:
+    driver: bridge

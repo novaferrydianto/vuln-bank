@@ -1,0 +1,47 @@
+---
+- name: Ensure app directory exists
+  ansible.builtin.file:
+    path: /opt/vuln-bank
+    state: directory
+    owner: hosting
+    group: hosting
+    mode: '0755'
+
+- name: Sync application repo to hosting node
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../../"
+    dest: /opt/vuln-bank
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=ansible"
+      - "--exclude=security-reports"
+      - "--delete"
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/vuln-bank/docker-compose.yml
+    owner: hosting
+    group: hosting
+    mode: '0644'
+
+- name: Pull latest image from Docker Hub
+  ansible.builtin.command: >
+    docker pull {{ FULL_IMAGE }}
+  register: pull_result
+  changed_when: "'Downloaded newer image' in pull_result.stdout"
+
+- name: Restart Vuln-Bank using Compose
+  ansible.builtin.shell: |
+    docker compose down || true
+    FULL_IMAGE="{{ FULL_IMAGE }}" docker compose up -d
+  args:
+    chdir: /opt/vuln-bank
+  register: compose_result
+
+- name: Show running containers
+  ansible.builtin.command: docker ps
+  register: ps
+
+- debug:
+    var: ps.stdout

@@ -257,3 +257,10 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
         run: ansible-playbook site.yml
+
+      - name: Read CIS summary
+        run: |
+          if [ -f /root/cis-summary.txt ]; then
+          cat /root/cis-summary.txt >> $GITHUB_STEP_SUMMARY
+          fi
+
