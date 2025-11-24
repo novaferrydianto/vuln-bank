@@ -1,30 +1,48 @@
-- name: Install dependencies
-  dnf:
+# FILE: roles/docker/tasks/main.yml
+---
+- name: 1. Install required system packages
+  ansible.builtin.dnf:
     name:
       - dnf-plugins-core
-      - device-mapper-persistent-data
-      - lvm2
+      - python3
+      - python3-pip
+      - git
     state: present
+    update_cache: yes
 
-- name: Add Docker repo
-  command: dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+- name: 2. Add Docker CE repository
+  ansible.builtin.command: dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+  args:
+    creates: /etc/yum.repos.d/docker-ce.repo
 
-- name: Install Docker CE
-  dnf:
+- name: 3. Install Docker Engine and Compose Plugin (Docker Compose V2)
+  ansible.builtin.dnf:
     name:
       - docker-ce
       - docker-ce-cli
       - containerd.io
+      - docker-compose-plugin
     state: present
-
-- name: Enable docker
-  systemd:
+    
+- name: 4. Enable and start Docker service
+  ansible.builtin.service:
     name: docker
     enabled: yes
     state: started
-
-- name: Install Docker Compose
-  get_url:
-    url: https://github.com/docker/compose/releases/download/v2.26.0/docker-compose-linux-x86_64
-    dest: /usr/local/bin/docker-compose
-    mode: '0755'
+    
+- name: 5. Add remote user to the docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+    
+- name: 6. Force Ansible connection reset for new group permissions
+  ansible.builtin.meta: reset_connection
+  
+- name: 7. Show Docker Compose version
+  ansible.builtin.command: docker compose version
+  register: compose_version
+  
+- name: Print Docker Compose version
+  ansible.builtin.debug:
+    var: compose_version.stdout
