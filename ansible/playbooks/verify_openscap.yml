@@ -3,7 +3,7 @@
   hosts: hosting-node
   become: true
   vars:
-    scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
+    scap_data_path: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
     report_file: /root/openscap-report.html
     compliance_threshold: 90
 
@@ -14,7 +14,7 @@
     - name: Run OpenSCAP Compliance Scan
       ansible.builtin.command: >
         oscap xccdf eval
-        --profile xccdf_org.ssgproject.content_profile_cis
+        --profile xccdf_org.ssgproject.content_profile_cis_server_l1
         --results /root/openscap-results.xml
         --report /root/openscap-report.html
         {{ scap_data_path }}
@@ -47,12 +47,11 @@
       run_once: true
 
     # -------------------------------------------------------------
-    # 4. SECURITY GATE
+    # 4. SECURITY GATE CHECK
     # -------------------------------------------------------------
     - name: FAIL if Compliance Score is below threshold
       ansible.builtin.fail:
         msg: "❌ HARDENING FAILED! Compliance score ({{ final_compliance_score }}%) is below requirement ({{ compliance_threshold }}%)."
-      # 🚨 PERBAIKAN: Terapkan filter float pada kedua sisi perbandingan
       when: (final_compliance_score | float) < (compliance_threshold | float)
       delegate_to: bastion-node
       run_once: true
