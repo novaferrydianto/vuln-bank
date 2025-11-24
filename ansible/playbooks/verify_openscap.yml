@@ -30,6 +30,13 @@
         dest: /tmp/scap_results/{{ inventory_hostname }}/openscap-results.xml
         flat: yes
 
+    - name: Fetch OpenSCAP HTML Report to Bastion
+      ansible.builtin.fetch:
+        src: /root/openscap-report.html
+        dest: /tmp/scap_results/{{ inventory_hostname }}/
+        flat: yes
+      delegate_to: bastion-node
+
     # -------------------------------------------------------------
     # 3. PARSE SCORE FROM XML (LOCALHOST)
     # -------------------------------------------------------------
@@ -65,12 +72,13 @@
 
     - name: Open OpenSCAP HTML report with Firefox on bastion
       ansible.builtin.command: >
-        firefox {{ report_file }}
-      delegate_to: bastion-node
+        firefox /tmp/scap_results/{{ inventory_hostname }}/openscap-report.html
+      delegate_to: localhost
       become: false
       async: 0
       poll: 0
       ignore_errors: true
       when:
         - ansible_env.DISPLAY is defined
+        - (final_compliance_score | float) < (compliance_threshold | float) # Hanya buka jika GAGAL
 
