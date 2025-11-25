@@ -187,8 +187,8 @@ jobs:
 
       - name: Podman Login → DockerHub
         run: |
-          echo "${{ env.DOCKERHUB_TOKEN }}" | \
-          podman login docker.io -u "${{ env.DOCKERHUB_USER }}" --password-stdin
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+          podman login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build Image (Flask Vuln Bank)
         run: |
