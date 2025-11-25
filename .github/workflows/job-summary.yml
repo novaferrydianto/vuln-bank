@@ -1,0 +1,11 @@
+name: Job - Summary
+
+on:
+  workflow_call:
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "## Hybrid DevSecOps Completed" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,52 @@
+# .github/workflows/jobs-build-and-push.yml
+name: Reusable - Build & Push
+
+on:
+  workflow_call:
+    outputs:
+      image_ref:
+        description: "Full image reference (repo:tag)"
+        value: ${{ jobs.build.outputs.image_ref }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+
+    env:
+      REGISTRY: docker.io
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - id: meta
+        name: Prepare Image Metadata
+        run: |
+          IMAGE_REPO="${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank"
+          SHA_TAG="${GITHUB_SHA::7}"
+          echo "image_ref=${IMAGE_REPO}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_REPO=${IMAGE_REPO}" >> "$GITHUB_ENV"
+          echo "SHA_TAG=${SHA_TAG}" >> "$GITHUB_ENV"
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Podman Login DockerHub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+          podman login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build Image
+        run: |
+          podman build \
+            -t "${IMAGE_REPO}:${SHA_TAG}" \
+            -t "${IMAGE_REPO}:latest" .
+
+      - name: Push Images
+        run: |
+          podman push "${IMAGE_REPO}:${SHA_TAG}"
+          podman push "${IMAGE_REPO}:latest"

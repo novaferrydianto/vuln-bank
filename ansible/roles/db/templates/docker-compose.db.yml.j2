@@ -6,19 +6,25 @@ services:
     container_name: vuln-db
     restart: always
     environment:
-      POSTGRES_DB: {{ db_name | default('vulnerable_bank') }}
-      POSTGRES_USER: {{ db_user | default('postgres') }}
-      POSTGRES_PASSWORD: {{ db_password | default('postgres') }}
+      POSTGRES_DB: vulnerable_bank
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       PGDATA: /var/lib/postgresql/data
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U {{ db_user | default('postgres') }}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - vulnnet
 
 volumes:
   pgdata:
+
+networks:
+  vulnnet:
+    driver: bridge

@@ -1,9 +1,0 @@
----
-- name: Setup DB node (VM3) - tools + docker + docker-compose db
-  hosts: db
-  become: true
-
-  roles:
-    - role: common
-    - role: docker
-    - role: db_compose

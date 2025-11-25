@@ -1,18 +1,19 @@
 ---
-- name: Deploy DB (VM3)
+- name: Deploy DB stack on VM3
   hosts: db
   become: true
-
   roles:
-    - role: deploy_app
+    - role: docker
+    - role: hosting
       vars:
-        target: "db"
+        stack_type: db
 
-- name: Deploy APP (VM2)
+- name: Deploy App stack on VM2
   hosts: hosting
   become: true
-
   roles:
-    - role: deploy_app
+    - role: docker
+    - role: hosting
       vars:
-        target: "app"
+        stack_type: app
+        image_ref: "{{ image_ref }}"

@@ -1,0 +1,117 @@
+name: Reusable - Create Security Issue
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        required: true
+        type: string
+      epss_critical:
+        required: false
+        type: number
+        default: 0
+      sca_high:
+        required: false
+        type: number
+        default: 0
+      sca_critical:
+        required: false
+        type: number
+        default: 0
+      sast_high:
+        required: false
+        type: number
+        default: 0
+      sast_critical:
+        required: false
+        type: number
+        default: 0
+      dast_alerts:
+        required: false
+        type: number
+        default: 0
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create_issue:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create Security Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const app = core.getInput('app_name');
+
+            const epss = core.getInput('epss_critical');
+            const sca_high = core.getInput('sca_high');
+            const sca_crit = core.getInput('sca_critical');
+            const sast_high = core.getInput('sast_high');
+            const sast_crit = core.getInput('sast_critical');
+            const dast = core.getInput('dast_alerts');
+
+            let riskSummary = `
+### 🚨 Security Findings Summary — **${app}**
+
+| Category | High | Critical | Extra |
+|---------|------|----------|--------|
+| **SCA (Snyk / Trivy)** | ${sca_high} | ${sca_crit} | EPSS > 0.7: ${epss} |
+| **SAST (SonarQube)** | ${sast_high} | ${sast_crit} | Code smells included |
+| **DAST (ZAP)** | - | - | Alerts: ${dast} |
+
+---
+
+## 🔎 What to Fix First (Risk-Based Prioritization)
+We follow **EPSS-based prioritization**:
+
+1. **EPSS > 0.7** → Top priority (most likely to be exploited within 30 days)  
+2. **Critical CVEs** with known exploits  
+3. **High severity** with reachable paths  
+4. **SAST-critical** flows that involve authentication, crypto, or DB queries  
+5. **DAST** alerts involving injection, broken access control, auth bypass  
+
+---
+
+## 📦 Artifact Locations
+You can download the scan results from the latest workflow run:
+
+- 📁 `security-reports/snyk-deps.json`
+- 📁 `security-reports/trivy-fs.json`
+- 📁 `security-reports/trivy-config.json`
+- 📁 `security-reports/checkov-results.json`
+- 📁 `security-reports/semgrep.sarif`
+- 📁 `zap-report/report_html.html`
+- 📁 `zap-report/report_json.json`
+- 📁 `coverage/lcov.info` (SonarQube)
+
+---
+
+## 🧭 Recommended Fix Flow
+1. Patch dependencies with **Critical + EPSS > 0.7**  
+2. Fix **SAST Critical** issues related to SQLi, RCE, auth, or session  
+3. Fix ZAP alerts categorized **High / Medium**  
+4. Re-run pipeline  
+5. Repeat until SCA/SAST/DAST gates pass  
+
+---
+
+Generated automatically by **DevSecOps Hybrid Enterprise Pipeline**.
+`;
+
+            // Labels
+            const labels = ['security', 'critical', 'auto-created', 'devsecops'];
+
+            if (epss > 0) labels.push('epss-high');
+            if (sca_crit > 0) labels.push('sca-critical');
+            if (sast_crit > 0) labels.push('sast-critical');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Security Alerts Detected — ${app}`,
+              body: riskSummary,
+              labels
+            });

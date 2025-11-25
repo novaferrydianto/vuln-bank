@@ -1,8 +1,0 @@
----
-- name: Setup monitoring (optional)
-  hosts: hosting
-  become: true
-  tasks:
-    - name: Placeholder for future monitoring stack
-      debug:
-        msg: "Add Prometheus/Grafana here if needed."

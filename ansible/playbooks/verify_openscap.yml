@@ -1,29 +1,23 @@
 ---
 - name: Verify OpenSCAP CIS score
-  hosts: hosting
+  hosts: hosting,db
   become: true
 
+  vars:
+    cis_min_score: "{{ cis_min_score | default(0.8) }}"
+
   tasks:
-    - name: Jalankan OpenSCAP evaluation
-      command: >
-        oscap xccdf eval
-        --profile {{ cis_profile }}
-        --results /var/tmp/openscap-results.xml
-        --report /var/tmp/openscap-report.html
-        /usr/share/xml/scap/ssg/content/ssg-rocky9-ds.xml
-      register: oscap_eval
+    - name: Read last OpenSCAP score
+      command: awk -F= '/score/ {print $2}' /var/oscap/last-score.txt
+      register: score_cmd
       changed_when: false
+      failed_when: false
 
-    - name: Parse score dari results.xml (simple grep)
-      command: "grep -m1 'score system' /var/tmp/openscap-results.xml"
-      register: oscap_score_raw
-      changed_when: false
+    - name: Set fact for score
+      set_fact:
+        cis_score: "{{ score_cmd.stdout | default('0') | float }}"
 
-    - name: Print score raw (manual check)
-      debug:
-        msg: "{{ oscap_score_raw.stdout }}"
-
-    - name: Fail jika score di bawah minimum
+    - name: Fail if score below threshold
       fail:
-        msg: "CIS score di bawah {{ cis_min_score }} — perbaiki dulu sebelum deploy."
-      when: cis_min_score | int > 80  # adjust condition sesuai parsing real
+        msg: "CIS score {{ cis_score }} is below minimum {{ cis_min_score }}"
+      when: cis_score < cis_min_score

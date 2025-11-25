@@ -5,3 +5,38 @@
       - openscap-scanner
       - scap-security-guide
     state: present
+
+- name: Ensure report directory exists
+  file:
+    path: "{{ openscap_report_dir | default('/var/oscap') }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Run OpenSCAP CIS scan
+  command: >
+    oscap xccdf eval
+    --profile {{ openscap_profile | default('xccdf_org.ssgproject.content_profile_cis_server_l1') }}
+    --report {{ openscap_report_dir | default('/var/oscap') }}/report.html
+    --results {{ openscap_report_dir | default('/var/oscap') }}/results.xml
+    /usr/share/xml/scap/ssg/content/ssg-rocky9-xccdf.xml
+  register: oscap_result
+  changed_when: false
+  failed_when: false
+
+- name: Extract score from results
+  shell: |
+    oscap oval eval --results /tmp/oval.xml /usr/share/xml/scap/ssg/content/ssg-rocky9-oval.xml >/dev/null 2>&1 || true
+    grep -oP 'score\=\"\K[0-9\.]+' {{ openscap_report_dir | default('/var/oscap') }}/results.xml | head -n1
+  register: oscap_score
+  changed_when: false
+  failed_when: false
+
+- name: Save last score
+  copy:
+    dest: "{{ openscap_report_dir | default('/var/oscap') }}/last-score.txt"
+    content: "score={{ oscap_score.stdout | default('0') }}\n"
+    owner: root
+    group: root
+    mode: "0644"

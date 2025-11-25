@@ -1,9 +1,0 @@
----
-- name: Setup hosting node (VM2) - tools + docker + app compose
-  hosts: hosting
-  become: true
-
-  roles:
-    - role: common
-    - role: docker
-    - role: app_compose

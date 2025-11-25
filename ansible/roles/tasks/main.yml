@@ -1,5 +1,5 @@
 ---
-- name: Install required packages for docker repo
+- name: Install required packages
   package:
     name:
       - yum-utils
@@ -12,7 +12,7 @@
     url: https://download.docker.com/linux/centos/docker-ce.repo
     dest: /etc/yum.repos.d/docker-ce.repo
 
-- name: Install Docker Engine & plugins
+- name: Install Docker Engine + plugin
   package:
     name:
       - docker-ce
@@ -21,14 +21,8 @@
       - docker-compose-plugin
     state: present
 
-- name: Enable & start docker
+- name: Enable and start Docker
   service:
     name: docker
     state: started
-    enabled: yes
-
-- name: Add user to docker group
-  user:
-    name: "{{ ansible_user }}"
-    groups: docker
-    append: yes
+    enabled: true

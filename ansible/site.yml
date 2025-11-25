@@ -5,11 +5,11 @@
 - import_playbook: playbooks/setup_hosting.yml
 - import_playbook: playbooks/setup_monitoring.yml
 
-# 2. CIS Hardening — Balanced Pack
+# 2. CIS Hardening — Balanced Pack + OpenSCAP
 - import_playbook: playbooks/hardening_hosting.yml
 
-# 3. Verify CIS score via OpenSCAP (pakai cis_min_score dari vars)
+# 3. Verify CIS score via OpenSCAP (pakai cis_min_score dari extra vars)
 - import_playbook: playbooks/verify_openscap.yml
 
-# 4. Deploy app
+# 4. Deploy app (VM2 + VM3)
 - import_playbook: playbooks/deploy_app.yml
