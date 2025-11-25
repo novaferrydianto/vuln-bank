@@ -25,6 +25,9 @@ permissions:
   security-events: write
   issues: write
 
+# =====================================================================
+# TEST + SAST
+# =====================================================================
 jobs:
   test_and_sast:
     runs-on: ubuntu-latest
@@ -48,7 +51,7 @@ jobs:
       - run: |
           if [ -d "tests" ]; then
             pip install pytest
-            pytest || echo "Tests failed (not blocking)"
+            pytest || echo "Tests failed (not blocking)."
           fi
 
       - uses: sonarsource/sonarcloud-github-action@v5
@@ -59,6 +62,9 @@ jobs:
             -Dsonar.organization=vuln-bank
             -Dsonar.projectKey=vulnbank
 
+# =====================================================================
+# SCA / FS + EPSS GATE
+# =====================================================================
   security_audit:
     runs-on: ubuntu-latest
     name: Snyk + Trivy + EPSS Gate
@@ -91,9 +97,12 @@ jobs:
       - run: |
           CVE_LIST=$(jq -r '.. | objects | select(has("VulnerabilityID")) | .VulnerabilityID' trivy-report.json | sort -u)
           if [ -z "$CVE_LIST" ]; then exit 0; fi
+
           CVE_QUERY=$(echo "$CVE_LIST" | paste -sd ",")
-          EPSS_RESPONSE=$(curl -s "https://api.first.org/data/v1/epss?cve=${CVE_QUERY}")
+          EPSS_RESPONSE=$(curl -s "https://api.first.org/data/v1/epss?cve=$CVE_QUERY")
+
           HIGH_RISK=$(echo "$EPSS_RESPONSE" | jq --arg thr "${{ env.EPSS_THRESHOLD }}" '[.data[] | select((.epss|tonumber) >= ($thr|tonumber))] | length')
+
           if [ "$HIGH_RISK" -gt 0 ]; then exit 1; fi
 
       - uses: actions/upload-artifact@v4
@@ -103,6 +112,9 @@ jobs:
             snyk-report.json
             trivy-report.json
 
+# =====================================================================
+# MULTI-ARCH BUILDX + PUSH + SBOM
+# =====================================================================
   multiarch_build_push:
     runs-on: ubuntu-latest
     name: Multi-Arch Buildx + SBOM
@@ -113,14 +125,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - id: meta
+      - name: Set Metadata
+        id: meta
         run: |
           echo "sha_tag=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           echo "image_repo=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}" >> $GITHUB_OUTPUT
 
-      - run: |
-          echo "DEBUG IMAGE_REPO = ${{ steps.meta.outputs.image_repo }}"
-          echo "DEBUG SHA_TAG    = ${{ steps.meta.outputs.sha_tag }}"
+      - name: DEBUG META OUTPUT
+        run: |
+          echo "IMAGE REPO = '${{ steps.meta.outputs.image_repo }}'"
+          echo "SHA TAG    = '${{ steps.meta.outputs.sha_tag }}'"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -130,9 +144,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - run: |
+      - name: Build Multi-Arch Image
+        run: |
           IMAGE="${{ steps.meta.outputs.image_repo }}"
           SHA="${{ steps.meta.outputs.sha_tag }}"
+
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --pull \
@@ -143,23 +159,33 @@ jobs:
             --provenance=false \
             --push .
 
-      - run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM
+        run: |
           mkdir -p sbom
-          syft "${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.sha_tag }}" -o cyclonedx-json > sbom/sbom-cyclonedx.json
+          syft "${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.sha_tag }}" \
+            -o cyclonedx-json > sbom/sbom-cyclonedx.json
 
       - uses: actions/upload-artifact@v4
         with:
           name: sbom-cyclonedx
           path: sbom/sbom-cyclonedx.json
 
+# =====================================================================
+# COSIGN SIGN + SBOM + SLSA PROVENANCE
+# =====================================================================
   cosign_sign:
     needs: [multiarch_build_push, test_and_sast, security_audit]
     runs-on: ubuntu-latest
     name: Cosign Sign + SBOM + SLSA
 
     steps:
-      - run: |
+      - name: Install Cosign
+        run: |
           wget https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
           mv cosign-linux-amd64 cosign
           chmod +x cosign
@@ -175,24 +201,27 @@ jobs:
           name: sbom-cyclonedx
           path: sbom
 
-      - id: img
+      - name: Prepare Image Ref
+        id: img
         run: |
           echo "ref=${{ needs.multiarch_build_push.outputs.image_repo }}:${{ needs.multiarch_build_push.outputs.sha_tag }}" >> $GITHUB_OUTPUT
-          echo "REF_DEBUG=${{ needs.multiarch_build_push.outputs.image_repo }}:${{ needs.multiarch_build_push.outputs.sha_tag }}"
 
-      - env:
-          COSIGN_EXPERIMENTAL: "1"
+      - name: Cosign Sign (Keyless)
+        env:
+          COSIGN_EXPERIMENTAL: 1
         run: cosign sign --yes "${{ steps.img.outputs.ref }}"
 
-      - env:
-          COSIGN_EXPERIMENTAL: "1"
+      - name: Cosign SBOM Attestation
+        env:
+          COSIGN_EXPERIMENTAL: 1
         run: |
           cosign attest --yes \
             --predicate sbom/sbom-cyclonedx.json \
             --type cyclonedx \
             "${{ steps.img.outputs.ref }}"
 
-      - run: |
+      - name: Generate SLSA Provenance
+        run: |
           cat > provenance.json <<EOF
           {
             "_type": "https://in-toto.io/Statement/v0.1",
@@ -208,21 +237,26 @@ jobs:
           }
           EOF
 
-      - env:
-          COSIGN_EXPERIMENTAL: "1"
+      - name: Cosign Provenance Attestation
+        env:
+          COSIGN_EXPERIMENTAL: 1
         run: |
           cosign attest --yes \
             --predicate provenance.json \
             --type slsaprovenance \
             "${{ steps.img.outputs.ref }}"
 
+# =====================================================================
+# SUPPLY CHAIN VERIFY GATE
+# =====================================================================
   supplychain_gate:
     needs: cosign_sign
     runs-on: ubuntu-latest
     name: Supply Chain Verify Gate
 
     steps:
-      - run: |
+      - name: Install Cosign
+        run: |
           wget https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
           mv cosign-linux-amd64 cosign
           chmod +x cosign
@@ -233,22 +267,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - id: img
+      - name: Prepare Ref
+        id: img
         run: |
           echo "ref=${{ needs.multiarch_build_push.outputs.image_repo }}:${{ needs.multiarch_build_push.outputs.sha_tag }}" >> $GITHUB_OUTPUT
 
       - env:
-          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_EXPERIMENTAL: 1
         run: cosign verify "${{ steps.img.outputs.ref }}"
 
       - env:
-          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_EXPERIMENTAL: 1
         run: cosign verify-attestation --type cyclonedx "${{ steps.img.outputs.ref }}"
 
       - env:
-          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_EXPERIMENTAL: 1
         run: cosign verify-attestation --type slsaprovenance "${{ steps.img.outputs.ref }}"
 
+# =====================================================================
+# DAST – ONLY VERIFIED IMAGES
+# =====================================================================
   dast_zap:
     needs: supplychain_gate
     runs-on: ubuntu-latest
@@ -264,6 +302,7 @@ jobs:
           docker run -d --rm -p 5000:5000 \
             --name vuln-bank-dast \
             "${{ needs.multiarch_build_push.outputs.image_repo }}:${{ needs.multiarch_build_push.outputs.sha_tag }}"
+
           for i in {1..20}; do
             if curl -sSf http://localhost:5000 >/dev/null; then break; fi
             sleep 3
@@ -294,6 +333,9 @@ jobs:
             ${{ env.REPORT_DIR }}/zap-report.html
             ${{ env.REPORT_DIR }}/zap-report.json
 
+# =====================================================================
+# PIPELINE SUMMARY
+# =====================================================================
   summary:
     needs: dast_zap
     runs-on: ubuntu-latest
