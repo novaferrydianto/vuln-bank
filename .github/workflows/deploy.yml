@@ -190,11 +190,13 @@ jobs:
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
           podman login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Build Image (Flask Vuln Bank)
+      - name: Podman Build
         run: |
           podman build \
+            -f Dockerfile \
             -t "${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.sha_tag }}" \
-            -t "${{ steps.meta.outputs.image_repo }}:latest" .
+            -t "${{ steps.meta.outputs.image_repo }}:latest" \
+             $GITHUB_WORKSPACE
 
       - name: Push Images
         run: |
