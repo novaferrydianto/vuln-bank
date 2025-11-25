@@ -333,6 +333,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set Image Reference (FIX)
+        run: |
+          IMAGE="${{ needs.multiarch_build_push.outputs.image_repo }}"
+          TAG="${{ needs.multiarch_build_push.outputs.sha_tag }}"
+          echo "IMAGE_REF=$IMAGE:$TAG" >> $GITHUB_ENV
+          echo "Pulling verified image: $IMAGE:$TAG" # Debugging confirmation
+
       - run: docker pull "$IMAGE_REF"
 
       - run: |
