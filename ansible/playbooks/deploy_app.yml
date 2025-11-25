@@ -1,7 +1,18 @@
 ---
-- name: Deploy vuln-bank app via Docker Compose on VM2
+- name: Deploy DB (VM3)
+  hosts: db
+  become: true
+
+  roles:
+    - role: deploy_app
+      vars:
+        target: "db"
+
+- name: Deploy APP (VM2)
   hosts: hosting
   become: true
 
   roles:
-    - role: app_compose
+    - role: deploy_app
+      vars:
+        target: "app"

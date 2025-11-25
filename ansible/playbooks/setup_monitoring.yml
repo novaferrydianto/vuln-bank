@@ -1,7 +1,8 @@
 ---
-- name: Setup basic monitoring (node_exporter) on all nodes
-  hosts: all
+- name: Setup monitoring (optional)
+  hosts: hosting
   become: true
-
-  roles:
-    - role: monitoring
+  tasks:
+    - name: Placeholder for future monitoring stack
+      debug:
+        msg: "Add Prometheus/Grafana here if needed."

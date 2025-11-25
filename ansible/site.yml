@@ -1,4 +1,3 @@
-# ansible/site.yml
 ---
 # 1. Infra & docker base
 - import_playbook: playbooks/setup_bastion.yml

@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  app:
+    image: ${DOCKERHUB_USERNAME:-your-dockerhub}/vuln-bank:${IMAGE_TAG:-latest}
+    container_name: vuln-bank
+    restart: always
+    env_file:
+      - .env.vuln
+    environment:
+      # Override kalau mau
+      DB_HOST: ${DB_HOST:-192.168.107.130}
+      DB_PORT: ${DB_PORT:-5432}
+    ports:
+      - "5000:5000"
+    networks:
+      - vulnnet
+
+networks:
+  vulnnet:
+    driver: bridge

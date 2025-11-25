@@ -1,7 +1,7 @@
 ---
-- name: Apply CIS hardening (OpenSCAP Level 1) on hosting & db
+- name: Apply CIS hardening (OpenSCAP-based) ke hosting & db
   hosts: hosting,db
   become: true
 
   roles:
-    - role: hardening
+    - role: cis_hardening

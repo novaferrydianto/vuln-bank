@@ -1,0 +1,46 @@
+name: DAST (ZAP)
+
+on:
+  workflow_call:
+
+jobs:
+  zap_scan:
+    runs-on: ubuntu-latest
+    env:
+      REPORT_DIR: dast-reports
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare report dir
+        run: mkdir -p $REPORT_DIR
+
+      - name: Run app container (for DAST)
+        run: |
+          docker run -d --name vuln-bank \
+            -p 5000:5000 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
+
+      - name: Wait for app
+        run: |
+          for i in {1..30}; do
+            if curl -sSf http://localhost:5000 >/dev/null; then
+              echo "App is up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "App not up" && exit 1
+
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: "http://vuln-bank:5000"
+          cmd_options: "-a"
+          allow_issue_writing: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stop app container
+        if: always()
+        run: docker rm -f vuln-bank || true

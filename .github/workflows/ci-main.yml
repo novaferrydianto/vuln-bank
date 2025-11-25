@@ -1,0 +1,46 @@
+name: DevSecOps Vuln Bank — CI Security
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+  id-token: write
+  actions: read
+
+env:
+  REGISTRY: docker.io
+  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank
+  REPORT_DIR: security-reports
+
+jobs:
+  security:
+    uses: YOUR_GH_USER/YOUR_REPO/.github/workflows/jobs/security.yml@main
+    secrets: inherit
+
+  build_and_push:
+    needs: security
+    if: ${{ needs.security.outputs.block_deploy != 'true' }}
+    uses: YOUR_GH_USER/YOUR_REPO/.github/workflows/jobs/build_and_push.yml@main
+    secrets: inherit
+
+  dast:
+    needs: build_and_push
+    uses: YOUR_GH_USER/YOUR_REPO/.github/workflows/jobs/dast.yml@main
+    secrets: inherit
+
+  create_issue:
+    needs: [security, dast]
+    uses: YOUR_GH_USER/YOUR_REPO/.github/workflows/jobs/create_issue.yml@main
+    secrets: inherit
+
+  notify:
+    needs: [security, dast]
+    uses: YOUR_GH_USER/YOUR_REPO/.github/workflows/jobs/notify.yml@main
+    secrets: inherit

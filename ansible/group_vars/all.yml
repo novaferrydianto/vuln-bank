@@ -1,29 +1,23 @@
 ---
 project_name: vuln-bank
-docker_compose_dir: /opt/vuln-bank
-db_compose_dir: /opt/vuln-db
+dockerhub_username: "{{ lookup('env', 'DOCKERHUB_USERNAME') | default('your-dockerhub', true) }}"
+dockerhub_repo: "{{ dockerhub_username }}/vuln-bank"
 
-# image yang dipush dari CI di DockerHub
-vuln_bank_image: "{{ lookup('env', 'DOCKERHUB_USERNAME') | default('yourdockeruser', true) }}/vuln-bank:latest"
+# versi image terakhir dari pipeline
+vuln_bank_image_tag: "latest"  # bisa di-overwrite dari extra-vars
+vuln_bank_image: "{{ dockerhub_repo }}:{{ vuln_bank_image_tag }}"
 
-# DB config - harus match dengan app
+# OpenSCAP & CIS
+cis_profile: "xccdf_org.ssgproject.content_profile_cis_server_l1"
+cis_min_score: 80
+
+# Lokasi compose file di VM
+vm2_compose_path: /opt/vuln-app/docker-compose.vm2-app.yml
+vm3_compose_path: /opt/vuln-db/docker-compose.vm3-db.yml
+
+# ENV App (boleh di-override dari vault / secret)
 db_name: vulnerable_bank
 db_user: postgres
-db_password: postgres                          # di real world pakai vault
+db_password: postgres
+db_host_vm3: "192.168.107.130"
 db_port: 5432
-db_host: "192.168.107.130"                     # IP VM3
-
-# OpenSCAP
-cis_min_score: 80
-openscap_report_dir: /var/oscap-reports
-
-# SonarQube (hosted di VM1 / bastion)
-sonarqube_container_name: sonarqube
-sonarqube_port: 9000
-
-# GitHub runner
-runner_user: runner
-runner_workdir: /home/runner/actions-runner
-
-# Monitoring (simple)
-node_exporter_version: "1.8.2"

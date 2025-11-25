@@ -1,14 +1,18 @@
 ---
-- name: Add Docker repo
-  yum_repository:
-    name: docker-ce
-    description: Docker CE Stable - $basearch
-    baseurl: https://download.docker.com/linux/centos/9/$basearch/stable
-    gpgcheck: yes
-    gpgkey: https://download.docker.com/linux/centos/gpg
-  notify: restart docker
+- name: Install required packages for docker repo
+  package:
+    name:
+      - yum-utils
+      - device-mapper-persistent-data
+      - lvm2
+    state: present
 
-- name: Install Docker Engine + compose plugin
+- name: Add Docker CE repo
+  get_url:
+    url: https://download.docker.com/linux/centos/docker-ce.repo
+    dest: /etc/yum.repos.d/docker-ce.repo
+
+- name: Install Docker Engine & plugins
   package:
     name:
       - docker-ce
@@ -17,17 +21,14 @@
       - docker-compose-plugin
     state: present
 
-- name: Ensure Docker service running
+- name: Enable & start docker
   service:
     name: docker
     state: started
-    enabled: true
+    enabled: yes
 
-- name: Add ansible_user to docker group
+- name: Add user to docker group
   user:
     name: "{{ ansible_user }}"
     groups: docker
-    append: true
-
-- name: Reset SSH connection to load new group
-  meta: reset_connection
+    append: yes

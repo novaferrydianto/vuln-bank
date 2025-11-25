@@ -1,0 +1,62 @@
+---
+- name: Ensure app directory exists
+  file:
+    path: "{{ '/opt/vuln-app' if target == 'app' else '/opt/vuln-db' }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Copy docker-compose for app (VM2)
+  when: target == "app"
+  copy:
+    src: "../deploy/docker-compose.vm2-app.yml"
+    dest: "{{ vm2_compose_path }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+
+- name: Copy docker-compose for db (VM3)
+  when: target == "db"
+  copy:
+    src: "../deploy/docker-compose.vm3-db.yml"
+    dest: "{{ vm3_compose_path }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+
+- name: Create .env file for app
+  when: target == "app"
+  copy:
+    dest: "/opt/vuln-app/.env.vuln"
+    mode: "0600"
+    content: |
+      DB_NAME={{ db_name }}
+      DB_USER={{ db_user }}
+      DB_PASSWORD={{ db_password }}
+      DB_HOST={{ db_host_vm3 }}
+      DB_PORT={{ db_port }}
+
+- name: Pull latest images
+  when: target == "app"
+  command: "docker compose -f {{ vm2_compose_path }} pull"
+  args:
+    chdir: /opt/vuln-app
+
+- name: Restart app stack
+  when: target == "app"
+  command: "docker compose -f {{ vm2_compose_path }} up -d"
+  args:
+    chdir: /opt/vuln-app
+
+- name: Pull latest db image
+  when: target == "db"
+  command: "docker compose -f {{ vm3_compose_path }} pull"
+  args:
+    chdir: /opt/vuln-db
+
+- name: Restart db stack
+  when: target == "db"
+  command: "docker compose -f {{ vm3_compose_path }} up -d"
+  args:
+    chdir: /opt/vuln-db

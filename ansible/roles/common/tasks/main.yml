@@ -1,18 +1,41 @@
+# ansible/roles/common/tasks/main.yml
 ---
-- name: Ensure basic tools installed
-  package:
+- name: Ensure base packages are installed
+  ansible.builtin.package:
     name:
-      - vim
       - git
+      - vim
       - curl
       - wget
+      - net-tools
       - tar
-      - tmux
-      - firewalld
+      - unzip
+      - nc
     state: present
 
-- name: Ensure firewalld enabled and running
-  service:
+- name: Ensure firewalld is installed
+  ansible.builtin.package:
+    name: firewalld
+    state: present
+
+- name: Enable & start firewalld
+  ansible.builtin.service:
     name: firewalld
     state: started
     enabled: true
+
+- name: Limit SSH root login
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^PermitRootLogin"
+    line: "PermitRootLogin no"
+    create: yes
+  notify: restart sshd
+
+- name: Ensure password auth disabled (gunakan keypair)
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^PasswordAuthentication"
+    line: "PasswordAuthentication no"
+    create: yes
+  notify: restart sshd

@@ -1,0 +1,26 @@
+---
+- name: Ensure SELinux enforcing
+  selinux:
+    policy: targeted
+    state: enforcing
+
+- name: Disable unnecessary services (example)
+  service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  loop:
+    - telnet
+    - rsh
+  ignore_errors: true
+
+- name: Ensure auditd installed
+  package:
+    name: audit
+    state: present
+
+- name: Ensure auditd service running
+  service:
+    name: auditd
+    state: started
+    enabled: yes
