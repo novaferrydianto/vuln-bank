@@ -1,11 +1,16 @@
-name: VulnBank DevSecOps Hybrid
+# .github/workflows/ci-main.yml
+name: Vuln Bank DevSecOps – Hybrid
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
 
 jobs:
 
@@ -32,5 +37,6 @@ jobs:
       app_name: "vuln-bank"
       sca_high: ${{ needs.security.outputs.sca_high }}
       sca_critical: ${{ needs.security.outputs.sca_critical }}
+      epss_critical: ${{ needs.security.outputs.epss_critical }}
       dast_alerts: ${{ needs.dast.outputs.alerts }}
     secrets: inherit
