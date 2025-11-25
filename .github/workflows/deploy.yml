@@ -1,0 +1,252 @@
+name: VulnBank DevSecOps – Hybrid
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: vulnbank-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  issues: write
+  packages: write
+
+env:
+  APP_NAME: vuln-bank
+  NODE_VERSION: 20
+  REPORT_DIR: security-reports
+  REGISTRY: docker.io
+
+jobs:
+  # =====================================================================
+  # 1) TEST + SAST (Sonar)
+  # =====================================================================
+  test_and_sast:
+    name: 🧱 Unit Test + Coverage + Sonar SAST
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Coverage
+        run: |
+          npx cross-env NODE_OPTIONS=--experimental-vm-modules npm run precover
+          npx cross-env NODE_OPTIONS=--experimental-vm-modules npm run cover
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarcloud-github-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ secrets.SONAR_ORG }}
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+  # =====================================================================
+  # 2) SCA + Checkov + Secrets (Trivy + Snyk)
+  # =====================================================================
+  security_audit:
+    name: 🔐 SCA + Trivy FS + Snyk
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - run: npm ci
+
+      # --- Snyk ---
+      - name: Snyk test
+        uses: snyk/actions/node@v1
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: --severity-threshold=low --json-file-output=snyk.json
+
+      - name: Enforce Snyk Policy
+        run: |
+          HIGH=$(grep -o '"severity":"high"' snyk.json | wc -l || true)
+          CRIT=$(grep -o '"severity":"critical"' snyk.json | wc -l || true)
+          if [ $((HIGH + CRIT)) -gt 0 ]; then
+            echo "❌ High/Critical found"
+            exit 1
+          fi
+
+      # --- Trivy ---
+      - name: Trivy FS
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          format: json
+          output: trivy-fs.json
+          ignore-unfixed: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            snyk.json
+            trivy-fs.json
+
+  # =====================================================================
+  # 3) BUILD + PUSH IMAGE (Podman → DockerHub)
+  # =====================================================================
+  build_and_push:
+    name: 📦 Build + Push Image
+    runs-on: ubuntu-latest
+    needs: [test_and_sast, security_audit]
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: |
+          echo "image_ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.IMAGE_NAME }}:${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: DockerHub login
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | podman login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+
+      - name: Build image
+        run: |
+          podman build -t ${{ steps.meta.outputs.image_ref }} .
+          podman tag ${{ steps.meta.outputs.image_ref }} ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.IMAGE_NAME }}:latest
+
+      - name: Push image
+        run: |
+          podman push ${{ steps.meta.outputs.image_ref }}
+          podman push ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.IMAGE_NAME }}:latest
+
+  # =====================================================================
+  # 4) DAST (ZAP)
+  # =====================================================================
+  dast_zap:
+    name: 🎯 ZAP DAST
+    needs: build_and_push
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start App (docker)
+        run: |
+          docker run -d -p 5000:5000 ${{ needs.build_and_push.outputs.image_ref }}
+          sleep 15
+
+      - name: Run ZAP Baseline
+        run: |
+          docker run -v "$(pwd)":/zap/wrk --network="host" \
+          ghcr.io/zaproxy/zaproxy:stable \
+          zap-baseline.py -t http://localhost:5000 -r zap.html -J zap.json || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zap
+          path: |
+            zap.html
+            zap.json
+
+  # =====================================================================
+  # 5) DEPLOY via Ansible (VM2 & VM3)
+  # =====================================================================
+  ansible_deploy:
+    name: 🚀 Deploy Ansible → VM2/VM3
+    needs: build_and_push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get install -y python3-pip
+          pip install ansible-core
+
+      - name: Generate env file
+        run: |
+          mkdir -p ansible/files
+          echo "${{ secrets.VULN_ENV_FILE }}" > ansible/files/.env.vuln
+
+      - name: Deploy App
+        working-directory: ansible
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook site.yml \
+            -i inventory.ini \
+            --extra-vars "image_ref=${{ needs.build_and_push.outputs.image_ref }} cis_min_score=0.8"
+
+  # =====================================================================
+  # 6) AUTO-CREATE GITHUB ISSUE
+  # =====================================================================
+  create_issue:
+    name: ⚠️ Auto Create Issue on Findings
+    needs: [security_audit, dast_zap]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: "⚠️ Security Alerts – VulnBank",
+              body: `Snyk, Trivy, atau ZAP menemukan issue. Cek artifacts.`,
+              labels: ["security"]
+            })
+
+  # =====================================================================
+  # 7) SUMMARY
+  # =====================================================================
+  summary:
+    name: 📝 Pipeline Summary
+    needs: [anseble_deploy]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## VulnBank DevSecOps Pipeline Completed 🎉" >> $GITHUB_STEP_SUMMARY
