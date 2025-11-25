@@ -76,7 +76,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: trufflesecurity/trufflehog@v3
+      - uses: trufflesecurity/trufflehog@v3.63.10
         continue-on-error: true
         with:
           scanArguments: git file://. --json
