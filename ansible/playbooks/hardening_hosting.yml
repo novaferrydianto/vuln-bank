@@ -1,11 +1,7 @@
-# playbooks/hardening_hosting.yml
 ---
-- name: Apply CIS Balanced Pack (85–90%) to all nodes
-  hosts: bastion, db, hosting
+- name: Apply CIS hardening (OpenSCAP Level 1) on hosting & db
+  hosts: hosting,db
   become: true
 
-  vars_files:
-    - ../roles/cis_hardening/vars/practical_exclusions_balanced.yml
-
   roles:
-    - role: cis_hardening
+    - role: hardening

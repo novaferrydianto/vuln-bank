@@ -1,0 +1,21 @@
+name: auto_issue
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create Issue on Critical Finding
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const snyk = JSON.parse(fs.readFileSync('security-reports/snyk.json'));
+
+          const criticals = snyk.vulnerabilities.filter(v => v.severity === "critical");
+          if (criticals.length === 0) return;
+
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `[CRITICAL] Security finding detected`,
+            body: `Critical issues:\n\n${JSON.stringify(criticals, null, 2)}`
+          });

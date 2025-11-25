@@ -1,19 +1,10 @@
-- hosts: bastion
+---
+- name: Setup bastion (VM1) - tools, docker, runner, sonar
+  hosts: bastion
   become: true
-  tasks:
-    - name: Install essential tools
-      dnf:
-        name:
-          - git
-          - ansible
-          - python3-pip
-          - rsync
-          - openscap
-          - scap-security-guide
-        state: present
 
-    - name: Ensure SSH keys exist
-      ansible.builtin.file:
-        path: /home/{{ lookup('env', 'USER') }}/.ssh
-        state: directory
-        mode: '0700'
+  roles:
+    - role: common
+    - role: docker
+    - role: github_runner
+    - role: sonar

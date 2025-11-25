@@ -1,0 +1,11 @@
+name: semgrep
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run Semgrep
+      uses: returntocorp/semgrep-action@v3
+      env:
+        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_TOKEN }}
+      with:
+        config: "p/ci"

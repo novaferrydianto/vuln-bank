@@ -1,9 +1,0 @@
----
-- name: Apply CIS Balanced Hardening (Rocky 9)
-  block:
-    - include_tasks: ssh.yml
-    - include_tasks: filesystem.yml
-    - include_tasks: services.yml
-    - include_tasks: auth.yml
-    - include_tasks: sysctl.yml
-    - include_tasks: audit.yml

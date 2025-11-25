@@ -1,0 +1,12 @@
+name: zap_dast
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run ZAP Baseline
+      uses: zaproxy/action-baseline@v0.8.0
+      with:
+        target: "http://192.168.107.131:5000"
+        cmd_options: "-t 120"
+        fail_action: false
+      continue-on-error: true

@@ -1,0 +1,29 @@
+---
+project_name: vuln-bank
+docker_compose_dir: /opt/vuln-bank
+db_compose_dir: /opt/vuln-db
+
+# image yang dipush dari CI di DockerHub
+vuln_bank_image: "{{ lookup('env', 'DOCKERHUB_USERNAME') | default('yourdockeruser', true) }}/vuln-bank:latest"
+
+# DB config - harus match dengan app
+db_name: vulnerable_bank
+db_user: postgres
+db_password: postgres                          # di real world pakai vault
+db_port: 5432
+db_host: "192.168.107.130"                     # IP VM3
+
+# OpenSCAP
+cis_min_score: 80
+openscap_report_dir: /var/oscap-reports
+
+# SonarQube (hosted di VM1 / bastion)
+sonarqube_container_name: sonarqube
+sonarqube_port: 9000
+
+# GitHub runner
+runner_user: runner
+runner_workdir: /home/runner/actions-runner
+
+# Monitoring (simple)
+node_exporter_version: "1.8.2"

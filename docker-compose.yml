@@ -48,7 +48,7 @@ services:
         condition: service_healthy
     # 🔐 SECURITY: Menghapus env_file (atau pastikan .env.example diabaikan oleh Git)
     # env_file:
-    #   - .env.example
+    #   - .env.viln
     networks:
       - vulnnet
     # Port 5000:5000 tetap dipertahankan karena DAST (ZAP) perlu mengaksesnya dari host.

@@ -1,49 +1,9 @@
 ---
-- name: Provision Hosting Node with Docker + Compose
+- name: Setup hosting node (VM2) - tools + docker + app compose
   hosts: hosting
   become: true
 
-  vars:
-    app_dir: /opt/vuln-bank
-
-  tasks:
-    - name: Install required packages
-      ansible.builtin.dnf:
-        name:
-          - yum-utils
-          - device-mapper-persistent-data
-          - lvm2
-        state: present
-
-    - name: Add Docker repo
-      ansible.builtin.get_url:
-        url: https://download.docker.com/linux/centos/docker-ce.repo
-        dest: /etc/yum.repos.d/docker-ce.repo
-
-    - name: Install Docker
-      ansible.builtin.dnf:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-        state: present
-
-    - name: Enable and start Docker
-      ansible.builtin.service:
-        name: docker
-        state: started
-        enabled: true
-
-    - name: Install Docker Compose plugin
-      ansible.builtin.dnf:
-        name:
-          - docker-compose-plugin
-        state: present
-
-    - name: Ensure app directory exists
-      ansible.builtin.file:
-        path: "{{ app_dir }}"
-        state: directory
-        owner: "{{ ansible_user | default('hosting') }}"
-        group: "{{ ansible_user | default('hosting') }}"
-        mode: "0755"
+  roles:
+    - role: common
+    - role: docker
+    - role: app_compose
