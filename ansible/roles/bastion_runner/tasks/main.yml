@@ -1,0 +1,49 @@
+---
+- name: Install essential tools
+  ansible.builtin.dnf:
+    name:
+      - git
+      - curl
+      - tar
+    state: present
+
+- name: Create GitHub Actions runner directory
+  ansible.builtin.file:
+    path: /opt/actions-runner
+    state: directory
+    owner: bastion
+    group: bastion
+    mode: '0755'
+
+- name: Download GitHub Actions runner
+  ansible.builtin.get_url:
+    url: "https://github.com/actions/runner/releases/download/v2.319.1/actions-runner-linux-x64-2.319.1.tar.gz"
+    dest: /opt/actions-runner/runner.tar.gz
+
+- name: Extract runner
+  ansible.builtin.unarchive:
+    src: /opt/actions-runner/runner.tar.gz
+    dest: /opt/actions-runner/
+    remote_src: true
+
+- name: Install runner dependencies
+  ansible.builtin.shell: /opt/actions-runner/bin/installdependencies.sh
+
+- name: Configure GitHub runner (adjust repo URL & token)
+  ansible.builtin.shell: |
+    cd /opt/actions-runner
+    ./config.sh --url https://github.com/novaferrydianto/vuln-bank \
+                --token {{ github_runner_token }} \
+                --unattended
+  args:
+    creates: /opt/actions-runner/.runner
+
+- name: Install runner as service
+  ansible.builtin.shell: |
+    cd /opt/actions-runner
+    ./svc.sh install
+
+- name: Start runner service
+  ansible.builtin.shell: |
+    cd /opt/actions-runner
+    ./svc.sh start

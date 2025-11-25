@@ -16,6 +16,7 @@ env:
   IMAGE_NAME: vuln-bank
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
   DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  EPSS_THRESHOLD: "0.7"  # <- EPSS gate (0–1). 0.7 = high risk only
 
 permissions:
   contents: read
@@ -75,12 +76,13 @@ jobs:
   # 2) SECURITY AUDIT (Snyk + Trivy FS)
   security_audit:
     runs-on: ubuntu-latest
-    name: 🧩 SCA & FS Audit (Python)
+    name: 🧩 SCA & FS Audit + EPSS Gate
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
+      # --- Snyk SCA (Python deps) ---
       - name: Snyk Python SCA
         uses: snyk/actions/python-3.11@master
         continue-on-error: true
@@ -94,18 +96,61 @@ jobs:
           HIGH=$(grep -o '"severity":"high"' snyk-report.json | wc -l || true)
           CRIT=$(grep -o '"severity":"critical"' snyk-report.json | wc -l || true)
           if [ $((HIGH + CRIT)) -gt 0 ]; then
-            echo "⛔ Found High/Critical vulnerabilities."
+            echo "⛔ Security Gate Failed: Found High/Critical vulnerabilities (Snyk)."
             exit 1
           fi
           echo "✅ Snyk gate passed."
 
-      - name: Trivy FS Scan
+      # --- Trivy FS (JSON, untuk EPSS) ---
+      - name: Install jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Trivy FS Scan (JSON)
         uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           ignore-unfixed: true
-          format: table
-          output: trivy-report.txt
+          format: json
+          output: trivy-report.json
+          vuln-type: 'os,library'
+
+      # --- EPSS Gating based on CVE from Trivy ---
+      - name: EPSS-based Risk Gate
+        env:
+          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
+        run: |
+          echo "📊 EPSS threshold: $EPSS_THRESHOLD"
+
+          # Ambil daftar CVE unik dari Trivy JSON
+          CVE_LIST=$(jq -r '.. | objects | select(has("VulnerabilityID")) | .VulnerabilityID' trivy-report.json 2>/dev/null | sort -u)
+
+          if [ -z "$CVE_LIST" ]; then
+            echo "✅ No CVEs found by Trivy. EPSS gate skipped."
+            exit 0
+          fi
+
+          # Build query string: CVE-1,CVE-2,CVE-3,...
+          CVE_QUERY=$(echo "$CVE_LIST" | paste -sd "," -)
+          echo "CVE(s) detected:"
+          echo "$CVE_LIST"
+          echo "Calling EPSS API for: $CVE_QUERY"
+
+          EPSS_RESPONSE=$(curl -s "https://api.first.org/data/v1/epss?cve=${CVE_QUERY}")
+
+          # Hitung berapa CVE dengan EPSS >= threshold
+          HIGH_RISK_COUNT=$(echo "$EPSS_RESPONSE" | jq --arg thr "$EPSS_THRESHOLD" \
+            '[.data[] | select((.epss | tonumber) >= ($thr | tonumber))] | length')
+
+          echo "🔎 EPSS high-risk count (>= $EPSS_THRESHOLD): $HIGH_RISK_COUNT"
+
+          if [ "$HIGH_RISK_COUNT" -gt 0 ]; then
+            echo "⛔ EPSS Gate Failed: Found $HIGH_RISK_COUNT CVEs with EPSS >= $EPSS_THRESHOLD"
+            echo "$EPSS_RESPONSE" > epss-report.json
+            exit 1
+          fi
+
+          echo "✅ EPSS gate passed (no CVE with EPSS >= $EPSS_THRESHOLD)."
 
       - name: Upload Security Artifacts
         uses: actions/upload-artifact@v4
@@ -113,7 +158,9 @@ jobs:
           name: security-reports
           path: |
             snyk-report.json
-            trivy-report.txt
+            trivy-report.json
+            epss-report.json
+
 
   # 3) BUILD & PUSH (PODMAN → DOCKERHUB) + SBOM
   podman_build_push:

@@ -1,0 +1,7 @@
+---
+- name: Setup DB server (Postgres via Docker Compose)
+  hosts: db
+  become: true
+
+  roles:
+    - db_server

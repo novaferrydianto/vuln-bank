@@ -1,0 +1,8 @@
+---
+- name: Setup Bastion (GitHub Runner + SonarQube)
+  hosts: bastion
+  become: true
+
+  roles:
+    - bastion_runner
+    - sonarserver

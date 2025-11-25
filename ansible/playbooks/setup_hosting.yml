@@ -1,0 +1,7 @@
+---
+- name: Setup Hosting server (Vuln Bank app via Docker Compose)
+  hosts: hosting
+  become: true
+
+  roles:
+    - app_host

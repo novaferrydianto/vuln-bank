@@ -1,0 +1,30 @@
+---
+- name: Install Docker & Docker Compose
+  ansible.builtin.dnf:
+    name:
+      - docker
+      - docker-compose
+    state: present
+
+- name: Enable & start Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Create app directory
+  ansible.builtin.file:
+    path: /opt/vulnbank
+    state: directory
+
+- name: Deploy app docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/vulnbank/docker-compose.yml
+
+- name: Bring up app stack
+  ansible.builtin.shell: |
+    cd /opt/vulnbank
+    docker compose up -d
+  args:
+    executable: /bin/bash

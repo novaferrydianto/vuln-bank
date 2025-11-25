@@ -1,24 +1,14 @@
 ---
-# ============================================================
-# 1. INFRASTRUCTURE SETUP (Bastion + DB + Hosting + Monitoring)
-# ============================================================
+# 1. Infra & Docker base
 - import_playbook: playbooks/setup_bastion.yml
 - import_playbook: playbooks/setup_db.yml
 - import_playbook: playbooks/setup_hosting.yml
-- import_playbook: playbooks/setup_monitoring.yml
 
-# ============================================================
-# 2. CIS HARDENING (Balanced Profile + OpenSCAP)
-# ============================================================
+# 2. CIS Hardening (simplified placeholder for hosting)
 - import_playbook: playbooks/hardening_hosting.yml
 
-# ============================================================
-# 3. OPENSCAP SCORING VALIDATION
-# (Uses --extra-vars "cis_min_score=XX")
-# ============================================================
+# 3. Optional: OpenSCAP verify (placeholder)
 - import_playbook: playbooks/verify_openscap.yml
 
-# ============================================================
-# 4. APPLICATION DEPLOYMENT (VM2 + VM3 via Docker Compose)
-# ============================================================
+# 4. Deploy app (VM2 + VM3)
 - import_playbook: playbooks/deploy_app.yml

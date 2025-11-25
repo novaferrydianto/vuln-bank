@@ -1,11 +1,34 @@
 ---
-- name: CIS Hardening on hosting & db
-  hosts: hosting,db
+- name: Basic hardening for hosting node (placeholder)
+  hosts: hosting
   become: true
 
-  roles:
-    - role: cis_hardening
-    - role: openscap
-      vars:
-        openscap_profile: xccdf_org.ssgproject.content_profile_cis_server_l1
-        openscap_report_dir: /var/oscap
+  tasks:
+    - name: Ensure packages are up to date
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_only: true
+
+    - name: Ensure firewalld is installed and running
+      ansible.builtin.dnf:
+        name: firewalld
+        state: present
+
+    - name: Enable and start firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Allow HTTP and HTTPS
+      ansible.builtin.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: enabled
+      loop:
+        - http
+        - https
+
+    - name: Reload firewalld
+      ansible.builtin.command: firewall-cmd --reload

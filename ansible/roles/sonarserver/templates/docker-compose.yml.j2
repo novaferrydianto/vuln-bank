@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: sonarqube_db
+    restart: always
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonarpass
+      POSTGRES_DB: sonarqube
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - sonarnet
+
+  sonarqube:
+    image: sonarqube:10-community
+    container_name: sonarqube_server
+    restart: always
+    depends_on:
+      - postgres
+    volumes:
+      - sonar_data:/opt/sonarqube/data
+      - sonar_extensions:/opt/sonarqube/extensions
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonarpass
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+      SONAR_SEARCH_JAVAADDITIONALOPTS: "-Xms512m -Xmx512m"
+      SONAR_WEB_JAVAADDITIONALOPTS: "-Xms512m -Xmx512m"
+    networks:
+      - sonarnet
+
+volumes:
+  pg_data:
+  sonar_data:
+  sonar_extensions:
+
+networks:
+  sonarnet:
