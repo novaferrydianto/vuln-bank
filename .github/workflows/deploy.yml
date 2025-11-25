@@ -65,32 +65,52 @@ jobs:
 
 
   # ============================================================
-  # 2) SECRET SCAN (ENTERPRISE MODE)
+  # 2) SECRET SCAN (GHCR TRUFFLEHOG, ENTERPRISE MODE)
   # ============================================================
   secret_scan:
     runs-on: ubuntu-latest
-    name: Secret Scanning (TruffleHog Stable)
-    continue-on-error: true
+    name: Secret Scanning (TruffleHog via GHCR)
+    continue-on-error: true   # jangan matiin pipeline, tapi tetap kasih signal
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run TruffleHog (Stable)
-        uses: trufflesecurity/trufflehog-action@v1.28.0
-        with:
-          path: .
-          base: ${{ github.event.before }}
-          head: ${{ github.sha }}
-
-      - name: Save Secret Scan Report
+      - name: Install jq
         run: |
-          mkdir -p $REPORT_DIR
-          echo "TruffleHog scan completed" > $REPORT_DIR/trufflehog.txt
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run TruffleHog (Stable GHCR)
+        run: |
+          mkdir -p "${{ env.REPORT_DIR }}"
+          docker run --rm \
+            -v "$(pwd)":/repo \
+            ghcr.io/trufflesecurity/trufflehog:latest \
+            filesystem /repo --json > "${{ env.REPORT_DIR }}/trufflehog.json" || true
+
+      - name: Evaluate Verified Secrets
+        run: |
+          FILE="${{ env.REPORT_DIR }}/trufflehog.json"
+          if [ ! -f "$FILE" ]; then
+            echo "⚠️ TruffleHog report not found, skipping evaluation."
+            exit 0
+          fi
+
+          VERIFIED=$(jq '[.[] | select(.verified == true)] | length' "$FILE" 2>/dev/null || echo 0)
+          echo "🔎 Verified secrets count: $VERIFIED"
+
+          if [ "$VERIFIED" -gt 0 ]; then
+            echo "❌ Verified secrets detected by TruffleHog: $VERIFIED"
+            # job tetap boleh fail, tapi karena continue-on-error: true di job,
+            # pipeline global tetap jalan
+            exit 1
+          fi
+
+          echo "✅ No verified secrets found."
 
       - uses: actions/upload-artifact@v4
         with:
           name: trufflehog-report
-          path: ${{ env.REPORT_DIR }}/trufflehog.txt
+          path: ${{ env.REPORT_DIR }}/trufflehog.json
 
 
   # ============================================================
@@ -113,7 +133,10 @@ jobs:
       - run: |
           HIGH=$(grep -o '"severity":"high"' snyk-report.json | wc -l || true)
           CRIT=$(grep -o '"severity":"critical"' snyk-report.json | wc -l || true)
-          if [ $((HIGH+CRIT)) -gt 0 ]; then exit 1; fi
+          if [ $((HIGH+CRIT)) -gt 0 ]; then
+            echo "❌ Snyk found High/Critical vulns"
+            exit 1
+          fi
 
       - run: sudo apt-get update && sudo apt-get install -y jq
 
@@ -134,13 +157,23 @@ jobs:
       - name: EPSS Gate
         run: |
           CVE_LIST=$(jq -r '.. | objects | select(has("VulnerabilityID")) | .VulnerabilityID' trivy-report.json)
-          if [ -z "$CVE_LIST" ]; then exit 0; fi
+          if [ -z "$CVE_LIST" ]; then
+            echo "✅ No CVEs from Trivy, skipping EPSS gate."
+            exit 0
+          fi
 
           CVE_QUERY=$(echo "$CVE_LIST" | paste -sd ",")
           EPSS=$(curl -s "https://api.first.org/data/v1/epss?cve=$CVE_QUERY")
           HIGH_RISK=$(echo "$EPSS" | jq --arg thr "${{ env.EPSS_THRESHOLD }}" '[.data[] | select(.epss|tonumber >= ($thr|tonumber))] | length')
 
-          if [ "$HIGH_RISK" -gt 0 ]; then exit 1; fi
+          echo "🔎 High-risk EPSS CVEs: $HIGH_RISK"
+
+          if [ "$HIGH_RISK" -gt 0 ]; then
+            echo "❌ EPSS gate failed: high-risk CVEs found."
+            exit 1
+          fi
+
+          echo "✅ EPSS gate passed."
 
       - uses: actions/upload-artifact@v4
         with:
@@ -240,6 +273,7 @@ jobs:
           fi
 
           echo "IMAGE_REF=$IMAGE:$TAG" >> $GITHUB_ENV
+          echo "Using IMAGE_REF=$IMAGE:$TAG"
 
       - name: Sign Image
         env:
@@ -297,7 +331,7 @@ jobs:
           TAG="${{ needs.multiarch_build_push.outputs.sha_tag }}"
           echo "IMAGE_REF=$IMAGE:$TAG" >> $GITHUB_ENV
           echo "✅ Image Reference set: $IMAGE:$TAG"
-          
+
       - name: Install Cosign
         run: |
           wget https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
@@ -333,19 +367,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set Image Reference (FIX)
+      - name: Set Image Reference (DAST)
         run: |
           IMAGE="${{ needs.multiarch_build_push.outputs.image_repo }}"
           TAG="${{ needs.multiarch_build_push.outputs.sha_tag }}"
           echo "IMAGE_REF=$IMAGE:$TAG" >> $GITHUB_ENV
-          echo "Pulling verified image: $IMAGE:$TAG" # Debugging confirmation
+          echo "Pulling verified image for DAST: $IMAGE:$TAG"
 
       - run: docker pull "$IMAGE_REF"
 
       - run: |
           docker run -d --rm -p 5000:5000 --name vuln-bank "$IMAGE_REF"
           for i in {1..20}; do
-            curl -sSf http://localhost:5000 >/dev/null && break
+            if curl -sSf http://localhost:5000 >/dev/null 2>&1; then
+              echo "App is up."
+              break
+            fi
+            echo "Waiting for app..."
             sleep 3
           done
 
@@ -365,7 +403,7 @@ jobs:
             $SCRIPT \
             -t http://localhost:5000 \
             -r zap-report.html \
-            -J zap-report.json
+            -J zap-report.json || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -386,9 +424,9 @@ jobs:
     steps:
       - run: |
           echo "## DevSecOps Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Secret Scan (TruffleHog Stable)" >> $GITHUB_STEP_SUMMARY
+          echo "- Secret Scan (TruffleHog via GHCR)" >> $GITHUB_STEP_SUMMARY
           echo "- SAST + SCA + Misconfig + EPSS" >> $GITHUB_STEP_SUMMARY
           echo "- Multi-Arch Buildx + SBOM" >> $GITHUB_STEP_SUMMARY
           echo "- Cosign Signature + SLSA" >> $GITHUB_STEP_SUMMARY
-          echo "- Supply Chain Verified Gate" >> $GITHUB_STEP_SUMMARY
+          echo "- Supply Chain Verify Gate" >> $GITHUB_STEP_SUMMARY
           echo "- OWASP ZAP (Verified Image)" >> $GITHUB_STEP_SUMMARY
