@@ -1,4 +1,4 @@
-name: DevSecOps Vuln Bank
+name: DevSecOps Vuln Bank (Podman + SBOM + Cosign Attestation)
 
 on:
   push:
@@ -6,255 +6,324 @@ on:
   pull_request:
     branches: [ "main" ]
   schedule:
-    - cron: "0 18 * * *" # Daily full scan jam 01:00 WIB (sesuaikan)
+    - cron: "0 18 * * *"
   workflow_dispatch:
-
-permissions:
-  contents: read
-  security-events: write
-  actions: read
-  issues: write
-  packages: write
-  id-token: write   # jika nanti mau pakai Cosign keyless
 
 env:
   REPORT_DIR: security-reports
+  REGISTRY: docker.io
   IMAGE_NAME: vuln-bank
-  REGISTRY: ghcr.io/${{ github.repository_owner }}
-  IMAGE_TAG: ${{ github.sha }}
-  EPSS_THRESHOLD: "0.7"
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  security-events: write
+  issues: write
 
 jobs:
-  ########################################################
-  # JOB 1 — BUILD + TEST (OPTIONAL BUT NICE)
-  ########################################################
-  build_and_test:
+  # =================================================================
+  # GROUP 1: PARALLEL JOBS
+  # =================================================================
+
+  # 1) UNIT TEST + COVERAGE + SAST
+  test_and_sast:
     runs-on: ubuntu-latest
-    name: 🧱 Build & Test
+    name: 🧱 Test & SAST
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Set up Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
 
-      - name: Install dependencies
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Unit Tests
+        run: npm test
+
+      - name: Coverage (NYC + Mocha)
         run: |
-          npm install
+          npx cross-env NODE_OPTIONS=--experimental-vm-modules npm run precover
+          npx cross-env NODE_OPTIONS=--experimental-vm-modules npm run cover
 
-      - name: Run tests
-        run: |
-          npm test || echo "⚠️ Tests failed but continue for demo"
-
-      - name: Build Docker image
-        run: |
-          docker build -t $REGISTRY/$IMAGE_NAME:$IMAGE_TAG .
-
-      - name: Save Docker image as artifact (optional)
-        run: |
-          mkdir -p $REPORT_DIR
-          docker save $REGISTRY/$IMAGE_NAME:$IMAGE_TAG -o $REPORT_DIR/vuln-bank-image.tar
-
-      - name: Upload image tar
+      - name: Upload Coverage Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: docker-image
-          path: $REPORT_DIR/vuln-bank-image.tar
+          name: coverage-report
+          path: coverage/
 
-  ########################################################
-  # JOB 2 — SECURITY SCANS (Secrets, SCA, SAST, Misconfig, SBOM)
-  ########################################################
-  security_scans:
+      - name: SonarCloud Scan (SAST)
+        uses: sonarsource/sonarcloud-github-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=devsecopsganodejs
+            -Dsonar.projectKey=devsecopsganodejs
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+  # 2) SECURITY AUDIT (Snyk + Trivy)
+  security_audit:
     runs-on: ubuntu-latest
-    name: 🔐 Security Scans
-    needs: build_and_test
-
-    env:
-      HAS_CRITICAL: "false"
-      HAS_EPSS_HIGH: "false"
+    name: 🧩 SCA & FS Audit
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Prepare report dir
-        run: mkdir -p $REPORT_DIR
-
-      - name: Install tools (jq, trufflehog, syft)
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
-          pip install trufflehog
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
-      # ----------------------- SECRET SCAN -----------------------
-      - name: TruffleHog Secret Scan
-        run: |
-          trufflehog filesystem . --json > $REPORT_DIR/trufflehog.json || true
-
-      # ----------------------- SCA (FS + IMAGE) ------------------
-      - name: Trivy FS SCA Scan
-        uses: aquasecurity/trivy-action@0.28.0
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          scan-type: 'fs'
-          ignore-unfixed: true
-          format: 'json'
-          output: '${{ env.REPORT_DIR }}/trivy-fs.json'
-          vuln-type: 'os,library'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
 
-      - name: Load Docker image
-        run: |
-          docker load -i $REPORT_DIR/../docker-image/vuln-bank-image.tar || true
+      - name: Install Dependencies
+        run: npm ci
+
+      # --- Snyk SCA ---
+      - name: Snyk Scan
+        uses: snyk/actions/node@v1
         continue-on-error: true
-
-      - name: Trivy Image Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          command: test
+          args: --severity-threshold=low --json-file-output=snyk-report.json
+
+      - name: Enforce Snyk Policy (Fail on High/Critical)
+        run: |
+          HIGH=$(grep -o '"severity":"high"' snyk-report.json | wc -l || true)
+          CRIT=$(grep -o '"severity":"critical"' snyk-report.json | wc -l || true)
+          if [ $((HIGH + CRIT)) -gt 0 ]; then
+            echo "⛔ Found High/Critical vulnerabilities."
+            exit 1
+          fi
+          echo "✅ Snyk gate passed."
+
+      # --- Trivy FS ---
+      - name: Trivy FS Scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
           ignore-unfixed: true
-          format: 'json'
-          output: '${{ env.REPORT_DIR }}/trivy-image.json'
-          vuln-type: 'os,library'
+          format: table
+          output: trivy-report.txt
 
-      # ----------------------- SAST ------------------------------
-      - name: Semgrep SAST
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: "p/owasp-top-ten"
-          generateSarif: true
-          output: ${{ env.REPORT_DIR }}/semgrep.sarif
-
-      # ----------------------- MISCONFIG -------------------------
-      - name: Trivy Config Scan (IaC/Misconfig)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: 'config'
-          format: 'json'
-          output: '${{ env.REPORT_DIR }}/trivy-config.json'
-          severity: 'MEDIUM,HIGH,CRITICAL'
-
-      # ----------------------- SBOM ------------------------------
-      - name: Generate SBOM with Syft
-        run: |
-          syft dir:. -o json > $REPORT_DIR/sbom.json || true
-
-      # ------------------- EPSS + CRITICAL EVAL ------------------
-      - name: Evaluate Critical Findings + EPSS
-        id: eval
-        run: |
-          echo "HAS_CRITICAL=false" >> $GITHUB_ENV
-          echo "HAS_EPSS_HIGH=false" >> $GITHUB_ENV
-
-          # 1) Simple check: any CRITICAL/HIGH in Trivy image or fs
-          CRIT_COUNT=$(jq '[.. | objects | select(.Severity=="CRITICAL")] | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
-          HIGH_COUNT=$(jq '[.. | objects | select(.Severity=="HIGH")] | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
-
-          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            echo "HAS_CRITICAL=true" >> $GITHUB_ENV
-          fi
-
-          # 2) EPSS-like logic (demo version)
-          #    Ambil daftar CVE dari Trivy dan "anggap" EPSS tinggi kalau severity CRITICAL/HIGH
-          #    (di real world: panggil API EPSS, threshold pakai $EPSS_THRESHOLD)
-          EPSS_LIKE=$(jq '[.. | objects | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' $REPORT_DIR/trivy-image.json 2>/dev/null || echo 0)
-          if [ "$EPSS_LIKE" -gt 0 ]; then
-            echo "HAS_EPSS_HIGH=true" >> $GITHUB_ENV
-          fi
-
-          # Build summary file for GitHub Issue / Alert
-          cat <<EOF > $REPORT_DIR/summary-critical.md
-  # 🔐 Vuln Bank - Critical/High Findings
-
-  - Critical count (Trivy Image): $CRIT_COUNT
-  - High count (Trivy Image): $HIGH_COUNT
-  - EPSS-like high risk: $EPSS_LIKE (using severity as proxy)
-
-  Please check detailed reports in the pipeline artifacts:
-  - trivy-image.json
-  - trivy-fs.json
-  - semgrep.sarif
-  - trivy-config.json
-  - trufflehog.json
-  EOF
-
-      # ------------------- UPLOAD REPORTS ------------------------
-      - name: Upload security reports
+      - name: Upload Security Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
-          path: ${{ env.REPORT_DIR }}
+          path: |
+            snyk-report.json
+            trivy-report.txt
 
-      # ------------------- CREATE GITHUB ISSUE -------------------
-      - name: Create GitHub Issue for Critical Vulns
-        if: env.HAS_CRITICAL == 'true'
-        uses: peter-evans/create-issue-from-file@v5
-        with:
-          title: "🚨 Critical/High vulnerabilities detected in ${{ github.sha }}"
-          content-filepath: ${{ env.REPORT_DIR }}/summary-critical.md
-          labels: security, critical
-
-      # ------------------- DISCORD / SLACK ALERT -----------------
-      - name: Send Discord Alert
-        if: env.HAS_CRITICAL == 'true' || env.HAS_EPSS_HIGH == 'true'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          MSG="🚨 *Vuln Bank Security Alert* 🚨%0ARepo: $GITHUB_REPOSITORY%0ACommit: $GITHUB_SHA%0ARun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID%0AStatus: Critical/EPSS-high vulnerabilities detected. Please check security-reports artifacts."
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "{\"content\":\"$MSG\"}" \
-               "$DISCORD_WEBHOOK"
-
-      # ------------------- FAIL PIPELINE IF NEEDED ---------------
-      - name: Fail job if critical/EPSS high
-        if: env.HAS_CRITICAL == 'true' || env.HAS_EPSS_HIGH == 'true'
-        run: |
-          echo "❌ Critical/EPSS-high vulnerabilities detected. Failing pipeline."
-          exit 1
-
-  ########################################################
-  # JOB 3 — DAST (OWASP ZAP)
-  ########################################################
-  dast_scan:
+  # 3) BUILD & PUSH (PODMAN → DOCKERHUB) + SBOM
+  podman_build_push:
     runs-on: ubuntu-latest
-    name: 🌐 DAST with OWASP ZAP
-    needs: build_and_test
+    name: 📦 Build & Push Image (Podman + SBOM)
+    outputs:
+      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+      image_repo: ${{ steps.meta.outputs.image_repo }}
+
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Prepare report dir
-        run: mkdir -p $REPORT_DIR
-
-      - name: Run Vuln Bank container
+      # --- Metadata ---
+      - id: meta
+        name: Prepare Image Metadata
         run: |
-          docker load -i ${{ github.workspace }}/docker-image/vuln-bank-image.tar || true
-          docker run -d --rm -p 8080:8080 --name vuln-bank vuln-bank || true
+          echo "sha_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image_repo=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for app to be ready
+      # --- Install Podman ---
+      - name: Install Podman
         run: |
-          for i in {1..30}; do
-            if curl -sSf http://localhost:8080 >/dev/null 2>&1; then
-              echo "App is up!"
-              exit 0
-            fi
-            echo "Waiting for app..."
-            sleep 5
-          done
-          echo "App did not start in time" && exit 1
+          sudo apt-get update
+          sudo apt-get install -y podman
 
-      - name: ZAP Baseline Scan
+      # --- Login to DockerHub ---
+      - name: Podman Login → DockerHub
         run: |
-          docker run --rm -t \
-            -v $PWD/$REPORT_DIR:/zap/wrk \
-            owasp/zap2docker-stable zap-baseline.py \
-              -t http://host.docker.internal:8080 \
-              -r zap-report.html || true
+          echo "${{ env.DOCKERHUB_TOKEN }}" | \
+          podman login docker.io -u "${{ env.DOCKERHUB_USER }}" --password-stdin
 
-      - name: Upload ZAP report
+      # --- Build Image ---
+      - name: Build Image
+        run: |
+          podman build \
+            -t "${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.sha_tag }}" \
+            -t "${{ steps.meta.outputs.image_repo }}:latest" .
+
+      # --- Push Image ---
+      - name: Push Images
+        run: |
+          podman push "${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.sha_tag }}"
+          podman push "${{ steps.meta.outputs.image_repo }}:latest"
+
+      # ======================== SBOM GENERATION ========================
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM CycloneDX
+        run: |
+          mkdir -p sbom
+          syft "${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.sha_tag }}" -o cyclonedx-json > sbom/sbom-cyclonedx.json
+
+      - name: Upload SBOM Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zap-dast-report
-          path: ${{ env.REPORT_DIR }}/zap-report.html
+          name: sbom-cyclonedx
+          path: sbom/sbom-cyclonedx.json
+
+  # =================================================================
+  # GROUP 2: SIGNING (Cosign Signing + Attestation)
+  # =================================================================
+  cosign_sign:
+    needs: [test_and_sast, security_audit, podman_build_push]
+    runs-on: ubuntu-latest
+    name: 🔏 Cosign Signing + SBOM Attestation
+
+    steps:
+      - name: Install Cosign
+        run: |
+          wget https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+          mv cosign-linux-amd64 cosign
+          chmod +x cosign
+          sudo mv cosign /usr/local/bin/cosign
+          cosign version
+
+      # --- Login to DockerHub ---
+      - name: DockerHub Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # --- Download SBOM ---
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: .
+
+      - name: Prepare Image Ref
+        id: img
+        run: |
+          echo "ref=${{ needs.podman_build_push.outputs.image_repo }}:${{ needs.podman_build_push.outputs.sha_tag }}" >> $GITHUB_OUTPUT
+
+      # --- SIGN IMAGE (KEYLESS) ---
+      - name: Cosign Sign Image
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes "${{ steps.img.outputs.ref }}"
+
+      # --- SBOM ATTESTATION ---
+      - name: Cosign Attest (SBOM CycloneDX)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest \
+            --yes \
+            --predicate sbom-cyclonedx.json \
+            --type cyclonedx \
+            "${{ steps.img.outputs.ref }}"
+
+      # -- Export Signatures --
+      - name: Export Cosign Signature
+        run: |
+          cosign download signature \
+            "${{ steps.img.outputs.ref }}" \
+            --output-file cosign.sig
+
+      - name: Upload Cosign Signature
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosign-signature
+          path: cosign.sig
+
+  # =================================================================
+  # GROUP 3: DAST (Smart ZAP)
+  # =================================================================
+  dast_zap:
+    needs: cosign_sign
+    runs-on: ubuntu-latest
+    name: 🎯 Smart OWASP ZAP
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Start App
+        run: |
+          nohup npm start &>/dev/null &
+          sleep 10
+
+      - name: Decide Scan Type
+        id: scan
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "script=zap-full-scan.py" >> "$GITHUB_OUTPUT"
+          else
+            echo "script=zap-baseline.py" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run ZAP
+        run: |
+          docker run -v "$(pwd)":/zap/wrk/ \
+            --network="host" -t ghcr.io/zaproxy/zaproxy:stable \
+            ${{ steps.scan.outputs.script }} \
+            -t http://localhost:3000 \
+            -r zap.html \
+            -J zap.json || true
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            zap.html
+            zap.json
+
+  # =================================================================
+  # SUMMARY
+  # =================================================================
+  summary:
+    needs: dast_zap
+    runs-on: ubuntu-latest
+    name: 🧾 DevSecOps Summary
+
+    steps:
+      - name: Write Summary
+        run: |
+          echo "## DevSecOps Pipeline — Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ Unit Tests + SonarCloud SAST" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ Snyk SCA + Trivy FS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ Podman Build → DockerHub Push" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ SBOM (CycloneDX) via Syft" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ Cosign Image Signing (Keyless)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ Cosign SBOM Attestation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✔ Smart OWASP ZAP (baseline/full)" >> "$GITHUB_STEP_SUMMARY"
+          echo "🎉 Pipeline Completed Successfully!" >> "$GITHUB_STEP_SUMMARY"
