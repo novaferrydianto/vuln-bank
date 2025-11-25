@@ -70,8 +70,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.organization=devsecopsganodejs
-            -Dsonar.projectKey=devsecopsganodejs
+            -Dsonar.organization=vuln-bank
+            -Dsonar.projectKey=vulnbank
 
   # 2) SECURITY AUDIT (Snyk + Trivy FS)
   security_audit:
