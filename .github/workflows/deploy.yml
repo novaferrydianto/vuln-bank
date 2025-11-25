@@ -95,7 +95,7 @@ jobs:
           extra_args: --fail-verified --json
 
       - name: Fail if verified secrets found
-        if: steps.trufflehog.outcome == 'failure'
+        if: ${{ steps.trufflehog.outputs.found == 'verified' }}
         run: |
           echo "🔥 TruffleHog found verified secrets. Failing pipeline."
           exit 1
