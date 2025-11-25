@@ -291,6 +291,13 @@ jobs:
     name: Verify Supply Chain
 
     steps:
+      - name: Set Image Reference
+        run: |
+          IMAGE="${{ needs.multiarch_build_push.outputs.image_repo }}"
+          TAG="${{ needs.multiarch_build_push.outputs.sha_tag }}"
+          echo "IMAGE_REF=$IMAGE:$TAG" >> $GITHUB_ENV
+          echo "✅ Image Reference set: $IMAGE:$TAG"
+          
       - name: Install Cosign
         run: |
           wget https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
