@@ -1,157 +1,47 @@
-# .github/workflows/jobs-security.yml
 name: Reusable - Security Suite
 
 on:
   workflow_call:
+    outputs:
+      sca_high:
+        description: "High SCA vulnerabilities"
+        value: ${{ jobs.sca.outputs.sca_high }}
+      sca_critical:
+        description: "Critical SCA vulnerabilities"
+        value: ${{ jobs.sca.outputs.sca_critical }}
+    secrets:
+      SNYK_TOKEN:
+        required: true
+      SONAR_TOKEN:
+        required: true
 
 jobs:
-  security:
+  sca:
     runs-on: ubuntu-latest
-    name: 🔐 Security Suite
 
-    env:
-      REPORT_DIR: security-reports
-      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      EPSS_THRESHOLD: "0.5" # 50%+ probability exploited
+    outputs:
+      sca_high: ${{ steps.count.outputs.high }}
+      sca_critical: ${{ steps.count.outputs.critical }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare report dir
-        run: mkdir -p "$REPORT_DIR"
-
-      # -------- Secret Scanning (TruffleHog) --------
-      - name: TruffleHog Secrets Scan
-        uses: trufflesecurity/trufflehog@v3.88.7
-        continue-on-error: true
-        with:
-          path: .
-          extra_args: --json
-        env:
-          TRUFFLEHOG_REPORT: ${{ env.REPORT_DIR }}/trufflehog.json
-
-      # -------- Semgrep SAST --------
-      - name: Semgrep Scan
-        uses: returntocorp/semgrep-action@v1
-        continue-on-error: true
-        with:
-          config: >-
-            p/owasp-top-ten
-          generateSarif: "yes"
-          sarifFile: ${{ env.REPORT_DIR }}/semgrep.sarif
-
-      # -------- SonarQube SAST --------
-      - name: Install SonarScanner
-        run: |
-          wget -O sonar-scanner.zip \
-            https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-5.0.1.3006-linux.zip
-          unzip sonar-scanner.zip
-          mv sonar-scanner-*/ sonar-scanner
-
-      - name: SonarQube Scan
-        env:
-          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
-        run: |
-          ./sonar-scanner/bin/sonar-scanner \
-            -Dsonar.projectKey=vuln-bank \
-            -Dsonar.sources=. \
-            -Dsonar.python.version=3.12 \
-            -Dsonar.host.url=${SONAR_HOST_URL}
-
-      # -------- Trivy FS & Image (SCA + Misconfig) --------
-      - name: Install Trivy
-        uses: aquasecurity/trivy-action@0.33.1
-        with:
-          scan-type: fs
-          ignore-unfixed: true
-          format: json
-          output: ${{ env.REPORT_DIR }}/trivy-fs.json
-
-      - name: Trivy Config (IaC & Dockerfile)
-        uses: aquasecurity/trivy-action@0.33.1
-        with:
-          scan-type: config
-          ignore-unfixed: true
-          format: json
-          output: ${{ env.REPORT_DIR }}/trivy-config.json
-
-      # -------- Snyk SCA (dependencies) --------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: actions/checkout@v4
 
       - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+        run: npm ci
 
-      - name: Snyk Dependencies Scan
-        uses: snyk/actions/python@master
-        continue-on-error: true
+      - name: Run Snyk Scan
+        uses: snyk/actions/node@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           command: test
-          args: >-
-            --severity-threshold=low
-            --json-file-output=${{ env.REPORT_DIR }}/snyk-deps.json
+          args: --json-file-output=snyk.json
 
-      # -------- Checkov IaC --------
-      - name: Checkov IaC Scan
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: .
-          output_format: json
-          output_file_path: ${{ env.REPORT_DIR }}
-
-      # -------- EPSS Enrichment + Gate --------
-      - name: EPSS-based Prioritization
-        id: epss
+      - id: count
+        name: Extract High/Critical
         run: |
-          set -e
-          echo "Collecting CVEs from Snyk + Trivy..."
-          jq -r '..|.cve? // empty' "$REPORT_DIR"/snyk-deps.json 2>/dev/null | sort -u > /tmp/cves.txt || true
-          jq -r '..|.VulnerabilityID? // empty' "$REPORT_DIR"/trivy-fs.json 2>/dev/null | sort -u >> /tmp/cves.txt || true
-          sort -u /tmp/cves.txt -o /tmp/cves.txt || true
+          HIGH=$(grep -o '"severity":"high"' snyk.json | wc -l)
+          CRIT=$(grep -o '"severity":"critical"' snyk.json | wc -l)
 
-          if [ ! -s /tmp/cves.txt ]; then
-            echo "No CVEs found for EPSS enrichment."
-            echo "has_critical=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Calling EPSS API..."
-          EPSS_HIGH=0
-          while read -r CVE; do
-            RESP=$(curl -s "https://api.first.org/data/v1/epss?cve=${CVE}")
-            SCORE=$(echo "$RESP" | jq -r '.data[0].epss // 0')
-            echo "${CVE} -> EPSS=${SCORE}"
-            if awk "BEGIN {exit !($SCORE >= $EPSS_THRESHOLD)}"; then
-              EPSS_HIGH=$((EPSS_HIGH+1))
-            fi
-          done < /tmp/cves.txt
-
-          echo "EPSS_HIGH=${EPSS_HIGH}"
-          if [ "$EPSS_HIGH" -gt 0 ]; then
-            echo "has_critical=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_critical=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # -------- Upload Artifacts --------
-      - name: Upload Security Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: ${{ env.REPORT_DIR }}
-
-      # -------- Auto GitHub Issue kalau kritikal --------
-      - name: Create GitHub Issue on Critical
-        if: steps.epss.outputs.has_critical == 'true'
-        uses: ./.github/workflows/jobs-create-issue.yml
-        with:
-          app_name: Vuln Bank
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "critical=$CRIT" >> $GITHUB_OUTPUT

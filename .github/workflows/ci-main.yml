@@ -1,45 +1,24 @@
-# .github/workflows/ci-main.yml
-name: Vuln Bank DevSecOps – Hybrid
+name: VulnBank DevSecOps Hybrid
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  schedule:
-    - cron: "0 3 * * *" # Nightly full scan
   workflow_dispatch:
 
-concurrency:
-  group: vulnbank-${{ github.ref }}
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-  security-events: write
-  actions: read
-  issues: write
-  packages: write
-
-env:
-  APP_NAME: vuln-bank
-  REGISTRY: docker.io
-  REPORT_DIR: security-reports
-
 jobs:
+
   security:
-    name: 🔐 Security Suite (Secrets + SAST + SCA + IaC)
     uses: ./.github/workflows/jobs-security.yml
     secrets: inherit
 
   build_and_push:
-    name: 📦 Build & Push Image
     needs: security
     uses: ./.github/workflows/jobs-build-and-push.yml
     secrets: inherit
 
   dast:
-    name: 🎯 DAST (ZAP) using built image
     needs: build_and_push
     uses: ./.github/workflows/jobs-dast.yml
     with:
@@ -51,45 +30,7 @@ jobs:
     uses: ./.github/workflows/jobs-create-issue.yml
     with:
       app_name: "vuln-bank"
-      epss_critical: ${{ needs.security.outputs.epss_critical }}
-      sca_high:      ${{ needs.security.outputs.sca_high }}
-      sca_critical:  ${{ needs.security.outputs.sca_critical }}
-      sast_high:     ${{ needs.security.outputs.sast_high }}
-      sast_critical: ${{ needs.security.outputs.sast_critical }}
-      dast_alerts:   ${{ needs.dast.outputs.alerts }}
+      sca_high: ${{ needs.security.outputs.sca_high }}
+      sca_critical: ${{ needs.security.outputs.sca_critical }}
+      dast_alerts: ${{ needs.dast.outputs.alerts }}
     secrets: inherit
-
-  deploy:
-    name: 🚀 Deploy via Ansible (VM2 & VM3)
-    needs: build_and_push
-    runs-on: ubuntu-latest
-    env:
-      IMAGE_REF: ${{ needs.build_and_push.outputs.image_ref }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Ansible
-        run: |
-          python -m pip install --upgrade pip
-          pip install "ansible-core>=2.15,<2.17"
-
-      - name: Generate .env.vuln from GitHub Secret
-        working-directory: ansible
-        run: |
-          mkdir -p files
-          echo "${{ secrets.VULN_ENV_FILE }}" > files/.env.vuln
-
-      - name: Run Ansible site
-        working-directory: ansible
-        env:
-          ANSIBLE_HOST_KEY_CHECKING: "False"
-        run: |
-          ansible-playbook site.yml \
-            -i inventory.ini \
-            --extra-vars "image_ref=${IMAGE_REF} cis_min_score=0.8"

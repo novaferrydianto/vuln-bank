@@ -1,12 +1,18 @@
-# .github/workflows/jobs-build-and-push.yml
 name: Reusable - Build & Push
 
 on:
   workflow_call:
     outputs:
       image_ref:
-        description: "Full image reference (repo:tag)"
+        description: "Image reference"
         value: ${{ jobs.build.outputs.image_ref }}
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      IMAGE_NAME:
+        required: true
 
 jobs:
   build:
@@ -14,39 +20,22 @@ jobs:
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
 
-    env:
-      REGISTRY: docker.io
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - id: meta
-        name: Prepare Image Metadata
         run: |
-          IMAGE_REPO="${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank"
-          SHA_TAG="${GITHUB_SHA::7}"
-          echo "image_ref=${IMAGE_REPO}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
-          echo "IMAGE_REPO=${IMAGE_REPO}" >> "$GITHUB_ENV"
-          echo "SHA_TAG=${SHA_TAG}" >> "$GITHUB_ENV"
+          TAG=${GITHUB_SHA::7}
+          IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.IMAGE_NAME }}:$TAG"
+          echo "image_ref=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Install Podman
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
+      - name: Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Podman Login DockerHub
+      - name: Build & Push
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
-          podman login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Build Image
-        run: |
-          podman build \
-            -t "${IMAGE_REPO}:${SHA_TAG}" \
-            -t "${IMAGE_REPO}:latest" .
-
-      - name: Push Images
-        run: |
-          podman push "${IMAGE_REPO}:${SHA_TAG}"
-          podman push "${IMAGE_REPO}:latest"
+          docker build -t ${{ steps.meta.outputs.image_ref }} .
+          docker push ${{ steps.meta.outputs.image_ref }}
