@@ -1,4 +1,4 @@
-name: 🔐 Vuln Bank DevSecOps Pipeline (Enterprise v3)
+name: 🔐 Vuln Bank DevSecOps Pipeline
 
 on:
   push:
@@ -64,7 +64,7 @@ jobs:
             semgrep==1.* \
             bandit-sarif-formatter
 
-          # TruffleHog (pakai script raw - versi kamu yg OK ✅)
+          # TruffleHog
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
 
@@ -329,7 +329,7 @@ jobs:
       - name: 📝 Append security summary
         if: always()
         run: |
-          echo "## 🔐 Vuln Bank - Enterprise v3 Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🔐 Vuln Bank - Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: $FULL_IMAGE" >> "$GITHUB_STEP_SUMMARY"
           echo "- EPSS threshold: $EPSS_THRESHOLD" >> "$GITHUB_STEP_SUMMARY"
           echo "- SBOM: sbom.json / sbom-spdx.json / sbom-cyclonedx.json" >> "$GITHUB_STEP_SUMMARY"
