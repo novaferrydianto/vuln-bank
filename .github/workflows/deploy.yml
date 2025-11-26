@@ -2,9 +2,9 @@ name: 🔐 Vuln Bank DevSecOps Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   schedule:
     - cron: "0 18 * * *" # Daily full scan (≈ 01:00 WIB)
   workflow_dispatch:
@@ -22,15 +22,18 @@ jobs:
   # JOB 1 — SECURITY CI (runs on GitHub-hosted runner)
   #################################################################
   security-ci:
-    name: 🛡️ Security CI (SAST / SCA / Secrets / DAST / Misconfig)
+    name: 🛡️ Security CI (SAST / SCA / Secrets / DAST / Misconfig / SBOM / Cosign)
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
       security-events: write
-      id-token: write
+      id-token: write          # required for Cosign keyless
       packages: write
       issues: write
+
+    outputs:
+      image_digest: ${{ steps.image_meta.outputs.digest }}
 
     steps:
       # -----------------------------------------------------------
@@ -48,25 +51,36 @@ jobs:
         run: mkdir -p "$REPORT_DIR"
 
       # -----------------------------------------------------------
-      # 1. Install security tools
+      # 1. Install security / supply-chain tools
       # -----------------------------------------------------------
       - name: Install CLI security tools
         run: |
+          set -e
+
           pip install --upgrade pip
           pip install \
             bandit==1.* \
             semgrep==1.*
 
-          # Install TruffleHog v3 (Go binary)
+          # TruffleHog v3 (Go binary)
           curl -sSL https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_Linux_x86_64 \
             -o /usr/local/bin/trufflehog
           chmod +x /usr/local/bin/trufflehog
-          
-          # Install Trivy
-          curl -L https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz \
-            -o /tmp/trivy.tgz
-          sudo tar zxvf /tmp/trivy.tgz -C /usr/local/bin trivy
-          
+
+          # Trivy (official installer)
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin
+
+          # Syft (SBOM)
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+          # Cosign
+          COSIGN_VERSION="v2.4.1"
+          curl -sSLo /usr/local/bin/cosign \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          chmod +x /usr/local/bin/cosign
+
           # ZAP baseline script
           curl -L https://github.com/zaproxy/zaproxy/releases/latest/download/zap-baseline.py \
             -o /usr/local/bin/zap-baseline.py
@@ -78,8 +92,10 @@ jobs:
           bandit --version
           semgrep --version
           trivy --version
-          python /usr/local/bin/zap-baseline.py --help
-          
+          syft version || true
+          cosign version || true
+          python3 /usr/local/bin/zap-baseline.py --help || true
+
       # -----------------------------------------------------------
       # 2. Optional: Unit tests (kalau ada)
       # -----------------------------------------------------------
@@ -87,6 +103,8 @@ jobs:
         run: |
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
+          else
+            echo "No requirements.txt, skipping..."
           fi
 
       - name: Run unit tests (non-blocking if none)
@@ -105,17 +123,29 @@ jobs:
           trufflehog filesystem --json . > "$REPORT_DIR/trufflehog.json" || true
 
       # -----------------------------------------------------------
-      # 4. SAST (Bandit + Semgrep)
+      # 4. SAST (Bandit + Semgrep → SARIF)
       # -----------------------------------------------------------
-      - name: 🧱 SAST (Bandit - Python)
+      - name: 🧱 SAST (Bandit - Python → SARIF)
         run: |
-          bandit -r . -f json -o "$REPORT_DIR/bandit.json" || true
+          bandit -r . -f sarif -o "$REPORT_DIR/bandit.sarif" || true
 
-      - name: 🧱 SAST (Semgrep - generic rules)
+      - name: 🧱 SAST (Semgrep - auto rules → SARIF)
         run: |
           semgrep ci \
             --config auto \
-            --json --output "$REPORT_DIR/semgrep.json" || true
+            --sarif --output "$REPORT_DIR/semgrep.sarif" || true
+
+      - name: 📊 Upload Semgrep SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.REPORT_DIR }}/semgrep.sarif
+
+      - name: 📊 Upload Bandit SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.REPORT_DIR }}/bandit.sarif
 
       # -----------------------------------------------------------
       # 5. Build container image (for SCA/Image Scan + DAST)
@@ -151,7 +181,6 @@ jobs:
 
       # -----------------------------------------------------------
       # 8. DAST (OWASP ZAP Baseline)
-      # NOTE: This is a simple baseline scan; tweak target as needed.
       # -----------------------------------------------------------
       - name: 🚀 Run app container for DAST
         run: |
@@ -164,7 +193,7 @@ jobs:
         env:
           TARGET_URL: http://localhost:5000
         run: |
-          python /usr/local/bin/zap-baseline.py \
+          python3 /usr/local/bin/zap-baseline.py \
             -t "$TARGET_URL" \
             -x "$REPORT_DIR/zap-report.xml" || true
 
@@ -183,7 +212,8 @@ jobs:
           EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
         run: |
           python - << 'PY'
-          import json, os, sys, subprocess
+          import json, os, sys
+          import urllib.request, urllib.parse, ssl
 
           report_path = os.path.join(os.environ["REPORT_DIR"], "trivy-image.json")
           epss_threshold = float(os.environ.get("EPSS_THRESHOLD", "0.7"))
@@ -202,10 +232,8 @@ jobs:
 
           high_crit = [v for v in vulns if v.get("Severity") in ("HIGH", "CRITICAL")]
 
-          # Simple EPSS lookup via FIRST API (optional, best-effort)
-          def fetch_epss(cve_id):
+          def fetch_epss(cve_id: str) -> float:
             try:
-              import urllib.request, urllib.parse, ssl
               ctx = ssl.create_default_context()
               url = f"https://api.first.org/data/v1/epss?cve={urllib.parse.quote(cve_id)}"
               with urllib.request.urlopen(url, context=ctx, timeout=5) as resp:
@@ -239,7 +267,6 @@ jobs:
               for v in over_epss[:10]:
                 f.write(f"- {v.get('VulnerabilityID')} | {v.get('Severity')} | EPSS={v.get('EPSS', 0):.3f} | {v.get('Title','')}\n")
 
-          # Fail job if we have high/critical OR EPSS >= threshold
           if high_crit or over_epss:
             print("❌ HIGH/CRITICAL or high-EPSS vulnerabilities detected. Failing job to trigger notification.")
             sys.exit(1)
@@ -249,13 +276,63 @@ jobs:
           PY
 
       # -----------------------------------------------------------
-      # 10. Upload all reports as artifacts
+      # 10. SBOM (Syft) — hanya jalan kalau risk gate lulus
+      # -----------------------------------------------------------
+      - name: 📦 Generate SBOM (Syft)
+        run: |
+          syft "$FULL_IMAGE" -o json > "$REPORT_DIR/sbom.json"
+          syft "$FULL_IMAGE" -o spdx-json > "$REPORT_DIR/sbom-spdx.json"
+          syft "$FULL_IMAGE" -o cyclonedx-json > "$REPORT_DIR/sbom-cyclonedx.json"
+
+      # -----------------------------------------------------------
+      # 11. Push image + capture digest + cosign sign (keyless)
+      # -----------------------------------------------------------
+      - name: 🔐 Login to DockerHub
+        run: |
+          echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login \
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: 📤 Push image to DockerHub
+        run: |
+          docker push "$FULL_IMAGE"
+
+      - name: 📌 Export image digest
+        id: image_meta
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FULL_IMAGE")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "Image digest: $DIGEST"
+
+      - name: 🔏 Cosign sign image (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign "$IMAGE_DIGEST" --yes
+
+      # -----------------------------------------------------------
+      # 12. Upload all reports as artifacts
       # -----------------------------------------------------------
       - name: 📎 Upload security reports artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
+
+      # -----------------------------------------------------------
+      # 13. Human-readable summary (GitHub Step Summary)
+      # -----------------------------------------------------------
+      - name: 📝 Append Security Summary
+        if: always()
+        run: |
+          echo "## 🔐 Vuln Bank - Security Summary (Enterprise v3)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`$FULL_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- EPSS threshold: \`${EPSS_THRESHOLD}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SBOM: sbom.json / sbom-spdx.json / sbom-cyclonedx.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Cosign: keyless sign with Sigstore (OIDC)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SARIF: Semgrep + Bandit uploaded to GitHub Security" >> "$GITHUB_STEP_SUMMARY"
 
   #################################################################
   # JOB 2 — NOTIFICATION + ISSUE (runs only if security-ci fails)
@@ -284,7 +361,7 @@ jobs:
       # Discord / Slack / Telegram via webhook
       # -------------------------------
       - name: 🔔 Send Discord alert (example)
-        if: env.DISCORD_WEBHOOK_URL != ''
+        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
@@ -295,7 +372,6 @@ jobs:
 
           Please check GitHub Actions artifacts: security-reports/* and epss-summary.txt."
           
-          # simple JSON payload (no jq needed)
           payload=$(printf '{"content": "%s"}' "$(echo "$SUMMARY" | sed 's/"/\\"/g')")
           curl -X POST \
             -H "Content-Type: application/json" \
@@ -335,29 +411,32 @@ jobs:
             sudo dnf install -y ansible-core
           fi
 
-      - name: Deploy via Ansible (passing secrets)
+      - name: Deploy via Ansible (passing secrets + immutable image digest)
         env:
-          # Image yg sudah LOLA (Lolos Semua Scan)
+          # Immutable image ref (digest) from security-ci job
+          IMAGE_DIGEST: ${{ needs.security-ci.outputs.image_digest }}
+
+          # Fallback (should not be needed, but just in case)
           FULL_IMAGE: ${{ env.FULL_IMAGE }}
 
           # Credentials from GitHub Secrets
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-
           FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
           VULN_ENV_FILE: ${{ secrets.VULN_ENV_FILE }}
 
           DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
           BASTION_HOST: ${{ secrets.BASTION_HOST }}
-
         run: |
+          # Pakai digest kalau ada, kalau nggak jatuh ke FULL_IMAGE (tag)
+          IMAGE_REF="${IMAGE_DIGEST:-$FULL_IMAGE}"
+
           ansible-playbook -i inventory.ini site.yml \
             --tags deploy_vuln_bank \
-            -e "FULL_IMAGE=${FULL_IMAGE}" \
+            -e "FULL_IMAGE=${IMAGE_REF}" \
             -e "db_user=${DB_USER}" \
             -e "db_password=${DB_PASSWORD}" \
             -e "flask_secret_key=${FLASK_SECRET_KEY}" \
             -e "vuln_env_file=${VULN_ENV_FILE}" \
             -e "dockerhub_repo=${DOCKERHUB_REPO}" \
             -e "bastion_host=${BASTION_HOST}"
-
