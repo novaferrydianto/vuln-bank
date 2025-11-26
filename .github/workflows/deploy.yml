@@ -63,19 +63,8 @@ jobs:
             semgrep==1.*
 
           # TruffleHog
-          TH_URL=$(curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest \
-            | grep browser_download_url \
-            | grep Linux_x86_64 \
-            | cut -d '"' -f 4)
-
-          if [ -z "$TH_URL" ]; then
-            TH_URL="https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_Linux_x86_64"
-          fi
-
-          echo "Downloading TruffleHog from: $TH_URL"
-          curl -sSL "$TH_URL" -o trufflehog
-          chmod +x trufflehog
-          sudo mv trufflehog /usr/local/bin/trufflehog
+          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/latest/download/install.sh \
+            | bash -s -- -b /usr/local/bin
 
           # Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
