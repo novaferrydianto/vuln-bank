@@ -1,4 +1,4 @@
-name: 🔐 Vuln Bank DevSecOps Pipeline (Enterprise v3 FINAL-PLUS)
+name: Vuln Bank DevSecOps Pipeline
 
 on:
   push:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   #################################################################
-  # JOB 1 — SECURITY CI
+  # JOB 1 — SECURITY CI (UltraCaching v5)
   #################################################################
   security-ci:
     name: 🛡️ Security CI (SAST / SCA / Secrets / DAST / Misconfig / SBOM / Cosign / Snyk)
@@ -45,13 +45,48 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Prepare security reports directory
         run: mkdir -p "$REPORT_DIR"
 
       #################################################################
-      # 1. Install security / supply-chain tools
+      # 1. Caching layer — pip / npm / Semgrep / Trivy DB
+      #################################################################
+      - name: ♻️ Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: ♻️ Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}
+          restore-keys: |
+            npm-${{ runner.os }}
+
+      - name: ♻️ Cache Semgrep rules
+        uses: actions/cache@v4
+        with:
+          path: ~/.semgrep
+          key: semgrep-${{ runner.os }}-v1
+          restore-keys: |
+            semgrep-${{ runner.os }}-
+
+      - name: ♻️ Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-v1
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+
+      #################################################################
+      # 2. Install security / supply-chain tools
       #################################################################
       - name: Install CLI security tools
         run: |
@@ -60,9 +95,9 @@ jobs:
           pip install --upgrade pip
           pip install \
             bandit==1.* \
-            semgrep==1.*
+            semgrep==1.* 
 
-          # TruffleHog (installer yang sudah kamu tes)
+          # TruffleHog
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
 
@@ -100,7 +135,7 @@ jobs:
           python3 /usr/local/bin/zap-baseline.py --help || true
 
       #################################################################
-      # 2. Tests
+      # 3. Tests
       #################################################################
       - name: Install app dependencies
         run: |
@@ -119,14 +154,30 @@ jobs:
           fi
 
       #################################################################
-      # 3. Secret Scanning (TruffleHog)
+      # 4. Docker Buildx (cross-runner distributed cache)
+      #################################################################
+      - name: 🧱 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🐳 Build container image
+        id: build-image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true                    # load ke local Docker (buat DAST & Trivy)
+          tags: ${{ env.FULL_IMAGE }}
+          cache-from: type=gha          # cross-runner cache
+          cache-to: type=gha,mode=max   # simpan cache global di repo
+
+      #################################################################
+      # 5. Secret Scanning (TruffleHog)
       #################################################################
       - name: 🔑 Secret scan (TruffleHog)
         run: |
           trufflehog filesystem --json . > "$REPORT_DIR/trufflehog.json" || true
 
       #################################################################
-      # 4. SAST — Bandit JSON + Bandit2SARIF + Semgrep SARIF
+      # 6. SAST — Bandit JSON + Bandit2SARIF + Semgrep SARIF
       #################################################################
       - name: 🧱 SAST (Bandit JSON → SARIF)
         run: |
@@ -237,13 +288,7 @@ jobs:
           sarif_file: ${{ env.REPORT_DIR }}/bandit.sarif
 
       #################################################################
-      # 5. Build container image
-      #################################################################
-      - name: 🐳 Build container image
-        run: docker build -t "$FULL_IMAGE" .
-
-      #################################################################
-      # 6. SCA — Trivy image + config
+      # 7. SCA — Trivy image + config
       #################################################################
       - name: 📦 Trivy image scan
         run: |
@@ -265,7 +310,7 @@ jobs:
             .
 
       #################################################################
-      # 7. Snyk SCA (optional, never breaks pipeline)
+      # 8. Snyk SCA (optional, never breaks pipeline)
       #################################################################
       - name: 🧪 Snyk SCA (app + container)
         env:
@@ -288,7 +333,7 @@ jobs:
           snyk container test "$FULL_IMAGE" --json > "$REPORT_DIR/snyk-image.json" || true
 
       #################################################################
-      # 8. DAST — OWASP ZAP Baseline
+      # 9. DAST — OWASP ZAP Baseline
       #################################################################
       - name: 🚀 Run app container for DAST
         run: |
@@ -310,7 +355,7 @@ jobs:
         run: docker stop vuln-bank || true
 
       #################################################################
-      # 9. EPSS + Severity Gate (selalu tulis epss-summary.txt)
+      # 10. EPSS + Severity Gate (selalu tulis epss-summary.txt)
       #################################################################
       - name: 📊 Evaluate EPSS + HIGH/CRITICAL
         env:
@@ -391,7 +436,7 @@ jobs:
           PY
 
       #################################################################
-      # 10. SBOM
+      # 11. SBOM
       #################################################################
       - name: 📦 Generate SBOM (Syft)
         run: |
@@ -400,7 +445,7 @@ jobs:
           syft "$FULL_IMAGE" -o cyclonedx-json > "$REPORT_DIR/sbom-cyclonedx.json"
 
       #################################################################
-      # 11. Push + Cosign
+      # 12. Push + Cosign
       #################################################################
       - name: 🔐 Login DockerHub
         run: |
@@ -424,7 +469,7 @@ jobs:
           cosign sign "${{ steps.image_meta.outputs.digest }}" --yes
 
       #################################################################
-      # 12. Upload Reports + Summary
+      # 13. Upload Reports + Summary
       #################################################################
       - name: 📎 Upload security reports artifact
         if: always()
@@ -436,13 +481,14 @@ jobs:
       - name: 📝 Append security summary
         if: always()
         run: |
-          echo "## 🔐 Vuln Bank - FINAL-SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🔐 Vuln Bank - SUMMARY" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: \`$FULL_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- EPSS threshold: \`${EPSS_THRESHOLD}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- SBOM: sbom.json / sbom-spdx.json / sbom-cyclonedx.json" >> "$GITHUB_STEP_SUMMARY"
           echo "- Cosign: keyless (OIDC)" >> "$GITHUB_STEP_SUMMARY"
           echo "- SAST: Semgrep + Bandit (SARIF → Code Scanning)" >> "$GITHUB_STEP_SUMMARY"
           echo "- SCA: Trivy + (optional) Snyk JSON reports" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Caching: pip/npm/Semgrep/Trivy + Docker Buildx GHA cache (cross-runner)" >> "$GITHUB_STEP_SUMMARY"
 
   #################################################################
   # JOB 2 — NOTIFY (jalan kalau security-ci FAIL)
