@@ -94,8 +94,7 @@ jobs:
           pip install --upgrade pip
           pip install \
             bandit==1.* \
-            semgrep==1.* \
-            zaproxy==1.*
+            semgrep==1.* 
 
           # TruffleHog
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
