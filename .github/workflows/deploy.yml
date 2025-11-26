@@ -54,9 +54,13 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install \
-            trufflehog==3.* \
             bandit==1.* \
             semgrep==1.*
+
+          # Install TruffleHog v3 (Go binary)
+          curl -sSL https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_Linux_x86_64 \
+            -o /usr/local/bin/trufflehog
+          chmod +x /usr/local/bin/trufflehog
           
           # Install Trivy
           curl -L https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz \
@@ -68,6 +72,14 @@ jobs:
             -o /usr/local/bin/zap-baseline.py
           chmod +x /usr/local/bin/zap-baseline.py
 
+      - name: Verify installed tools
+        run: |
+          trufflehog --version
+          bandit --version
+          semgrep --version
+          trivy --version
+          python /usr/local/bin/zap-baseline.py --help
+          
       # -----------------------------------------------------------
       # 2. Optional: Unit tests (kalau ada)
       # -----------------------------------------------------------
