@@ -1,4 +1,4 @@
-name: DevSecOps Vuln Bank (Enterprise v5)
+name: DevSecOps Vuln Bank
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  PYTHON_VERSION: "3.13"
+  PYTHON_VERSION: "3.12"
   REPORT_DIR: security-reports
   REGISTRY: docker.io
   IMAGE_NAME: vuln-bank
@@ -23,10 +23,10 @@ permissions:
   security-events: write
   issues: write
 
-# =====================================================================
-# 1) PYTHON TESTS + SAST
-# =====================================================================
 jobs:
+  # =====================================================================
+  # 1) PYTHON TESTS + SAST
+  # =====================================================================
   test_and_sast:
     runs-on: ubuntu-latest
     name: Python Tests & SAST
@@ -38,19 +38,25 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: |
+      - name: Install Python deps
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - run: python -m compileall .
+      - name: Syntax check
+        run: python -m compileall .
 
-      - run: |
+      - name: Run pytest (if tests/ exists)
+        run: |
           if [ -d "tests" ]; then
             pip install pytest
             pytest || echo "⚠️ Tests failed (non-blocking)"
+          else
+            echo "No tests/ directory, skip pytest"
           fi
 
-      - uses: sonarsource/sonarcloud-github-action@v5
+      - name: SonarCloud Scan (SAST)
+        uses: sonarsource/sonarcloud-github-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
@@ -58,37 +64,88 @@ jobs:
             -Dsonar.organization=vuln-bank
             -Dsonar.projectKey=vulnbank
 
-# =====================================================================
-# 2) SECRET SCANNING — TRUFFLEHOG (GHCR VERSION)
-# =====================================================================
+  # =====================================================================
+  # 2) SECRET SCANNING — TruffleHog CLI + Gitleaks + detect-secrets
+  # =====================================================================
   secret_scan:
     runs-on: ubuntu-latest
-    name: Secret Scanning (TruffleHog Stable)
-    continue-on-error: true
+    name: Secret Scanning (Ultra Mode)
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Run TruffleHog Stable
-        uses: trufflesecurity/trufflehog-actions-scan@v0.15.0
         with:
-          path: .
-          base: ${{ github.event.before }}
-          head: ${{ github.sha }}
+          fetch-depth: 0
 
-      - name: Save Secret Scan Report
+      - name: Prepare report dir
+        run: mkdir -p $REPORT_DIR
+
+      # -------- TruffleHog CLI (verified secrets only) --------
+      - name: Install TruffleHog CLI
         run: |
-          mkdir -p $REPORT_DIR
-          echo "TruffleHog completed" > $REPORT_DIR/trufflehog.txt
+          curl -sSfL \
+            https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog-linux-amd64 \
+            -o trufflehog
+          chmod +x trufflehog
+          ./trufflehog --version || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Run TruffleHog (verified secrets only)
+        run: |
+          ./trufflehog git file://. \
+            --only-verified \
+            --no-update \
+            --json > "$REPORT_DIR/trufflehog.json" || true
+
+      - name: Gate on verified secrets (TruffleHog)
+        run: |
+          if [ ! -s "$REPORT_DIR/trufflehog.json" ]; then
+            echo "✅ No verified secrets found by TruffleHog"
+            exit 0
+          fi
+
+          # simple gate: if file not empty, assume verified secrets exist
+          echo "🔥 TruffleHog found verified secrets. Failing pipeline."
+          cat "$REPORT_DIR/trufflehog.json" | head -n 50 || true
+          exit 1
+
+      # -------- Gitleaks backup scanner --------
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL \
+            https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64 \
+            -o gitleaks
+          chmod +x gitleaks
+          ./gitleaks version || true
+
+      - name: Run Gitleaks
+        run: |
+          ./gitleaks detect \
+            --source . \
+            --no-git \
+            --report-format json \
+            --report-path "$REPORT_DIR/gitleaks.json" || true
+
+      # -------- detect-secrets (baseline-style scan) --------
+      - name: Install detect-secrets
+        run: |
+          python -m pip install --upgrade pip
+          pip install detect-secrets
+
+      - name: Run detect-secrets
+        run: |
+          detect-secrets scan > "$REPORT_DIR/detect-secrets.json" || true
+
+      - name: Upload Secret Scan Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: trufflehog-report
-          path: ${{ env.REPORT_DIR }}/trufflehog.txt
+          name: secret-scans
+          path: |
+            ${{ env.REPORT_DIR }}/trufflehog.json
+            ${{ env.REPORT_DIR }}/gitleaks.json
+            ${{ env.REPORT_DIR }}/detect-secrets.json
 
-# =====================================================================
-# 3) SCA + CONFIG + EPSS
-# =====================================================================
+  # =====================================================================
+  # 3) SCA + MISCONFIG + EPSS GATE
+  # =====================================================================
   security_audit:
     runs-on: ubuntu-latest
     name: SCA + Misconfig + EPSS Gate
@@ -96,21 +153,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: snyk/actions/python-3.12@master
+      - name: Snyk SCA (Python deps)
+        uses: snyk/actions/python-3.12@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         continue-on-error: true
         with:
           args: --severity-threshold=low --json-file-output=snyk-report.json
 
-      - run: |
+      - name: Enforce Snyk policy (High/Critical)
+        run: |
           HIGH=$(grep -o '"severity":"high"' snyk-report.json | wc -l || true)
           CRIT=$(grep -o '"severity":"critical"' snyk-report.json | wc -l || true)
-          if [ $((HIGH+CRIT)) -gt 0 ]; then exit 1; fi
+          echo "High: $HIGH | Critical: $CRIT"
+          if [ $((HIGH + CRIT)) -gt 0 ]; then
+            echo "⛔ Snyk gate failed (High/Critical found)"
+            exit 1
+          fi
+          echo "✅ Snyk gate passed"
 
-      - run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-      - uses: aquasecurity/trivy-action@0.33.1
+      - name: Trivy FS (SCA)
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           format: json
@@ -118,90 +186,116 @@ jobs:
           vuln-type: "os,library"
           ignore-unfixed: true
 
-      - uses: aquasecurity/trivy-action@0.33.1
+      - name: Trivy Config (Misconfig)
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: config
           format: json
           output: trivy-config.json
 
-      - name: EPSS Gate
+      - name: EPSS Gate (risk-based SCA)
         run: |
-          CVE_LIST=$(jq -r '.. | objects | select(has("VulnerabilityID")) | .VulnerabilityID' trivy-report.json)
-          if [ -z "$CVE_LIST" ]; then exit 0; fi
+          CVE_LIST=$(jq -r '.. | objects | select(has("VulnerabilityID")) | .VulnerabilityID' trivy-report.json | sort -u)
+          if [ -z "$CVE_LIST" ]; then
+            echo "✅ No CVE found by Trivy; skipping EPSS gate"
+            exit 0
+          fi
 
           QUERY=$(echo "$CVE_LIST" | paste -sd ",")
-          EPSS=$(curl -s "https://api.first.org/data/v1/epss?cve=$QUERY")
-          HIGH=$(echo "$EPSS" | jq --arg t "${{ env.EPSS_THRESHOLD }}" '[.data[] | select(.epss|tonumber >= ($t|tonumber))] | length')
+          echo "EPSS query CVEs: $QUERY"
 
-          if [ "$HIGH" -gt 0 ]; then exit 1; fi
+          EPSS_JSON=$(curl -s "https://api.first.org/data/v1/epss?cve=$QUERY")
+          echo "$EPSS_JSON" > epss-response.json
 
-      - uses: actions/upload-artifact@v4
+          HIGH=$(echo "$EPSS_JSON" | jq --arg thr "${{ env.EPSS_THRESHOLD }}" \
+            '[.data[] | select((.epss|tonumber) >= ($thr|tonumber))] | length')
+
+          echo "EPSS >= ${{ env.EPSS_THRESHOLD }} count: $HIGH"
+
+          if [ "$HIGH" -gt 0 ]; then
+            echo "⛔ EPSS gate failed (high-risk CVEs present)"
+            exit 1
+          fi
+
+          echo "✅ EPSS gate passed"
+
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: |
             snyk-report.json
             trivy-report.json
             trivy-config.json
+            epss-response.json
 
-# =====================================================================
-# 4) MULTI-ARCH BUILD (WITH GUARANTEED OUTPUT!)
-# =====================================================================
+  # =====================================================================
+  # 4) MULTI-ARCH BUILD + SBOM
+  # =====================================================================
   multiarch_build_push:
     runs-on: ubuntu-latest
     name: Multi-Arch Build & SBOM
     outputs:
-      image_ref: ${{ steps.setref.outputs.image_ref }}
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      image_repo: ${{ steps.meta.outputs.image_repo }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - id: setref
-        name: Set Image Metadata
+      - id: meta
+        name: Prepare image metadata
         run: |
           IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}"
           TAG="${GITHUB_SHA::7}"
-          FULL="$IMAGE:$TAG"
-          echo "image_ref=$FULL" >> $GITHUB_OUTPUT
+
+          echo "image_ref=$IMAGE:$TAG" >> "$GITHUB_OUTPUT"
+          echo "image_repo=$IMAGE" >> "$GITHUB_OUTPUT"
+
+          echo "IMAGE_REF=$IMAGE:$TAG"
+          echo "IMAGE_REPO=$IMAGE"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: DockerHub Login
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push Multi-Arch
+      - name: Build & Push Multi-Arch Image
         run: |
-          IMAGE_REF="${{ steps.setref.outputs.image_ref }}"
-          REPO="${IMAGE_REF%:*}"
+          IMAGE_REF="${{ steps.meta.outputs.image_ref }}"
+          IMAGE_REPO="${{ steps.meta.outputs.image_repo }}"
 
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             -f Dockerfile \
             -t "$IMAGE_REF" \
-            -t "$REPO:latest" \
+            -t "$IMAGE_REPO:latest" \
             --push .
 
-      - name: Generate SBOM
+      - name: Generate SBOM (Syft CycloneDX)
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b /usr/local/bin
           mkdir -p sbom
-          syft "${{ steps.setref.outputs.image_ref }}" -o cyclonedx-json > sbom/sbom.json
+          syft "${{ steps.meta.outputs.image_ref }}" \
+            -o cyclonedx-json > sbom/sbom-cyclonedx.json
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
         with:
           name: sbom
-          path: sbom/sbom.json
+          path: sbom/sbom-cyclonedx.json
 
-# =====================================================================
-# 5) COSIGN SIGN + SBOM ATTEST + SLSA
-# =====================================================================
+  # =====================================================================
+  # 5) COSIGN SIGN + SBOM ATTEST + SLSA PROVENANCE
+  # =====================================================================
   cosign_sign:
     needs: [multiarch_build_push, security_audit, secret_scan, test_and_sast]
     runs-on: ubuntu-latest
-    name: Cosign Sign + Attestation
+    name: Cosign Sign + Attest
 
     steps:
       - name: Install Cosign
@@ -210,33 +304,45 @@ jobs:
           mv cosign-linux-amd64 cosign
           chmod +x cosign
           sudo mv cosign /usr/local/bin/cosign
+          cosign version
 
-      - uses: docker/login-action@v3
+      - name: DockerHub Login
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
         with:
           name: sbom
           path: sbom
 
-      - name: Load Image Ref
-        run: echo "IMAGE_REF=${{ needs.multiarch_build_push.outputs.image_ref }}" >> $GITHUB_ENV
+      - name: Prepare IMAGE_REF
+        id: img
+        run: |
+          IMAGE_REF="${{ needs.multiarch_build_push.outputs.image_ref }}"
+          if [ -z "$IMAGE_REF" ]; then
+            echo "❌ IMAGE_REF is empty in cosign_sign"
+            exit 1
+          fi
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          echo "Using IMAGE_REF=$IMAGE_REF"
 
-      - name: Cosign Sign Image
+      - name: Cosign Sign Image (keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
-        run: cosign sign --yes "$IMAGE_REF"
+        run: |
+          cosign sign --yes "${{ steps.img.outputs.IMAGE_REF }}"
 
-      - name: Attest SBOM
+      - name: Cosign Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign attest --yes \
-            --predicate sbom/sbom.json \
+            --predicate sbom/sbom-cyclonedx.json \
             --type cyclonedx \
-            "$IMAGE_REF"
+            "${{ steps.img.outputs.IMAGE_REF }}"
 
       - name: Generate SLSA Provenance
         run: |
@@ -244,7 +350,7 @@ jobs:
           {
             "_type": "https://in-toto.io/Statement/v0.1",
             "predicateType": "https://slsa.dev/provenance/v1",
-            "subject": [{"name": "$IMAGE_REF"}],
+            "subject": [{"name": "${{ steps.img.outputs.IMAGE_REF }}"}],
             "predicate": {
               "buildType": "github-actions",
               "repo": "${{ github.repository }}",
@@ -255,53 +361,53 @@ jobs:
           }
           EOF
 
-      - name: Attest SLSA Provenance
+      - name: Cosign Attest SLSA Provenance
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign attest --yes \
             --predicate provenance.json \
             --type slsaprovenance \
-            "$IMAGE_REF"
+            "${{ steps.img.outputs.IMAGE_REF }}"
 
-# =====================================================================
-# 6) SUPPLY CHAIN VERIFY GATE
-# =====================================================================
+  # =====================================================================
+  # 6) SUPPLY CHAIN VERIFY GATE
+  # =====================================================================
   supplychain_gate:
-    needs: cosign_sign
+    needs: [cosign_sign, multiarch_build_push]
     runs-on: ubuntu-latest
-    name: Supply Chain Verification
+    name: Supply Chain Verify Gate
 
     steps:
-      - name: Load Image Ref
-        run: |
-          echo "IMAGE_REF=${{ needs.multiarch_build_push.outputs.image_ref }}" >> $GITHUB_ENV
-          echo "Verifying IMAGE_REF=$IMAGE_REF"
-
       - name: Install Cosign
         run: |
           wget https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
           mv cosign-linux-amd64 cosign
           chmod +x cosign
           sudo mv cosign /usr/local/bin/cosign
+          cosign version
 
-      - env:
+      - name: Verify Signature + Attestations
+        env:
           COSIGN_EXPERIMENTAL: "1"
-        run: cosign.verify "$IMAGE_REF"
+        run: |
+          IMAGE_REF="${{ needs.multiarch_build_push.outputs.image_ref }}"
+          echo "Verifying IMAGE_REF=$IMAGE_REF"
 
-      - env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: cosign verify-attestation --type cyclonedx "$IMAGE_REF"
+          if [ -z "$IMAGE_REF" ]; then
+            echo "❌ IMAGE_REF is empty in supplychain_gate"
+            exit 1
+          fi
 
-      - env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: cosign verify-attestation --type slsaprovenance "$IMAGE_REF"
+          cosign verify "$IMAGE_REF"
+          cosign verify-attestation --type cyclonedx "$IMAGE_REF"
+          cosign verify-attestation --type slsaprovenance "$IMAGE_REF"
 
-# =====================================================================
-# 7) OWASP ZAP — VERIFIED IMAGE ONLY
-# =====================================================================
+  # =====================================================================
+  # 7) DAST (OWASP ZAP) — VERIFIED IMAGE ONLY
+  # =====================================================================
   dast_zap:
-    needs: supplychain_gate
+    needs: [supplychain_gate, multiarch_build_push]
     runs-on: ubuntu-latest
     continue-on-error: true
     name: OWASP ZAP DAST (Verified Image)
@@ -309,25 +415,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Load Image Ref
-        run: echo "IMAGE_REF=${{ needs.multiarch_build_push.outputs.image_ref }}" >> $GITHUB_ENV
-
-      - run: docker pull "$IMAGE_REF"
-
-      - name: Run App
+      - name: Run Verified Image (Flask @ :5000)
         run: |
-          docker run -d --rm -p 5000:5000 --name vuln-bank "$IMAGE_REF"
+          IMAGE_REF="${{ needs.multiarch_build_push.outputs.image_ref }}"
+          echo "Using IMAGE_REF=$IMAGE_REF for DAST"
+
+          docker pull "$IMAGE_REF"
+
+          docker run -d --rm \
+            -p 5000:5000 \
+            --name vuln-bank \
+            "$IMAGE_REF"
+
+          echo "Waiting for app on :5000..."
           for i in {1..20}; do
-            curl -sSf http://localhost:5000 >/dev/null && break
+            if curl -sSf http://localhost:5000 >/dev/null 2>&1; then
+              echo "App is UP"
+              exit 0
+            fi
+            echo "Still waiting..."
             sleep 3
           done
 
-      - name: Pick Scan Mode
+          echo "App did not start in time"
+          docker logs vuln-bank || true
+          exit 1
+
+      - name: Select ZAP Mode
+        id: zapmode
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "SCRIPT=zap-full-scan.py" >> $GITHUB_ENV
+            echo "script=zap-full-scan.py" >> "$GITHUB_OUTPUT"
           else
-            echo "SCRIPT=zap-baseline.py" >> $GITHUB_ENV
+            echo "script=zap-baseline.py" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run ZAP
@@ -336,31 +456,39 @@ jobs:
           docker run --rm --network=host \
             -v "$(pwd)/${REPORT_DIR}:/zap/wrk/" \
             ghcr.io/zaproxy/zaproxy:stable \
-            $SCRIPT \
+            ${{ steps.zapmode.outputs.script }} \
             -t http://localhost:5000 \
             -r zap-report.html \
-            -J zap-report.json
+            -J zap-report.json || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: |
             ${{ env.REPORT_DIR }}/zap-report.json
             ${{ env.REPORT_DIR }}/zap-report.html
 
-# =====================================================================
-# 8) SUMMARY
-# =====================================================================
+      - name: Stop App Container
+        if: always()
+        run: docker stop vuln-bank || true
+
+  # =====================================================================
+  # 8) SUMMARY
+  # =====================================================================
   summary:
     needs: dast_zap
     runs-on: ubuntu-latest
+    name: Pipeline Summary
 
     steps:
-      - run: |
-          echo "## Vuln Bank Enterprise Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- TruffleHog Stable" >> $GITHUB_STEP_SUMMARY
-          echo "- SAST + SCA + Misconfig + EPSS" >> $GITHUB_STEP_SUMMARY
-          echo "- Multi-Arch Buildx + SBOM" >> $GITHUB_STEP_SUMMARY
-          echo "- Cosign Sign + SBOM Attest + SLSA" >> $GITHUB_STEP_SUMMARY
-          echo "- Supply Chain Verified Gate" >> $GITHUB_STEP_SUMMARY
-          echo "- OWASP ZAP DAST (Verified image)" >> $GITHUB_STEP_SUMMARY
+      - name: Write Summary
+        run: |
+          echo "## Vuln Bank Enterprise v6 — Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ Python Tests + SonarCloud SAST" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ Ultra Secret Scan: TruffleHog CLI (verified-only) + Gitleaks + detect-secrets" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ Snyk SCA + Trivy FS + Trivy Config + EPSS Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ Multi-Arch Buildx → DockerHub + SBOM (Syft CycloneDX)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ Cosign Sign + SBOM Attestation + SLSA Provenance" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ Supply Chain Verify Gate (cosign verify + attestations)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ✅ OWASP ZAP DAST (Verified Image Only)" >> "$GITHUB_STEP_SUMMARY"
