@@ -113,7 +113,19 @@ jobs:
           chmod +x /usr/local/bin/zap-baseline.py
 
           # Snyk CLI (optional)
-          npm install -g snyk@latest || true
+          if ! command -v snyk >/dev/null 2>&1; then
+            npm install -g snyk@latest || true
+          fi
+
+          # Sanity check ZAP client
+          run: |
+            python3 - << 'EOF'
+              import pkgutil, sys
+              if not pkgutil.find_loader("zapv2"):
+                print("[ERROR] Missing zapv2 module, ZAP will fail!")
+                sys.exit(1)
+              print("[OK] zapv2 module loaded")
+              EOF
 
       - name: Verify security tools
         run: |
