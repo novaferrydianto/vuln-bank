@@ -83,10 +83,14 @@ jobs:
       - name: Install TruffleHog CLI
         run: |
           curl -sSfL \
-            https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog-linux-amd64 \
-            -o trufflehog
+            https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_Linux_x86_64.tar.gz \
+            -o trufflehog.tar.gz
+
+          tar -xf trufflehog.tar.gz
           chmod +x trufflehog
-          ./trufflehog --version || true
+          sudo mv trufflehog /usr/local/bin/trufflehog
+
+          trufflehog --version
 
       - name: Run TruffleHog (verified secrets only)
         run: |
