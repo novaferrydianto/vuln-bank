@@ -94,7 +94,8 @@ jobs:
           pip install --upgrade pip
           pip install \
             bandit==1.* \
-            semgrep==1.* 
+            semgrep==1.* \
+            python-owasp-zap-v2.4
 
           # TruffleHog
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
@@ -334,9 +335,12 @@ jobs:
         env:
           TARGET_URL: http://localhost:5000
         run: |
-          python3 /usr/local/bin/zap-baseline.py \
-            -t "$TARGET_URL" \
-            -x "$REPORT_DIR/zap-report.xml" || true
+          docker run --rm -t \
+            -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t "$TARGET_URL" \
+              -x "/zap/wrk/zap-report.xml" || true
 
       - name: 🧯 Stop DAST container
         if: always()
