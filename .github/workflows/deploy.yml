@@ -36,7 +36,9 @@ jobs:
       image_digest: ${{ steps.image_meta.outputs.digest }}
 
     steps:
-      # Checkout
+      #################################################################
+      # 0. Checkout + Python
+      #################################################################
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -46,10 +48,10 @@ jobs:
           python-version: "3.11"
 
       - name: Prepare security reports directory
-        run: mkdir -p "$REPORT_DIR"
+        run: mkdir -p "$REPORT_DIR"        
 
       #################################################################
-      # PATCHED — TruffleHog v3 (Anti-Error, API-based)
+      # 1. Install security tools
       #################################################################
       - name: Install CLI security tools
         run: |
@@ -60,13 +62,15 @@ jobs:
             bandit==1.* \
             semgrep==1.*
 
-          # --------------------------
-          # TruffleHog v3 (PATCHED)
-          # --------------------------
+          # TruffleHog
           TH_URL=$(curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest \
             | grep browser_download_url \
             | grep Linux_x86_64 \
             | cut -d '"' -f 4)
+
+          if [ -z "$TH_URL" ]; then
+            TH_URL="https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_Linux_x86_64"
+          fi
 
           echo "Downloading TruffleHog from: $TH_URL"
           curl -sSL "$TH_URL" -o trufflehog
