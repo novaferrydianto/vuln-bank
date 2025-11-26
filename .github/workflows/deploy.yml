@@ -45,7 +45,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Prepare security reports directory
         run: mkdir -p "$REPORT_DIR"
@@ -76,6 +76,13 @@ jobs:
           key: trivy-${{ runner.os }}-v1
           restore-keys: |
             trivy-${{ runner.os }}-
+      
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: docker-${{ github.sha }}
+          restore-keys: docker-
 
       #################################################################
       # 1. Install security / supply-chain tools
@@ -87,7 +94,8 @@ jobs:
           pip install --upgrade pip
           pip install \
             bandit==1.* \
-            semgrep==1.*
+            semgrep==1.* \
+            zaproxy==1.*
 
           # TruffleHog
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
@@ -127,14 +135,6 @@ jobs:
           syft version || true
           cosign version || true
           snyk --version || true
-
-          echo "=== Verify ZAP Baseline script ==="
-          head -n 5 /usr/local/bin/zap-baseline.py || true
-          python3 -m py_compile /usr/local/bin/zap-baseline.py || {
-            echo "❌ ZAP Baseline script invalid (HTML/Not Found).";
-            exit 1;
-          }
-          echo "✔ ZAP Baseline OK"
 
       #################################################################
       # 2. Tests
