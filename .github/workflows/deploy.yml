@@ -156,25 +156,34 @@ jobs:
   ###########################################################################
   multiarch_build_push:
     runs-on: ubuntu-latest
-    name: Multi-Arch Build + SBOM
+    name: Multi-Arch Build + SBOM (FIXED)
     outputs:
-      sha_tag: ${{ steps.meta.outputs.sha_tag }}
-      image_repo: ${{ steps.meta.outputs.image_repo }}
-      image_ref: ${{ steps.meta.outputs.image_ref }}
+      image_ref: ${{ steps.setref.outputs.image_ref }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - id: meta
-        name: Prepare metadata
+      # --- HARD CHECK: Dockerfile must exist ---
+      - name: Verify Dockerfile exists
+        run: |
+          if [ ! -f "./Dockerfile" ]; then
+            echo "❌ Dockerfile NOT FOUND"
+            exit 1
+          fi
+
+      # --- METADATA (GUARANTEED OUTPUT) ---
+      - id: setref
+        name: Set IMAGE_REF
         run: |
           TAG="${GITHUB_SHA::7}"
           REPO="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}"
           REF="$REPO:$TAG"
 
-          echo "sha_tag=$TAG" >> $GITHUB_OUTPUT
-          echo "image_repo=$REPO" >> $GITHUB_OUTPUT
-          echo "image_ref=$REF" >> $GITHUB_OUTPUT
+          echo "Image Repo  = $REPO"
+          echo "Image Tag   = $TAG"
+          echo "Image Ref   = $REF"
+
+          echo "image_ref=$REF" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -184,21 +193,30 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Multi-Arch Build + Push
+      # --- MULTI-ARCH BUILD ---
+      - name: Build & Push Multi-Arch
         run: |
+          IMAGE="${{ steps.setref.outputs.image_ref }}"
+          REPO="${IMAGE%:*}"
+
+          echo "Building multi-arch:"
+          echo "- Full tag : $IMAGE"
+          echo "- Latest   : $REPO:latest"
+
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             -f Dockerfile \
-            -t "${{ steps.meta.outputs.image_ref }}" \
-            -t "${{ steps.meta.outputs.image_repo }}:latest" \
+            -t "$IMAGE" \
+            -t "$REPO:latest" \
             --push .
 
-      - name: Generate SBOM (Syft)
+      # --- SBOM ---
+      - name: Syft SBOM
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b /usr/local/bin
           mkdir -p sbom
-          syft "${{ steps.meta.outputs.image_ref }}" \
+          syft "${{ steps.setref.outputs.image_ref }}" \
             -o cyclonedx-json > sbom/sbom.json
 
       - uses: actions/upload-artifact@v4
