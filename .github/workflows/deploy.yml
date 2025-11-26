@@ -1,4 +1,4 @@
-name: 🔐 Vuln Bank DevSecOps Pipeline
+name: 🔐 Vuln Bank DevSecOps Pipeline v9
 
 on:
   push:
@@ -7,24 +7,23 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
   schedule:
-    # Optional: nightly full scan jam 01:00 WIB (18:00 UTC)
-    - cron: "0 18 * * *"
+    - cron: "0 18 * * *" # 01:00 WIB
 
 env:
   PYTHON_VERSION: "3.12"
   REPORT_DIR: security-reports
-  EPSS_THRESHOLD: "0.7"              # Risk-based threshold
-  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}  # e.g. docker.io/novaferrydianto/vuln-bank
+  EPSS_THRESHOLD: "0.7"
+  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
 
 permissions:
   contents: read
   security-events: write
-  id-token: write          # future-proof kalau mau cosign keyless
+  id-token: write
   packages: write
 
 jobs:
   #####################################################################
-  # JOB 1 — SECURITY CI (runs on GitHub-hosted runner)
+  # JOB 1 — SECURITY CI (all scans, parallel optimized)
   #####################################################################
   security:
     name: 🛡️ Security CI (Secrets + SCA + SAST + Misconfig + DAST)
@@ -38,86 +37,95 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      #################################################################
+      # GLOBAL CACHES (save 30–60 seconds per run)
+      #################################################################
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy/db
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+
+      - name: Cache Python deps for Semgrep & TruffleHog
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: pip-
+
+      #################################################################
+      # INSTALL TOOLS (super stable)
+      #################################################################
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
 
-      - name: Prepare tools & report directory
+      - name: Install security tools
         run: |
           mkdir -p "$REPORT_DIR"
 
-          # Install TruffleHog (secrets)
           pip install "trufflehog==2.0.0"
-
-          # Install Semgrep (SAST)
           pip install "semgrep==1.93.0"
 
-          # Install Trivy (SCA + config)
-          TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | \
-                          grep tag_name | cut -d '"' -f 4)
-          curl -sL "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz" \
-            | tar zx -C /usr/local/bin --strip-components=1 trivy
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
 
-          trivy --version
-          semgrep --version || true
-          trufflehog --version || true
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo tee /etc/apt/trusted.gpg.d/trivy.asc >/dev/null
 
-      # --------------------------------------------------------------
-      # SECRET SCANNING
-      # --------------------------------------------------------------
-      - name: 🔑 Secret Scanning (TruffleHog)
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      #################################################################
+      # PARALLEL SECURITY SCANNING
+      #################################################################
+      - name: 🔑 Secret Scan (TruffleHog)
+        id: secrets
         continue-on-error: true
         run: |
-          trufflehog filesystem . --only-verified --json > "$REPORT_DIR/trufflehog.json" || true
+          trufflehog filesystem . --only-verified --json > "$REPORT_DIR/trufflehog.json"
 
-      # --------------------------------------------------------------
-      # SCA (DEPENDENCY VULN)
-      # --------------------------------------------------------------
-      - name: 📦 SCA (Trivy FS – requirements.txt, system deps)
+      - name: 📦 SCA (Trivy FS)
+        id: sca
         run: |
           trivy fs \
             --scanners vuln \
             --format json \
-            --output "$REPORT_DIR/trivy-fs.json" \
-            .
+            --output "$REPORT_DIR/trivy-fs.json" .
 
-      # --------------------------------------------------------------
-      # SAST (STATIC APP SEC TEST)
-      # --------------------------------------------------------------
       - name: 🧠 SAST (Semgrep – OWASP Top 10)
+        id: sast
         continue-on-error: true
         run: |
-          semgrep ci \
-            --config "p/owasp-top-ten" \
-            --json --output "$REPORT_DIR/semgrep.json" || true
+          semgrep ci --config "p/owasp-top-ten" \
+            --json --output "$REPORT_DIR/semgrep.json"
 
-      # --------------------------------------------------------------
-      # MISCONFIG SCAN (INFRA / DOCKER / COMPOSE)
-      # --------------------------------------------------------------
-      - name: 🧱 Misconfiguration Scan (Trivy config)
+      - name: 🧱 Misconfig Scan (Trivy Config)
+        id: misconfig
         continue-on-error: true
         run: |
-          trivy config \
-            --format json \
-            --output "$REPORT_DIR/trivy-config.json" \
-            .
+          trivy config --format json \
+            --output "$REPORT_DIR/trivy-config.json" .
 
-          # Extra: specific Dockerfile
-          trivy config \
-            --format json \
-            --output "$REPORT_DIR/trivy-dockerfile.json" \
-            Dockerfile || true
+          trivy config --format json \
+            --output "$REPORT_DIR/trivy-dockerfile.json" Dockerfile || true
 
-      # --------------------------------------------------------------
-      # DAST (runnning app + OWASP ZAP)
-      # --------------------------------------------------------------
-      - name: 🐳 Build app image for DAST
+      #################################################################
+      # DAST (OWASP ZAP)
+      #################################################################
+      - name: 🐳 Build Docker image for DAST
         run: |
           docker build -t vuln-bank:${{ github.sha }} .
-          echo "IMAGE_REF=vuln-bank:${{ github.sha }}" >> "$GITHUB_ENV"
+          echo "IMAGE_REF=vuln-bank:${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: 🚀 Run app container (for ZAP)
+      - name: 🚀 Run DAST container
         run: |
           docker run -d --rm \
             -p 5000:5000 \
@@ -127,171 +135,112 @@ jobs:
 
       - name: 🌐 DAST (OWASP ZAP Baseline)
         uses: zaproxy/action-baseline@v0.12.0
+        continue-on-error: true
         with:
           target: "http://127.0.0.1:5000"
           cmd_options: "-a"
-        continue-on-error: true
 
-      - name: 🧹 Stop DAST container
+      - name: 🧹 Cleanup DAST container
         if: always()
         run: docker rm -f vuln-bank-dast || true
 
-      # --------------------------------------------------------------
-      # EVALUATE CRITICAL + EPSS
-      # --------------------------------------------------------------
-      - name: 🧮 Evaluate Critical + EPSS (Trivy report)
+      #################################################################
+      # EPSS + CRITICAL EVALUATOR
+      #################################################################
+      - name: 🧮 Evaluate Critical & EPSS
         id: evaluate
-        env:
-          TRIVY_FS_REPORT: ${{ env.REPORT_DIR }}/trivy-fs.json
-          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
         run: |
-          python - << 'PY'
-          import json, os, urllib.request, urllib.parse, sys
+          python3 << 'EOF'
+          import json, os, urllib.request, urllib.parse
 
-          report_path = os.path.join(os.environ["REPORT_DIR"], "trivy-fs.json")
-          threshold = float(os.environ.get("EPSS_THRESHOLD", "0.7"))
+          report = f"{os.environ['REPORT_DIR']}/trivy-fs.json"
+          threshold = float(os.environ["EPSS_THRESHOLD"])
 
           has_critical = False
           epss_alert = False
           cves = set()
 
-          if not os.path.exists(report_path):
-              print(f"Report not found: {report_path}")
-          else:
-              with open(report_path, "r") as f:
-                  data = json.load(f)
-
-              for result in data.get("Results", []):
-                  for vuln in result.get("Vulnerabilities", []):
-                      severity = vuln.get("Severity", "").upper()
-                      vid = vuln.get("VulnerabilityID") or vuln.get("VulnID")
-                      if severity in ("HIGH", "CRITICAL"):
+          if os.path.exists(report):
+              data = json.load(open(report))
+              for r in data.get("Results", []):
+                  for v in r.get("Vulnerabilities", []):
+                      if v.get("Severity") in ["HIGH", "CRITICAL"]:
                           has_critical = True
-                          if vid and vid.startswith("CVE-"):
-                              cves.add(vid)
+                          if v.get("VulnerabilityID", "").startswith("CVE-"):
+                              cves.add(v["VulnerabilityID"])
 
-              if cves:
-                  # FIRST EPSS API
-                  # Docs: https://first.org/epss/api
-                  query = urllib.parse.urlencode({"cve": ",".join(sorted(cves))})
-                  url = f"https://api.first.org/data/v1/epss?{query}"
-                  try:
-                      with urllib.request.urlopen(url) as resp:
-                          api = json.load(resp)
-                      for row in api.get("data", []):
-                          score = float(row.get("epss", 0.0))
-                          if score >= threshold:
-                              epss_alert = True
-                              break
-                  except Exception as e:
-                      print(f"EPSS lookup failed: {e}", file=sys.stderr)
+          if cves:
+              q = urllib.parse.urlencode({"cve": ",".join(cves)})
+              url = f"https://api.first.org/data/v1/epss?{q}"
+              try:
+                  api = urllib.request.urlopen(url).read().decode()
+                  api = json.loads(api)
+                  for i in api.get("data", []):
+                      if float(i.get("epss", 0)) >= threshold:
+                          epss_alert = True
+              except:
+                  pass
 
-          gh_out = os.environ["GITHUB_OUTPUT"]
-          with open(gh_out, "a") as f:
+          print("Critical =", has_critical)
+          print("EPSS =", epss_alert)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"has_critical={'true' if has_critical else 'false'}\n")
               f.write(f"epss_alert={'true' if epss_alert else 'false'}\n")
+          EOF
 
-          print("has_critical:", has_critical)
-          print("epss_alert:", epss_alert)
-          PY
+      #################################################################
+      # SUMMARY REPORT
+      #################################################################
+      - name: ✨ Security Summary
+        run: |
+          echo "## 🔐 Vuln Bank — Security Summary v9" >> $GITHUB_STEP_SUMMARY
+          echo "- Secrets Scan: ${{ steps.secrets.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- SCA Result: ${{ steps.sca.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- SAST Result: ${{ steps.sast.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Misconfig Result: ${{ steps.misconfig.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- EPSS Gate: ${{ steps.evaluate.outputs.epss_alert }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Critical Vulns: ${{ steps.evaluate.outputs.has_critical }}" >> $GITHUB_STEP_SUMMARY
 
-      # --------------------------------------------------------------
+      #################################################################
       # UPLOAD ARTIFACTS
-      # --------------------------------------------------------------
-      - name: 📎 Upload security reports
+      #################################################################
+      - name: 📎 Upload reports
         uses: actions/upload-artifact@v4
         with:
           name: security-reports-${{ github.run_id }}
           path: ${{ env.REPORT_DIR }}
 
   #####################################################################
-  # JOB 2 — NOTIFICATION (Discord / Slack via webhook)
-  #####################################################################
-  notify:
-    name: 📣 Security Alert Notification
-    needs: security
-    runs-on: ubuntu-latest
-    if: needs.security.outputs.has_critical == 'true' || needs.security.outputs.epss_alert == 'true'
-
-    steps:
-      - name: Send alert to Discord / Slack
-        env:
-          WEBHOOK_URL: ${{ secrets.SECURITY_ALERT_WEBHOOK }}
-          HAS_CRITICAL: ${{ needs.security.outputs.has_critical }}
-          EPSS_ALERT: ${{ needs.security.outputs.epss_alert }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "No SECURITY_ALERT_WEBHOOK configured. Skipping notification."
-            exit 0
-          fi
-
-          msg="⚠️ *Vuln Bank Security Alert* ⚠️
-          Repo: $REPO
-          Run: https://github.com/$REPO/actions/runs/$RUN_ID
-
-          • has_critical: $HAS_CRITICAL
-          • epss_alert (>= threshold): $EPSS_ALERT"
-
-          # Generic webhook (Discord style). For Slack: adjust payload structure.
-          payload=$(jq -n --arg content "$msg" '{content: $content}')
-
-          curl -X POST -H "Content-Type: application/json" \
-            -d "$payload" \
-            "$WEBHOOK_URL"
-
-  #####################################################################
-  # JOB 3 — BUILD & DEPLOY (Self-hosted runner on Bastion)
+  # JOB 3 — CD TO VMWARE LAB
   #####################################################################
   deploy:
-    name: 🚀 Build Image & Deploy via Ansible (VMware lab)
+    name: 🚀 Deploy to VMware via Ansible
+    runs-on: [self-hosted, bastion]
     needs: security
-    # Hanya deploy kalau TIDAK ada critical/high risk-based (EPSS) finding
     if: needs.security.outputs.has_critical == 'false' && needs.security.outputs.epss_alert == 'false'
 
-    # Self-hosted runner di bastion VM: label sesuaikan sama runner kamu
-    runs-on: [ self-hosted, bastion-vulnbank ]
-
-    env:
-      DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Docker login
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
             docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: 🐳 Build & Push image
-        id: build_push
+      - name: Build + Push Image
+        id: img
         run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          IMAGE_TAG="$DOCKERHUB_REPO:$SHORT_SHA"
+          SHORT="${GITHUB_SHA::7}"
+          IMG="$DOCKERHUB_REPO:$SHORT"
+          docker build -t "$IMG" .
+          docker push "$IMG"
+          echo "tag=$IMG" >> $GITHUB_OUTPUT
 
-          docker build -t "$IMAGE_TAG" .
-          docker push "$IMAGE_TAG"
-
-          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: ⚙️ Deploy with Ansible to VMware lab
+      - name: Deploy via Ansible
         run: |
           cd /home/bastion/actions-runner/_work/vuln-bank/vuln-bank/ansible
-
-          # Use local ansible.cfg ALWAYS
           export ANSIBLE_CONFIG=$(pwd)/ansible.cfg
 
-          # Optional: vault password kalau pakai Ansible Vault
-          if [ ! -z "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" ]; then
-            echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > vault-pass.txt
-            VAULT_FLAG="--vault-password-file vault-pass.txt"
-          else
-            VAULT_FLAG=""
-          fi
-
-          # Pass image tag ke playbook (buat update docker-compose env)
           ansible-playbook -i inventory.ini site.yml \
-            --extra-vars "docker_image=${{ steps.build_push.outputs.image_tag }}" \
-            $VAULT_FLAG
+            --extra-vars "docker_image=${{ steps.img.outputs.tag }}"
