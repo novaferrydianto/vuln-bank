@@ -335,6 +335,8 @@ jobs:
         env:
           TARGET_URL: http://localhost:5000
         run: |
+          sudo chmod -R 777 "${REPORT_DIR}"
+          
           docker run --rm -t \
             -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
