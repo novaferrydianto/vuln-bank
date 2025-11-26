@@ -294,14 +294,14 @@ jobs:
         id: prep
         run: |
           IMAGE_REF="${{ needs.multiarch_build_push.outputs.image_ref }}"
-          echo "IMAGE_REF=$IMAGE_REF"
+          echo "Using IMAGE_REF: $IMAGE_REF"
 
           if [ -z "$IMAGE_REF" ]; then
-            echo "❌ IMAGE_REF empty in cosign_sign, aborting"
+            echo "❌ IMAGE_REF EMPTY — STOPPING"
             exit 1
           fi
 
-          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+          echo "IMAGE_REF=$IMAGE_REF" >> $GITHUB_ENV
 
       - name: Cosign sign image (keyless)
         env:
