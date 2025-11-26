@@ -1,4 +1,4 @@
-name: 🔐 Vuln Bank DevSecOps Pipeline (Enterprise v3)
+name: 🔐 Vuln Bank DevSecOps Pipeline (Enterprise v3 FINAL-PLUS)
 
 on:
   push:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   #################################################################
-  # JOB 1 — SECURITY CI (MAIN GATE)
+  # JOB 1 — SECURITY CI
   #################################################################
   security-ci:
     name: 🛡️ Security CI (SAST / SCA / Secrets / DAST / Misconfig / SBOM / Cosign / Snyk)
@@ -62,7 +62,7 @@ jobs:
             bandit==1.* \
             semgrep==1.*
 
-          # TruffleHog (official install script)
+          # TruffleHog (installer yang sudah kamu tes)
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
 
@@ -85,6 +85,9 @@ jobs:
             -o /usr/local/bin/zap-baseline.py
           chmod +x /usr/local/bin/zap-baseline.py
 
+          # Snyk CLI (Node sudah ada di ubuntu-latest)
+          npm install -g snyk@latest || true
+
       - name: Verify installed tools
         run: |
           trufflehog --version
@@ -93,10 +96,11 @@ jobs:
           trivy --version
           syft version || true
           cosign version || true
+          snyk --version || true
           python3 /usr/local/bin/zap-baseline.py --help || true
 
       #################################################################
-      # 2. Tests (opsional)
+      # 2. Tests
       #################################################################
       - name: Install app dependencies
         run: |
@@ -111,127 +115,135 @@ jobs:
           if ls tests 2>/dev/null; then
             pytest -q || true;
           else
-            echo "No tests/ dir, skipping...";
+            echo "No tests directory, skipping...";
           fi
 
       #################################################################
-      # 3. Secret Scan (TruffleHog)
+      # 3. Secret Scanning (TruffleHog)
       #################################################################
       - name: 🔑 Secret scan (TruffleHog)
         run: |
           trufflehog filesystem --json . > "$REPORT_DIR/trufflehog.json" || true
 
       #################################################################
-      # 4. SAST — Bandit (JSON → SARIF via Bandit2SARIF) + Semgrep SARIF
+      # 4. SAST — Bandit JSON + Bandit2SARIF + Semgrep SARIF
       #################################################################
-      - name: 🧱 SAST (Bandit → JSON)
+      - name: 🧱 SAST (Bandit JSON → SARIF)
         run: |
-          bandit -r . --exit-zero -f json -o "$REPORT_DIR/bandit.json"
+          # Bandit → JSON
+          bandit -r . --exit-zero -f json -o "$REPORT_DIR/bandit.json" || true
 
-      - name: 🧱 Convert Bandit JSON → SARIF
-        run: |
+          # Convert Bandit JSON → SARIF minimal
           python3 << 'PY'
-          import json, os
+          import json, os, sys, pathlib
 
           report_dir = os.environ.get("REPORT_DIR", "security-reports")
-          src = os.path.join(report_dir, "bandit.json")
-          dst = os.path.join(report_dir, "bandit.sarif")
+          src = pathlib.Path(report_dir) / "bandit.json"
+          dst = pathlib.Path(report_dir) / "bandit.sarif"
 
-          if not os.path.exists(src):
-              print("No bandit.json found, skipping SARIF conversion")
-              raise SystemExit(0)
+          if not src.exists():
+              print("bandit.json not found, skipping SARIF conversion")
+              sys.exit(0)
 
-          with open(src) as f:
-              data = json.load(f)
+          data = json.load(src.open())
+          results = data.get("results", [])
+          rules_map = {}
+          sarif_results = []
 
-          # Minimal SARIF wrapper (Bandit2SARIF-lite)
+          def sev_to_level(sev: str) -> str:
+              sev = (sev or "").lower()
+              if sev == "high":
+                  return "error"
+              if sev == "medium":
+                  return "warning"
+              return "note"
+
+          for r in results:
+              test_id = r.get("test_id", "BANDIT")
+              test_name = r.get("test_name", "Bandit Issue")
+              issue_text = r.get("issue_text", "")
+              severity = r.get("issue_severity", "LOW")
+              filename = r.get("filename", "")
+              line = r.get("line_number", 1)
+
+              if test_id not in rules_map:
+                  rules_map[test_id] = {
+                      "id": test_id,
+                      "name": test_name,
+                      "shortDescription": {
+                          "text": f"Bandit: {test_name}"
+                      },
+                      "fullDescription": {
+                          "text": issue_text[:200]
+                      },
+                      "properties": {
+                          "problem.severity": severity.lower()
+                      }
+                  }
+
+              sarif_results.append({
+                  "ruleId": test_id,
+                  "level": sev_to_level(severity),
+                  "message": {"text": issue_text},
+                  "locations": [
+                      {
+                          "physicalLocation": {
+                              "artifactLocation": {"uri": filename},
+                              "region": {"startLine": line}
+                          }
+                      }
+                  ]
+              })
+
+          rules_list = list(rules_map.values())
           sarif = {
               "version": "2.1.0",
+              "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
               "runs": [
                   {
                       "tool": {
                           "driver": {
                               "name": "bandit",
-                              "informationUri": "https://bandit.readthedocs.io/",
-                              "rules": []
+                              "informationUri": "https://bandit.readthedocs.io",
+                              "rules": rules_list,
                           }
                       },
-                      "results": []
+                      "results": sarif_results
                   }
               ]
           }
 
-          run = sarif["runs"][0]
-          rules_index = {}
-
-          for issue in data.get("results", []):
-              rule_id = issue.get("test_id", "BANDIT")
-              severity = issue.get("issue_severity", "MEDIUM")
-              conf = issue.get("issue_confidence", "MEDIUM")
-              msg = issue.get("issue_text", "")
-              fname = issue.get("filename", "")
-              line = issue.get("line_number", 1)
-
-              if rule_id not in rules_index:
-                  rule = {
-                      "id": rule_id,
-                      "name": issue.get("test_name", rule_id),
-                      "shortDescription": {"text": msg[:80]},
-                      "properties": {
-                          "severity": severity,
-                          "confidence": conf
-                      }
-                  }
-                  run["tool"]["driver"]["rules"].append(rule)
-                  rules_index[rule_id] = len(run["tool"]["driver"]["rules"]) - 1
-
-              result = {
-                  "ruleId": rule_id,
-                  "message": {"text": msg},
-                  "locations": [
-                      {
-                          "physicalLocation": {
-                              "artifactLocation": {"uri": fname},
-                              "region": {"startLine": line}
-                          }
-                      }
-                  ],
-                  "properties": {
-                      "severity": severity,
-                      "confidence": conf
-                  }
-              }
-              run["results"].append(result)
-
-          with open(dst, "w") as f:
-              json.dump(sarif, f, indent=2)
-
-          print(f"Converted {src} → {dst}")
+          dst.parent.mkdir(parents=True, exist_ok=True)
+          json.dump(sarif, dst.open("w"), indent=2)
+          print(f"Wrote SARIF to {dst}")
           PY
 
       - name: 🧱 SAST (Semgrep → SARIF)
         run: |
-          semgrep ci --config auto \
+          semgrep ci \
+            --config auto \
             --sarif --output "$REPORT_DIR/semgrep.sarif" || true
 
       - name: 📊 Upload Semgrep SARIF to GitHub Security
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ env.REPORT_DIR }}/semgrep.sarif
 
       - name: 📊 Upload Bandit SARIF to GitHub Security
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ env.REPORT_DIR }}/bandit.sarif
 
       #################################################################
-      # 5. Build container
+      # 5. Build container image
       #################################################################
       - name: 🐳 Build container image
         run: docker build -t "$FULL_IMAGE" .
 
       #################################################################
-      # 6. Trivy — Image & Config
+      # 6. SCA — Trivy image + config
       #################################################################
       - name: 📦 Trivy image scan
         run: |
@@ -253,52 +265,30 @@ jobs:
             .
 
       #################################################################
-      # 7. Snyk SCA + Container (NO SARIF, JSON only)
+      # 7. Snyk SCA (optional, never breaks pipeline)
       #################################################################
-      - name: 🔍 Check if Snyk token available
-        id: snyk_enabled
-        run: |
-          if [ -z "${{ secrets.SNYK_TOKEN }}" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Snyk token missing — skipping Snyk scans."
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: 🛠 Install Snyk CLI
-        if: steps.snyk_enabled.outputs.enabled == 'true'
-        run: |
-          curl -sL https://static.snyk.io/cli/latest/snyk-linux \
-            -o /usr/local/bin/snyk
-          chmod +x /usr/local/bin/snyk
-
-      - name: 🔐 Snyk auth
-        if: steps.snyk_enabled.outputs.enabled == 'true'
+      - name: 🧪 Snyk SCA (app + container)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk auth "$SNYK_TOKEN"
-
-      - name: 📦 Snyk SCA Scan (Dependencies)
-        if: steps.snyk_enabled.outputs.enabled == 'true'
         run: |
-          snyk test \
-            --json \
-            --severity-threshold=high \
-            > "$REPORT_DIR/snyk-sca.json" \
-            || true
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "No SNYK_TOKEN configured, skipping Snyk.";
+            exit 0;
+          fi
 
-      - name: 🐳 Snyk Container Scan
-        if: steps.snyk_enabled.outputs.enabled == 'true'
-        run: |
-          snyk container test "$FULL_IMAGE" \
-            --file=Dockerfile \
-            --json \
-            --severity-threshold=high \
-            > "$REPORT_DIR/snyk-container.json" \
-            || true
+          if ! snyk auth "$SNYK_TOKEN"; then
+            echo "Snyk auth failed, skipping Snyk scans.";
+            exit 0;
+          fi
+
+          # App SCA (best effort)
+          snyk test --json > "$REPORT_DIR/snyk-app.json" || true
+
+          # Container SCA (best effort)
+          snyk container test "$FULL_IMAGE" --json > "$REPORT_DIR/snyk-image.json" || true
 
       #################################################################
-      # 8. DAST (OWASP ZAP Baseline)
+      # 8. DAST — OWASP ZAP Baseline
       #################################################################
       - name: 🚀 Run app container for DAST
         run: |
@@ -320,7 +310,7 @@ jobs:
         run: docker stop vuln-bank || true
 
       #################################################################
-      # 9. EPSS + Severity Gate (risk-based)
+      # 9. EPSS + Severity Gate (selalu tulis epss-summary.txt)
       #################################################################
       - name: 📊 Evaluate EPSS + HIGH/CRITICAL
         env:
@@ -332,6 +322,8 @@ jobs:
           report_dir = os.environ.get("REPORT_DIR", "security-reports")
           path = os.path.join(report_dir, "trivy-image.json")
           epss_threshold = float(os.environ.get("EPSS_THRESHOLD", "0.7"))
+
+          os.makedirs(report_dir, exist_ok=True)
 
           if not os.path.exists(path):
               print("No Trivy image report found")
@@ -399,7 +391,7 @@ jobs:
           PY
 
       #################################################################
-      # 10. SBOM (Syft)
+      # 10. SBOM
       #################################################################
       - name: 📦 Generate SBOM (Syft)
         run: |
@@ -408,7 +400,7 @@ jobs:
           syft "$FULL_IMAGE" -o cyclonedx-json > "$REPORT_DIR/sbom-cyclonedx.json"
 
       #################################################################
-      # 11. Push + Cosign (keyless, digest-based)
+      # 11. Push + Cosign
       #################################################################
       - name: 🔐 Login DockerHub
         run: |
@@ -435,24 +427,25 @@ jobs:
       # 12. Upload Reports + Summary
       #################################################################
       - name: 📎 Upload security reports artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
       - name: 📝 Append security summary
+        if: always()
         run: |
-          echo "## 🔐 Vuln Bank - Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🔐 Vuln Bank - FINAL" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: \`$FULL_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- EPSS threshold: \`${EPSS_THRESHOLD}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- SBOM: sbom.json / sbom-spdx.json / sbom-cyclonedx.json" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Cosign: keyless sign with Sigstore (OIDC)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SAST: Semgrep + Bandit (SARIF uploaded to Security tab)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SCA: Trivy + Snyk (JSON artifacts)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Cosign: keyless (OIDC)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SAST: Semgrep + Bandit (SARIF → Code Scanning)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SCA: Trivy + (optional) Snyk JSON reports" >> "$GITHUB_STEP_SUMMARY"
 
   #################################################################
-  # JOB 2 — NOTIFY ON FAILURE (Discord + GitHub Issue)
+  # JOB 2 — NOTIFY (jalan kalau security-ci FAIL)
   #################################################################
   notify-and-issues:
     name: 🚨 Notify & Create Issue
@@ -467,34 +460,37 @@ jobs:
           name: security-reports
           path: security-reports
 
-      - name: Show EPSS summary
+      - name: Show summary in logs
         run: |
-          echo "=== EPSS summary ==="
-          cat security-reports/epss-summary.txt || echo "No epss-summary.txt found."
+          echo "=== Security reports ==="
+          ls -R security-reports || true
+          echo "=== EPSS summary (if any) ==="
+          cat security-reports/epss-summary.txt || echo "No epss-summary.txt."
 
-      - name: 🔔 Discord notify (auto-skip if no webhook)
+      - name: 🔔 Discord notify (auto-skip kalau nggak ada webhook)
         env:
           HOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           if [ -z "$HOOK" ]; then
-            echo "No webhook, skipping Discord notify.";
+            echo "No webhook configured, skipping Discord notification.";
             exit 0;
           fi
 
           MSG="🚨 Vuln Bank — Security pipeline FAILED for $GITHUB_SHA
-          Repo: $GITHUB_REPOSITORY
-          Ref : $GITHUB_REF
 
-          Check artifacts: security-reports/* and epss-summary.txt"
+          Please check:
+          - Artifacts: security-reports/*
+          - EPSS summary: epss-summary.txt"
+
           JSON=$(printf '{"content":"%s"}' "$MSG")
 
           curl -X POST -H "Content-Type: application/json" \
-            -d "$JSON" "$HOOK"
+            -d "$JSON" "$HOOK" || true
 
       - name: 📝 Create GitHub Issue from EPSS summary
         uses: peter-evans/create-issue-from-file@v5
         with:
-          title: "🔴 High/CRITICAL or EPSS-detected risks in ${{ github.sha }}"
+          title: "🔴 High/CRITICAL or EPSS-detected issues in ${{ github.sha }}"
           content-filepath: security-reports/epss-summary.txt
           labels: |
             security
@@ -503,7 +499,7 @@ jobs:
             auto-created
 
   #################################################################
-  # JOB 3 — DEPLOY VIA ANSIBLE (SELF-HOSTED RUNNER)
+  # JOB 3 — DEPLOY VIA ANSIBLE (jalan kalau security-ci SUCCESS)
   #################################################################
   deploy:
     name: 🚀 Deploy to VMware Lab
@@ -512,26 +508,22 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install Ansible (if missing)
+      - name: Install Ansible (kalau belum ada)
         run: |
-          if ! command -v ansible-playbook >/dev/null 2>&1; then
+          if ! command -v ansible-playbook >/dev/null; then
             sudo dnf install -y ansible-core;
-          else
-            echo "Ansible already installed.";
           fi
 
-      - name: Run Ansible deploy (digest-first)
+      - name: Run Ansible deploy (pakai digest immutable)
         env:
           IMAGE_DIGEST: ${{ needs.security-ci.outputs.image_digest }}
-          FULL_IMAGE: ${{ env.FULL_IMAGE }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
           VULN_ENV_FILE: ${{ secrets.VULN_ENV_FILE }}
-          DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
-          BASTION_HOST: ${{ secrets.BASTION_HOST }}
         run: |
           IMAGE="${IMAGE_DIGEST:-$FULL_IMAGE}"
 
@@ -541,6 +533,4 @@ jobs:
             -e "db_user=$DB_USER" \
             -e "db_password=$DB_PASSWORD" \
             -e "flask_secret_key=$FLASK_SECRET_KEY" \
-            -e "vuln_env_file=$VULN_ENV_FILE" \
-            -e "dockerhub_repo=$DOCKERHUB_REPO" \
-            -e "bastion_host=$BASTION_HOST"
+            -e "vuln_env_file=$VULN_ENV_FILE"
