@@ -361,10 +361,15 @@ jobs:
       # Discord / Slack / Telegram via webhook
       # -------------------------------
       - name: 🔔 Send Discord alert (example)
-        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
+        if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "No Discord webhook configured, skipping alert.";
+            exit 0;
+          fi
+
           SUMMARY="🚨 Vuln Bank - Security pipeline FAILED
           Repo: $GITHUB_REPOSITORY
           Ref : $GITHUB_REF
