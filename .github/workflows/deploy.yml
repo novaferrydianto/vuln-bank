@@ -325,30 +325,20 @@ jobs:
       # 8. DAST — OWASP ZAP Baseline (patched)
       #################################################################
       
-      - name: 🌐 Create shared network for ZAP
-        run: docker network create zap-net || true
-
       - name: 🚀 Run app container for DAST
         run: |
           docker run -d --rm \
-            --network zap-net
+            -p 5000:5000 \
             --name vuln-bank \
-            -e FLASK_RUN_HOST=0.0.0.0 \
             "$FULL_IMAGE"
 
-      - name: 🌐 ZAP Baseline scan
+      - name: 🌐 ZAP Baseline
         env:
-          TARGET_URL: http://vuln-bank:5000
+          TARGET_URL: http://localhost:5000
         run: |
-          mkdir -p "${REPORT_DIR}"
-          docker run --rm -t \
-            --network zap-net \
-            -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-              -t "$TARGET_URL" \
-              -J "/zap/wrk/zap.json" \
-              -x "/zap/wrk/zap.xml" || true
+          python3 /usr/local/bin/zap-baseline.py \
+            -t "$TARGET_URL" \
+            -x "$REPORT_DIR/zap-report.xml" || true
 
       - name: 🧯 Stop DAST container
         if: always()
