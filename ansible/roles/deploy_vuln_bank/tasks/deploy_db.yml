@@ -1,0 +1,17 @@
+---
+- name: Ensure db directory exists
+  file:
+    path: "{{ db_compose_dir }}"
+    state: directory
+
+- name: Upload docker-compose for DB
+  template:
+    src: docker-compose-db.yml.j2
+    dest: "{{ db_compose_dir }}/docker-compose.yml"
+    mode: "0644"
+    backup: yes
+
+- name: Deploy DB
+  command: docker compose -f {{ db_compose_dir }}/docker-compose.yml up -d
+  args:
+    chdir: "{{ db_compose_dir }}"

@@ -2,16 +2,16 @@ version: "3.9"
 
 services:
   app:
-    image: "{{ image_ref }}"
+    image: "{{ app_image }}"
     container_name: vuln-bank-app
     restart: always
-    env_file:
-      - .env.vuln
-    environment:
-      DB_HOST: "{{ hostvars['db-node'].ansible_host | default('db-vm3') }}"
-      DB_PORT: "5432"
+
     ports:
       - "5000:5000"
+
+    env_file:
+      - "{{ app_compose_dir }}/.env"
+
     networks:
       - vulnnet
 

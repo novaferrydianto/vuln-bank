@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    container_name: vuln-bank-db
+    restart: always
+
+    environment:
+      POSTGRES_USER: "{{ db_user }}"
+      POSTGRES_PASSWORD: "{{ db_password }}"
+      POSTGRES_DB: vulnerable_bank
+
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+    networks:
+      - vulnnet
+
+volumes:
+  db_data:
+
+networks:
+  vulnnet:
+    driver: bridge

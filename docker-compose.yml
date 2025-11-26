@@ -1,6 +1,44 @@
+version: '3.8'
+
 services:
   # ----------------------------------------------------
-  # DB SERVICE (Hardened)
+  # APP SERVICE (Frontend/Backend Application)
+  # ----------------------------------------------------
+  app:
+    # Image sudah di-build dan di-push dari GitHub Actions, jadi kita menggunakan pull
+    image: "{{ image_tag }}" 
+    container_name: vuln-bank
+    restart: always
+    
+    # Port 5000:5000 dipertahankan untuk akses DAST (ZAP) dari host
+    ports:
+      - "5000:5000"
+
+    # Menghubungkan variabel DB yang dibutuhkan oleh aplikasi
+    environment:
+      # Pastikan environment variable ini sesuai dengan yang dibutuhkan aplikasi Python (app.py)
+      DB_HOST: db # Hostname service DB internal
+      DB_PORT: 5432
+      DB_NAME: vulnerable_bank
+      DB_USER: "{{ db_user }}" # Diambil dari Ansible vars (GHA Secrets)
+      DB_PASSWORD: "{{ db_password }}" # Diambil dari Ansible vars (GHA Secrets)
+
+    depends_on:
+      db:
+        condition: service_healthy
+        
+    networks:
+      - vulnnet
+      
+    # Membatasi sumber daya pada VM yang sudah di-hardening (Improvement)
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+
+  # ----------------------------------------------------
+  # DB SERVICE (Hardened Configuration)
   # ----------------------------------------------------
   db:
     # 🔐 SECURITY: Menggunakan image Alpine yang lebih kecil dan spesifik
@@ -9,54 +47,35 @@ services:
     restart: always
     environment:
       POSTGRES_DB: vulnerable_bank
-      # 🔐 SECURITY: Menggunakan variabel lingkungan yang harus disetel di lingkungan CI/CD/Shell
-      # JANGAN PERNAH HARDCODE di file ini.
-      POSTGRES_USER: ${DB_USER:-postgres_dev}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-insecure_dev_password}
+      # Menggunakan variabel yang sama untuk konsistensi antara App dan DB service
+      POSTGRES_USER: "{{ db_user }}"
+      POSTGRES_PASSWORD: "{{ db_password }}"
       PGDATA: /var/lib/postgresql/data
     volumes:
       # Menggunakan named volume untuk persistensi data
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres_dev}"]
+      test: ["CMD-SHELL", "pg_isready -U {{ db_user }}"]
       interval: 5s
       timeout: 3s
       retries: 10
     networks:
       - vulnnet
-    # 🔐 SECURITY: Menghapus port mapping 5432:5432. DB hanya dapat diakses secara internal oleh container 'app'.
-    # ports: 
-    #   - "5432:5432" 
+    # Membatasi sumber daya pada VM yang sudah di-hardening (Improvement)
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    # 🔐 SECURITY: Port mapping dihapus, DB hanya dapat diakses secara internal melalui jaringan 'vulnnet'.
+    # ports:
+    #   - "5432:5432"
 
-  # ----------------------------------------------------
-  # APP SERVICE
-  # ----------------------------------------------------
-  app:
-    build: .
-    container_name: vuln-bank
-    restart: always
-    # Menghubungkan variabel DB yang dibutuhkan oleh aplikasi
-    environment:
-      # Pastikan environment variable ini sesuai dengan yang dibutuhkan aplikasi Python (app.py)
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: vulnerable_bank
-      DB_USER: ${DB_USER:-postgres_dev}
-      DB_PASSWORD: ${DB_PASSWORD:-insecure_dev_password}
-    depends_on:
-      db:
-        condition: service_healthy
-    # 🔐 SECURITY: Menghapus env_file (atau pastikan .env.example diabaikan oleh Git)
-    # env_file:
-    #   - .env.viln
-    networks:
-      - vulnnet
-    # Port 5000:5000 tetap dipertahankan karena DAST (ZAP) perlu mengaksesnya dari host.
-    ports:
-      - "5000:5000"
-
+# ----------------------------------------------------
+# GLOBAL NETWORKS & VOLUMES
+# ----------------------------------------------------
 volumes:
   pgdata:
+    driver: local
 
 networks:
   vulnnet:
