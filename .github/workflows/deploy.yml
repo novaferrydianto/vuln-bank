@@ -63,7 +63,7 @@ jobs:
             semgrep==1.*
 
           # TruffleHog
-          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/latest/download/install.sh \
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/install.sh \
             | bash -s -- -b /usr/local/bin
 
           # Trivy
