@@ -333,12 +333,14 @@ jobs:
 
       - name: 🌐 ZAP Baseline scan
         env:
-          TARGET_URL: http://localhost:5000
+          TARGET_URL: http://host.docker.internal:5000
         run: |
+          sudo chown -R 1000:1000 "${REPORT_DIR}"
           sudo chmod -R 777 "${REPORT_DIR}"
-          
+
           docker run --rm -t \
-            -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
+            --add-host=host.docker.internal:host-gateway \
+            -v "$(pwd)/${REPORT_DIR}:/zap/wrk:rw" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$TARGET_URL" \
