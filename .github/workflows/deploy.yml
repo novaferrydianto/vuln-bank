@@ -436,7 +436,7 @@ jobs:
       - name: 📝 Append security summary
         if: always()
         run: |
-          echo "## 🔐 Vuln Bank - FINAL" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🔐 Vuln Bank - FINAL-SUMMARY" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: \`$FULL_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- EPSS threshold: \`${EPSS_THRESHOLD}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- SBOM: sbom.json / sbom-spdx.json / sbom-cyclonedx.json" >> "$GITHUB_STEP_SUMMARY"
