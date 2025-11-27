@@ -6,8 +6,12 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *" # Daily full scan (≈ 01:00 WIB)
+    - cron: "0 18 * * *" # Daily full scan (~01:00 WIB)
   workflow_dispatch:
+
+concurrency:
+  group: vuln-bank-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   APP_NAME: vuln-bank
@@ -15,9 +19,13 @@ env:
   DOCKERHUB_REPO: docker.io/${{ secrets.DOCKERHUB_REPO }}
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://vuln-bank.local                    # sesuaikan (Ingress / NodePort)
+  DAST_TARGET_URL: http://vuln-bank.local
+  PYTHON_BIN: python3.11
 
 jobs:
+# ==========================================================
+# 1) SECURITY SCANS
+# ==========================================================
   security_scans:
     name: Security Scans (Secrets, SCA, SAST, Misconfig + Snyk)
     runs-on: self-hosted
@@ -26,18 +34,19 @@ jobs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install base tools (pip-audit, semgrep, jq)
+      - name: Runner sanity check (Python 3.11)
         run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit semgrep
+          set -e
+          $PYTHON_BIN --version
+          $PYTHON_BIN -m pip --version
+          docker --version || true
+
+      - name: Install base tools (Python 3.11)
+        run: |
+          $PYTHON_BIN -m pip install --upgrade pip
+          $PYTHON_BIN -m pip install pip-audit semgrep
           if ! command -v jq &> /dev/null; then
             sudo dnf install -y jq || sudo yum install -y jq || true
           fi
@@ -45,160 +54,164 @@ jobs:
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin
+          | sudo sh -s -- -b /usr/local/bin
 
-      - name: Install Gitleaks (Secret Scanner)
+      - name: Install Gitleaks
         run: |
-          GL_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-            | jq -r '.tag_name')
-          curl -sL \
-            "https://github.com/gitleaks/gitleaks/releases/download/${GL_VERSION}/gitleaks_${GL_VERSION#v}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
+          GL_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r '.tag_name')
+          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${GL_VERSION}/gitleaks_${GL_VERSION#v}_linux_x64.tar.gz" \
+          | sudo tar -xz -C /usr/local/bin gitleaks
 
       - name: Install Snyk CLI
         run: |
           curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
-            -o /usr/local/bin/snyk
+          -o /usr/local/bin/snyk
           chmod +x /usr/local/bin/snyk
 
       - name: Init critical flag
         run: echo "false" > critical_flag.txt
 
-      - name: Create report directory
+      - name: Prepare report directories
         run: |
-          mkdir -p ${REPORT_DIR}/secrets \
-                   ${REPORT_DIR}/sca \
-                   ${REPORT_DIR}/sast \
-                   ${REPORT_DIR}/misconfig \
-                   ${REPORT_DIR}/dast
+          mkdir -p \
+            ${REPORT_DIR}/secrets \
+            ${REPORT_DIR}/sca \
+            ${REPORT_DIR}/sast \
+            ${REPORT_DIR}/misconfig
 
-      # 1) SECRET SCANNING
-      - name: Secret Scanning (Gitleaks)
+      # --------------------------
+      # Secret Scanning
+      # --------------------------
+      - name: Secret Scanning - Gitleaks
         run: |
-          gitleaks detect \
-            --source . \
-            --report-format json \
+          gitleaks detect --source . --report-format json \
             --report-path ${REPORT_DIR}/secrets/gitleaks.json || true
 
           if jq 'length > 0' ${REPORT_DIR}/secrets/gitleaks.json >/dev/null 2>&1; then
             echo "true" > critical_flag.txt
           fi
 
-      # 2) SCA
-      - name: SCA - pip-audit (Python)
+      # --------------------------
+      # SCA
+      # --------------------------
+      - name: SCA - pip-audit
         run: |
           if [ -f requirements.txt ]; then
-            pip-audit -r requirements.txt \
+            $PYTHON_BIN -m pip_audit -r requirements.txt \
               -f json \
               -o ${REPORT_DIR}/sca/pip-audit.json || true
           else
             echo "requirements.txt not found, skipping pip-audit"
           fi
 
-      - name: SCA - Trivy FS (OS + deps)
+      - name: SCA - Trivy FS
         run: |
           trivy fs --scanners vuln \
             --severity HIGH,CRITICAL \
             --format json \
-            --output ${REPORT_DIR}/sca/trivy-fs.json \
-            . || true
+            --output ${REPORT_DIR}/sca/trivy-fs.json . || true
 
-          HAS_CRIT=$(jq -r '
-            [.Results[].Vulnerabilities[]? 
-              | select(.Severity == "CRITICAL" or .Severity == "HIGH")] 
-            | length' ${REPORT_DIR}/sca/trivy-fs.json 2>/dev/null || echo 0)
+          HAS_CRIT=$(jq -r '[.Results[].Vulnerabilities[]?
+            | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length'
+            ${REPORT_DIR}/sca/trivy-fs.json 2>/dev/null || echo 0)
 
           if [ "$HAS_CRIT" != "0" ]; then
             echo "true" > critical_flag.txt
           fi
 
-      - name: SCA/SAST - Snyk test (all projects)
+      - name: SCA/SAST - Snyk
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
-          snyk test --all-projects --severity-threshold=high --json > ${REPORT_DIR}/sca/snyk.json || true
+          snyk test --all-projects \
+            --severity-threshold=high \
+            --json > ${REPORT_DIR}/sca/snyk.json || true
 
-          if grep -q '"severity":"high"' ${REPORT_DIR}/sca/snyk.json 2>/dev/null || \
-             grep -q '"severity":"critical"' ${REPORT_DIR}/sca/snyk.json 2>/dev/null; then
+          if grep -q '"severity":"high"' ${REPORT_DIR}/sca/snyk.json || \
+             grep -q '"severity":"critical"' ${REPORT_DIR}/sca/snyk.json; then
             echo "true" > critical_flag.txt
           fi
 
-      # 3) SAST
+      # --------------------------
+      # SAST
+      # --------------------------
       - name: SAST - Semgrep
         run: |
-          semgrep ci \
-            --config p/ci \
+          semgrep ci --config p/ci \
             --json \
             --output ${REPORT_DIR}/sast/semgrep.json || true
 
-          HAS_HIGH=$(jq -r '
-            [.results[]?
-              | select(.extra.severity == "ERROR" or .extra.severity == "HIGH" or .extra.severity == "CRITICAL")] 
-            | length' ${REPORT_DIR}/sast/semgrep.json 2>/dev/null || echo 0)
+          HAS_HIGH=$(jq -r '[.results[]?
+            | select(.extra.severity=="ERROR" or
+                     .extra.severity=="HIGH" or
+                     .extra.severity=="CRITICAL")] | length'
+            ${REPORT_DIR}/sast/semgrep.json 2>/dev/null || echo 0)
 
           if [ "$HAS_HIGH" != "0" ]; then
             echo "true" > critical_flag.txt
           fi
 
-      # 4) Misconfiguration
-      - name: Misconfig - Trivy Config (Docker & K8s)
+      # --------------------------
+      # Misconfiguration
+      # --------------------------
+      - name: Misconfig - Trivy Config
         run: |
-          trivy config \
-            --severity HIGH,CRITICAL \
+          trivy config --severity HIGH,CRITICAL \
             --format json \
-            --output ${REPORT_DIR}/misconfig/trivy-config.json \
-            . || true
+            --output ${REPORT_DIR}/misconfig/trivy-config.json . || true
 
-          HAS_MISCONF=$(jq -r '
-            [.Results[].Misconfigurations[]?
-              | select(.Severity == "HIGH" or .Severity == "CRITICAL")] 
-            | length' ${REPORT_DIR}/misconfig/trivy-config.json 2>/dev/null || echo 0)
+          HAS_MISCONF=$(jq -r '[.Results[].Misconfigurations[]?
+            | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length'
+            ${REPORT_DIR}/misconfig/trivy-config.json 2>/dev/null || echo 0)
 
           if [ "$HAS_MISCONF" != "0" ]; then
             echo "true" > critical_flag.txt
           fi
 
-      - name: Upload Security Reports
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
           retention-days: 30
 
-      - name: Set critical flag output
+      - name: Set critical output
         id: setflag
         run: |
-          FLAG=$(cat critical_flag.txt 2>/dev/null || echo "false")
+          FLAG=$(cat critical_flag.txt || echo "false")
           echo "critical_found=$FLAG" >> $GITHUB_OUTPUT
 
+# ==========================================================
+# 2) SECURITY GATE
+# ==========================================================
   security_gate:
-    name: Security Gate (Block on High/Critical)
+    name: Security Gate
     runs-on: self-hosted
     needs: security_scans
 
     steps:
-      - name: Enforce Security Gate
+      - name: Enforce Gate
         run: |
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
-            echo "❌ Security gate failed: HIGH/CRITICAL vulnerabilities found"
+            echo "❌ Security gate failed"
             exit 1
           fi
+          echo "✅ Security gate passed"
 
-          echo "✅ Security gate passed: No HIGH/CRITICAL vulnerabilities"
-
+# ==========================================================
+# 3) BUILD & PUSH IMAGE
+# ==========================================================
   build_and_push:
-    name: Build & Push Container Image
+    name: Build & Push Image
     runs-on: self-hosted
     needs: security_gate
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Login to Docker Hub
+      - name: Docker login
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" \
-            | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build image
         run: |
@@ -208,138 +221,103 @@ jobs:
         run: |
           docker push $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG}
 
+# ==========================================================
+# 4) DEPLOY TO K3s
+# ==========================================================
   deploy_k8s:
-    name: Deploy to K3s (Pure kubectl)
+    name: Deploy to K3s
     runs-on: self-hosted
     needs: build_and_push
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Ensure kubectl installed
+      - name: Ensure kubectl
         run: |
-          if ! command -v kubectl &> /dev/null; then
-            curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
-            install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          fi
-          kubectl version --client
+          command -v kubectl || (
+            curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl &&
+            sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          )
 
-      - name: Set deploy image
+      - name: Inject image
         run: |
-          echo "DEPLOY_IMAGE=${DOCKERHUB_REPO}/${IMAGE_NAME}:${IMAGE_TAG}" >> $GITHUB_ENV
-          echo "Deploying image: ${DOCKERHUB_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
+          sed -i "s|IMAGE_PLACEHOLDER|${DOCKERHUB_REPO}/${IMAGE_NAME}:${IMAGE_TAG}|g" k3s/app/values.yaml
 
-      - name: Inject image into App manifest
-        run: |
-          sed -i "s|IMAGE_PLACEHOLDER|${DEPLOY_IMAGE}|g" k3s/app/values.yaml
-          grep image k3s/app/values.yaml || true
-
-      - name: Apply DB manifests
+      - name: Apply manifests
         run: |
           kubectl apply -f k3s/db/
-
-      - name: Apply App manifests
-        run: |
           kubectl apply -f k3s/app/
-
-      - name: Rollout status check
-        run: |
           kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
 
+# ==========================================================
+# 5) DAST
+# ==========================================================
   dast_zap:
-    name: DAST - OWASP ZAP Baseline
+    name: DAST - OWASP ZAP
     runs-on: self-hosted
     needs: deploy_k8s
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     outputs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
 
     steps:
-      - name: Init DAST critical flag
-        run: echo "false" > dast_critical_flag.txt
+      - name: Init flag
+        run: echo "false" > zap_flag.txt
 
-      - name: Ensure report dir exists
-        run: |
-          mkdir -p ${REPORT_DIR}/dast
+      - run: mkdir -p ${REPORT_DIR}/dast
 
-      - name: Run ZAP Baseline Scan
+      - name: Run ZAP baseline
         run: |
           docker run --rm \
             -v $(pwd)/${REPORT_DIR}/dast:/zap/wrk \
             softwaresecurityproject/zap-stable zap-baseline.py \
-              -t "${DAST_TARGET_URL}" \
-              -r zap-report.html \
-              -J zap-report.json \
-              -m 5 || true
+            -t "${DAST_TARGET_URL}" \
+            -r zap.html -J zap.json || true
 
-          if command -v jq &> /dev/null && [ -f ${REPORT_DIR}/dast/zap-report.json ]; then
-            HAS_HIGH=$(jq -r '
-              [.site[].alerts[]?
-                | select(.riskcode == "3" or .riskcode == "2")] 
-              | length' ${REPORT_DIR}/dast/zap-report.json 2>/dev/null || echo 0)
+          HAS_RISK=$(jq -r '[.site[].alerts[]?
+            | select(.riskcode=="2" or .riskcode=="3")] | length'
+            ${REPORT_DIR}/dast/zap.json 2>/dev/null || echo 0)
 
-            if [ "$HAS_HIGH" != "0" ]; then
-              echo "true" > dast_critical_flag.txt
-            fi
+          if [ "$HAS_RISK" != "0" ]; then
+            echo "true" > zap_flag.txt
           fi
 
-      - name: Upload DAST Reports
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/dast
-          retention-days: 30
 
-      - name: Set DAST critical flag output
-        id: setflag
+      - id: setflag
         run: |
-          FLAG=$(cat dast_critical_flag.txt 2>/dev/null || echo "false")
-          echo "critical_found=$FLAG" >> $GITHUB_OUTPUT
+          echo "critical_found=$(cat zap_flag.txt)" >> $GITHUB_OUTPUT
 
+# ==========================================================
+# 6) SLACK NOTIFICATION
+# ==========================================================
   slack_notify:
     name: Slack Notification
     runs-on: self-hosted
     needs: [security_scans, dast_zap]
 
     steps:
-      - name: Compose & send Slack message
+      - name: Send Slack message
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SEC_CRITICAL: ${{ needs.security_scans.outputs.critical_found }}
-          DAST_CRITICAL: ${{ needs.dast_zap.outputs.critical_found }}
+          SEC: ${{ needs.security_scans.outputs.critical_found }}
+          DAST: ${{ needs.dast_zap.outputs.critical_found }}
         run: |
-          if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "No SLACK_WEBHOOK_URL configured, skipping."
-            exit 0
-          fi
+          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
 
-          if [ "$SEC_CRITICAL" = "true" ] || [ "$DAST_CRITICAL" = "true" ]; then
-            STATUS=":rotating_light: *HIGH/CRITICAL vulnerabilities detected in Vuln Bank!*"
+          if [ "$SEC" = "true" ] || [ "$DAST" = "true" ]; then
+            MSG=":rotating_light: HIGH/CRITICAL vulnerabilities detected"
             COLOR="#ff0000"
           else
-            STATUS=":white_check_mark: *No HIGH/CRITICAL vulnerabilities detected in Vuln Bank (SAST/SCA/Snyk/Misconfig + DAST).*"
+            MSG=":white_check_mark: No HIGH/CRITICAL vulnerabilities found"
             COLOR="#36a64f"
           fi
 
-          PAYLOAD=$(jq -n \
-            --arg status "$STATUS" \
-            --arg repo "$GITHUB_REPOSITORY" \
-            --arg run_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            --arg color "$COLOR" \
-            '{
-              text: $status,
-              attachments: [
-                {
-                  color: $color,
-                  fields: [
-                    { "title": "Repository", "value:": $repo, "short": true },
-                    { "title": "Pipeline Run", "value": $run_url, "short": false }
-                  ]
-                }
-              ]
-            }')
-
-          curl -X POST -H 'Content-type: application/json' \
-            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+          jq -n --arg msg "$MSG" --arg url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+          '{text:$msg, attachments:[{color:"'"$COLOR"'", fields:[{title:"Run",value:$url}]}]}' \
+          | curl -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK_URL"
