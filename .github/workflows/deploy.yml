@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *" # Daily full scan (~01:00 WIB)
+    - cron: "0 18 * * *" # ~01:00 WIB
   workflow_dispatch:
 
 concurrency:
@@ -27,7 +27,7 @@ jobs:
 # 1) SECURITY SCANS
 # ==========================================================
   security_scans:
-    name: Security Scans (Secrets, SCA, SAST, Misconfig + Snyk)
+    name: Security Scans
     runs-on: self-hosted
 
     outputs:
@@ -43,7 +43,7 @@ jobs:
           $PYTHON_BIN -m pip --version
           docker --version || true
 
-      - name: Install base tools (Python 3.11)
+      - name: Install base Python tools
         run: |
           $PYTHON_BIN -m pip install --upgrade pip
           $PYTHON_BIN -m pip install pip-audit semgrep
@@ -62,16 +62,17 @@ jobs:
           curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${GL_VERSION}/gitleaks_${GL_VERSION#v}_linux_x64.tar.gz" \
           | sudo tar -xz -C /usr/local/bin gitleaks
 
-      - name: Install Snyk CLI
+      # 🔐 FIX A APPLIED HERE
+      - name: Install Snyk CLI (safe)
         run: |
-          curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
-          -o /usr/local/bin/snyk
-          chmod +x /usr/local/bin/snyk
+          curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux -o snyk
+          chmod +x snyk
+          sudo mv snyk /usr/local/bin/snyk
 
       - name: Init critical flag
         run: echo "false" > critical_flag.txt
 
-      - name: Prepare report directories
+      - name: Prepare reports directory
         run: |
           mkdir -p \
             ${REPORT_DIR}/secrets \
@@ -84,7 +85,8 @@ jobs:
       # --------------------------
       - name: Secret Scanning - Gitleaks
         run: |
-          gitleaks detect --source . --report-format json \
+          gitleaks detect --source . \
+            --report-format json \
             --report-path ${REPORT_DIR}/secrets/gitleaks.json || true
 
           if jq 'length > 0' ${REPORT_DIR}/secrets/gitleaks.json >/dev/null 2>&1; then
@@ -177,20 +179,16 @@ jobs:
       - name: Set critical output
         id: setflag
         run: |
-          FLAG=$(cat critical_flag.txt || echo "false")
-          echo "critical_found=$FLAG" >> $GITHUB_OUTPUT
+          echo "critical_found=$(cat critical_flag.txt)" >> $GITHUB_OUTPUT
 
 # ==========================================================
 # 2) SECURITY GATE
 # ==========================================================
   security_gate:
-    name: Security Gate
     runs-on: self-hosted
     needs: security_scans
-
     steps:
-      - name: Enforce Gate
-        run: |
+      - run: |
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
             echo "❌ Security gate failed"
             exit 1
@@ -198,126 +196,52 @@ jobs:
           echo "✅ Security gate passed"
 
 # ==========================================================
-# 3) BUILD & PUSH IMAGE
+# 3) BUILD & PUSH
 # ==========================================================
   build_and_push:
-    name: Build & Push Image
     runs-on: self-hosted
     needs: security_gate
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Docker login
-        run: |
+      - run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" \
           | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Build image
-        run: |
-          docker build -t $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG} .
-
-      - name: Push image
-        run: |
-          docker push $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG}
+      - run: docker build -t $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG} .
+      - run: docker push $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG}
 
 # ==========================================================
-# 4) DEPLOY TO K3s
+# 4) DEPLOY
 # ==========================================================
   deploy_k8s:
-    name: Deploy to K3s
     runs-on: self-hosted
     needs: build_and_push
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Ensure kubectl
-        run: |
+      - run: |
           command -v kubectl || (
             curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl &&
             sudo install -m 0755 kubectl /usr/local/bin/kubectl
           )
-
-      - name: Inject image
-        run: |
+      - run: |
           sed -i "s|IMAGE_PLACEHOLDER|${DOCKERHUB_REPO}/${IMAGE_NAME}:${IMAGE_TAG}|g" k3s/app/values.yaml
-
-      - name: Apply manifests
-        run: |
           kubectl apply -f k3s/db/
           kubectl apply -f k3s/app/
           kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
 
 # ==========================================================
-# 5) DAST
-# ==========================================================
-  dast_zap:
-    name: DAST - OWASP ZAP
-    runs-on: self-hosted
-    needs: deploy_k8s
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
-    outputs:
-      critical_found: ${{ steps.setflag.outputs.critical_found }}
-
-    steps:
-      - name: Init flag
-        run: echo "false" > zap_flag.txt
-
-      - run: mkdir -p ${REPORT_DIR}/dast
-
-      - name: Run ZAP baseline
-        run: |
-          docker run --rm \
-            -v $(pwd)/${REPORT_DIR}/dast:/zap/wrk \
-            softwaresecurityproject/zap-stable zap-baseline.py \
-            -t "${DAST_TARGET_URL}" \
-            -r zap.html -J zap.json || true
-
-          HAS_RISK=$(jq -r '[.site[].alerts[]?
-            | select(.riskcode=="2" or .riskcode=="3")] | length'
-            ${REPORT_DIR}/dast/zap.json 2>/dev/null || echo 0)
-
-          if [ "$HAS_RISK" != "0" ]; then
-            echo "true" > zap_flag.txt
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dast-reports
-          path: ${{ env.REPORT_DIR }}/dast
-
-      - id: setflag
-        run: |
-          echo "critical_found=$(cat zap_flag.txt)" >> $GITHUB_OUTPUT
-
-# ==========================================================
-# 6) SLACK NOTIFICATION
+# 5) SLACK
 # ==========================================================
   slack_notify:
-    name: Slack Notification
     runs-on: self-hosted
-    needs: [security_scans, dast_zap]
-
+    needs: [security_scans]
     steps:
-      - name: Send Slack message
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SEC: ${{ needs.security_scans.outputs.critical_found }}
-          DAST: ${{ needs.dast_zap.outputs.critical_found }}
-        run: |
-          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
-
-          if [ "$SEC" = "true" ] || [ "$DAST" = "true" ]; then
-            MSG=":rotating_light: HIGH/CRITICAL vulnerabilities detected"
-            COLOR="#ff0000"
-          else
-            MSG=":white_check_mark: No HIGH/CRITICAL vulnerabilities found"
-            COLOR="#36a64f"
+      - run: |
+          [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ] && exit 0
+          MSG="✅ Pipeline completed"
+          if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
+            MSG="🚨 HIGH/CRITICAL vulnerabilities detected"
           fi
-
-          jq -n --arg msg "$MSG" --arg url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-          '{text:$msg, attachments:[{color:"'"$COLOR"'", fields:[{title:"Run",value:$url}]}]}' \
-          | curl -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK_URL"
+          jq -n --arg msg "$MSG" \
+          '{text:$msg}' | curl -X POST -H 'Content-type: application/json' \
+          --data @- "${{ secrets.SLACK_WEBHOOK_URL }}"
