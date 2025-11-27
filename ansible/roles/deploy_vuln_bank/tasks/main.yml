@@ -1,8 +1,0 @@
----
-- name: Deploy Vuln Bank App
-  include_tasks: deploy_app.yml
-  when: "'hosting' in group_names"
-
-- name: Deploy Vuln Bank Database
-  include_tasks: deploy_db.yml
-  when: "'db' in group_names"

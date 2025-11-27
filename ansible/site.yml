@@ -1,12 +1,18 @@
 ---
-- hosts: hosting
+- name: Base VM provisioning & hardening (ALL nodes)
+  hosts: bastion,app_node,db_node
   become: true
   roles:
-    - role: deploy_vuln_bank
-      tags: deploy_vuln_bank
+    - base_hardening
 
-- hosts: db
+- name: Install K3s server (Control Plane)
+  hosts: k3s_server
   become: true
   roles:
-    - role: deploy_vuln_bank
-      tags: deploy_vuln_bank
+    - k3s_install
+
+- name: Install K3s agent (Worker)
+  hosts: k3s_agent
+  become: true
+  roles:
+    - k3s_install
