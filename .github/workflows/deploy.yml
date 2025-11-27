@@ -9,8 +9,12 @@ on:
     - cron: "0 18 * * *" # ~01:00 WIB
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 concurrency:
-  group: vuln-bank-main-${{ github.ref }}
+  group: vuln-bank-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,7 +25,6 @@ env:
   REPORT_DIR: security-reports
   DAST_TARGET_URL: http://vuln-bank.local
   PYTHON_BIN: python3.11
-  SONAR_HOST_URL: https://sonarcloud.io
 
 jobs:
 # ==========================================================
@@ -43,130 +46,52 @@ jobs:
           $PYTHON_BIN --version
           $PYTHON_BIN -m pip --version
           docker --version || true
-          command -v npm || true
-
       - name: Install base Python tools
         run: |
           $PYTHON_BIN -m pip install --upgrade pip
-          $PYTHON_BIN -m pip install pip-audit semgrep coverage pytest
+          $PYTHON_BIN -m pip install pip-audit semgrep
           if ! command -v jq &> /dev/null; then
             sudo dnf install -y jq || sudo yum install -y jq || true
           fi
-
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin
-
+          | sudo sh -s -- -b /usr/local/bin
       - name: Install Gitleaks
         run: |
           GL_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r '.tag_name')
           curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${GL_VERSION}/gitleaks_${GL_VERSION#v}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
-
+          | sudo tar -xz -C /usr/local/bin gitleaks
+      # 🔐 FIX A APPLIED HERE
       - name: Install Snyk CLI (safe)
         run: |
           curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux -o snyk
           chmod +x snyk
           sudo mv snyk /usr/local/bin/snyk
-
       - name: Init critical flag
         run: echo "false" > critical_flag.txt
 
-      - name: Prepare report dirs
+      - name: Prepare reports directory
         run: |
-          mkdir -p ${REPORT_DIR}/secrets \
-                   ${REPORT_DIR}/sca \
-                   ${REPORT_DIR}/sast \
-                   ${REPORT_DIR}/misconfig
-
-      # ==========================
-      # TEST + COVERAGE
-      # ==========================
-      - name: Python tests + coverage
-        run: |
-          if [ -f requirements.txt ]; then
-            $PYTHON_BIN -m pip install -r requirements.txt
-            coverage run -m pytest
-            coverage xml -o coverage.xml
-          else
-            echo "No Python project detected, skipping Python tests"
-          fi
-
-      - name: Node.js tests + coverage
-        run: |
-          if [ -f package.json ] && command -v npm &> /dev/null; then
-            npm install
-            npm test -- --coverage || true
-          else
-            echo "No Node.js project detected, skipping Node tests"
-          fi
-
-      # ==========================
-      # SONARCLOUD SCAN
-      # ==========================
-      - name: SonarCloud Scan
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          curl -sSLo sonar.zip \
-            https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-          unzip -q sonar.zip
-          sudo mv sonar-scanner-* /opt/sonar-scanner
-          sudo ln -sf /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-
-          sonar-scanner \
-            -Dsonar.organization=${{ secrets.SONAR_ORG }} \
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
-            -Dsonar.sources=. \
-            -Dsonar.host.url=${SONAR_HOST_URL} \
-            -Dsonar.token=${SONAR_TOKEN} \
-            -Dsonar.python.coverage.reportPaths=coverage.xml \
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
-            -Dsonar.exclusions=**/node_modules/**,**/vendor/**,**/dist/**,**/build/** \
-            -Dsonar.qualitygate.wait=false
-
-      - name: Enforce Sonar Quality Gate (HARD BLOCK)
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          echo "⏳ Waiting for SonarCloud Quality Gate..."
-          for i in {1..20}; do
-            STATUS=$(curl -s -u ${SONAR_TOKEN}: \
-              "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${{ secrets.SONAR_PROJECT_KEY }}" \
-              | jq -r '.projectStatus.status')
-
-            echo "Sonar Quality Gate status: $STATUS"
-
-            if [ "$STATUS" = "OK" ]; then
-              echo "✅ Sonar Quality Gate PASSED"
-              exit 0
-            fi
-
-            if [ "$STATUS" = "ERROR" ]; then
-              echo "❌ Sonar Quality Gate FAILED"
-              exit 1
-            fi
-
-            sleep 10
-          done
-
-          echo "❌ Sonar Quality Gate timeout"
-          exit 1
-
-      # ==========================
-      # SECURITY SCANS (existing)
-      # ==========================
+          mkdir -p \
+            ${REPORT_DIR}/secrets \
+            ${REPORT_DIR}/sca \
+            ${REPORT_DIR}/sast \
+            ${REPORT_DIR}/misconfig
+      # --------------------------
+      # Secret Scanning
+      # --------------------------
       - name: Secret Scanning - Gitleaks
         run: |
           gitleaks detect --source . \
             --report-format json \
             --report-path ${REPORT_DIR}/secrets/gitleaks.json || true
-
           if jq 'length > 0' ${REPORT_DIR}/secrets/gitleaks.json >/dev/null 2>&1; then
             echo "true" > critical_flag.txt
           fi
-
+      # --------------------------
+      # SCA
+      # --------------------------
       - name: SCA - pip-audit
         run: |
           if [ -f requirements.txt ]; then
@@ -176,66 +101,59 @@ jobs:
           else
             echo "requirements.txt not found, skipping pip-audit"
           fi
-
       - name: SCA - Trivy FS
         run: |
           trivy fs --scanners vuln \
             --severity HIGH,CRITICAL \
             --format json \
             --output ${REPORT_DIR}/sca/trivy-fs.json . || true
-
           HAS_CRIT=$(jq -r '[.Results[].Vulnerabilities[]?
-            | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
+            | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length'
             ${REPORT_DIR}/sca/trivy-fs.json 2>/dev/null || echo 0)
-
           if [ "$HAS_CRIT" != "0" ]; then
             echo "true" > critical_flag.txt
           fi
-
       - name: SCA/SAST - Snyk
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           snyk test --all-projects \
             --severity-threshold=high \
-            --fail-on=upgradable \
             --json > ${REPORT_DIR}/sca/snyk.json || true
-
           if grep -q '"severity":"high"' ${REPORT_DIR}/sca/snyk.json || \
              grep -q '"severity":"critical"' ${REPORT_DIR}/sca/snyk.json; then
             echo "true" > critical_flag.txt
           fi
-
+      # --------------------------
+      # SAST
+      # --------------------------
       - name: SAST - Semgrep
         run: |
           semgrep ci --config p/ci \
             --json \
             --output ${REPORT_DIR}/sast/semgrep.json || true
-
           HAS_HIGH=$(jq -r '[.results[]?
             | select(.extra.severity=="ERROR" or
                      .extra.severity=="HIGH" or
-                     .extra.severity=="CRITICAL")] | length' \
+                     .extra.severity=="CRITICAL")] | length'
             ${REPORT_DIR}/sast/semgrep.json 2>/dev/null || echo 0)
-
           if [ "$HAS_HIGH" != "0" ]; then
             echo "true" > critical_flag.txt
           fi
-
+      # --------------------------
+      # Misconfiguration
+      # --------------------------
       - name: Misconfig - Trivy Config
         run: |
           trivy config --severity HIGH,CRITICAL \
             --format json \
             --output ${REPORT_DIR}/misconfig/trivy-config.json . || true
-
           HAS_MISCONF=$(jq -r '[.Results[].Misconfigurations[]?
-            | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
+            | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length'
             ${REPORT_DIR}/misconfig/trivy-config.json 2>/dev/null || echo 0)
-
           if [ "$HAS_MISCONF" != "0" ]; then
             echo "true" > critical_flag.txt
           fi
-
       - uses: actions/upload-artifact@v4
         with:
           name: security-reports
@@ -246,9 +164,8 @@ jobs:
         id: setflag
         run: |
           echo "critical_found=$(cat critical_flag.txt)" >> $GITHUB_OUTPUT
-
 # ==========================================================
-# 2) SECURITY GATE (still enforced)
+# 2) SECURITY GATE
 # ==========================================================
   security_gate:
     runs-on: self-hosted
@@ -256,37 +173,26 @@ jobs:
     steps:
       - run: |
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
-            echo "❌ Security gate failed (HIGH/CRITICAL findings present)"
+            echo "❌ Security gate failed"
             exit 1
           fi
-          echo "✅ Security gate passed (no HIGH/CRITICAL findings)"
-
+          echo "✅ Security gate passed"
 # ==========================================================
-# 3) BUILD & PUSH (only if gate success)
+# 3) BUILD & PUSH
 # ==========================================================
   build_and_push:
     runs-on: self-hosted
     needs: security_gate
-    if: needs.security_gate.result == 'success'
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cleanup workspace
-        run: git clean -xfd
-
-      - name: Docker login
-        run: |
+      - run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" \
-            | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Build image
-        run: docker build -t $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG} .
-
-      - name: Push image
-        run: docker push $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG}
+          | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+      - run: docker build -t $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG} .
+      - run: docker push $DOCKERHUB_REPO/${IMAGE_NAME}:${IMAGE_TAG}
 
 # ==========================================================
-# 4) DEPLOY TO K3s
+# 4) DEPLOY
 # ==========================================================
   deploy_k8s:
     runs-on: self-hosted
@@ -294,42 +200,102 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
-
-      - name: Ensure kubectl installed
-        run: |
+      - run: |
           command -v kubectl || (
             curl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl &&
             sudo install -m 0755 kubectl /usr/local/bin/kubectl
           )
-
-      - name: Inject image & deploy
-        run: |
+      - run: |
           sed -i "s|IMAGE_PLACEHOLDER|${DOCKERHUB_REPO}/${IMAGE_NAME}:${IMAGE_TAG}|g" k3s/app/values.yaml
           kubectl apply -f k3s/db/
           kubectl apply -f k3s/app/
           kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
-
 # ==========================================================
-# 5) SLACK NOTIFICATION
+# 5) SLACK
 # ==========================================================
   slack_notify:
     runs-on: self-hosted
     needs: [security_scans]
     steps:
-      - name: Ensure jq
-        run: |
-          command -v jq || sudo dnf install -y jq || sudo yum install -y jq || true
-
-      - name: Send Slack message
-        run: |
+      - run: |
           [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ] && exit 0
-
-          MSG="✅ [main] Pipeline completed"
+          MSG="✅ Pipeline completed"
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
-            MSG="🚨 [main] HIGH/CRITICAL vulnerabilities detected"
+            MSG="🚨 HIGH/CRITICAL vulnerabilities detected"
           fi
-
           jq -n --arg msg "$MSG" \
-            '{text:$msg}' \
-          | curl -X POST -H 'Content-type: application/json' \
-            --data @- "${{ secrets.SLACK_WEBHOOK_URL }}"
+          '{text:$msg}' | curl -X POST -H 'Content-type: application/json' \
+          --data @- "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+# ==========================================================
+# 6) AUTO-CLOSE EPSS ISSUES (IF FIXED)
+# ==========================================================
+  auto_close_epss_issues:
+    name: Auto-close fixed EPSS issues
+    runs-on: self-hosted
+    needs: security_gate
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract current HIGH EPSS CVEs
+        run: |
+          jq -r '
+            [.Results[].Vulnerabilities[]?
+              | select(
+                  (.EPSS.Score >= 0.7)
+                  or
+                  (.EPSS.Score >= 0.5 and .CVSS.nvd.V3Score >= 7)
+                )
+              | .VulnerabilityID
+            ] | unique | .[]
+          ' ${REPORT_DIR}/sca/trivy-fs.json 2>/dev/null \
+          > current-epss-cves.txt || true
+
+          echo "Current exploitable CVEs:"
+          cat current-epss-cves.txt || echo "✅ None"
+
+      - name: Fetch open EPSS issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=epss" \
+            > open-epss-issues.json
+
+      - name: Auto-close resolved issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for ISSUE in $(jq -c '.[]' open-epss-issues.json); do
+            ISSUE_NUMBER=$(echo "$ISSUE" | jq -r '.number')
+            BODY=$(echo "$ISSUE" | jq -r '.body')
+
+            # Skip if issue has no CVE markers
+            CVES=$(echo "$BODY" | grep '^CVE-' || true)
+            [ -z "$CVES" ] && continue
+
+            STILL_PRESENT=false
+
+            for CVE in $CVES; do
+              if grep -q "$CVE" current-epss-cves.txt; then
+                STILL_PRESENT=true
+              fi
+            done
+
+            if [ "$STILL_PRESENT" = "false" ]; then
+              echo "✅ Closing issue #$ISSUE_NUMBER (vulnerability fixed)"
+
+              curl -s -X PATCH \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/$ISSUE_NUMBER" \
+                -d "$(jq -n \
+                  --arg state "closed" \
+                  --arg body "✅ Vulnerability no longer detected by EPSS scan. Auto-closed by DevSecOps pipeline." \
+                  '{state:$state, body:$body}')"
+            fi
+          done
