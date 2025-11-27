@@ -2,9 +2,12 @@ name: Vuln Bank DevSecOps Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *" # Daily full scan (≈ 01:00 WIB)
+  workflow_dispatch:
 
 env:
   APP_NAME: vuln-bank
@@ -230,16 +233,16 @@ jobs:
 
       - name: Inject image into App manifest
         run: |
-          sed -i "s|IMAGE_PLACEHOLDER|${DEPLOY_IMAGE}|g" k8s/app/deployment.yaml
-          grep image k8s/app/deployment.yaml || true
+          sed -i "s|IMAGE_PLACEHOLDER|${DEPLOY_IMAGE}|g" k3s/app/values.yaml
+          grep image k3s/app/values.yaml || true
 
       - name: Apply DB manifests
         run: |
-          kubectl apply -f k8s/db/
+          kubectl apply -f k3s/db/
 
       - name: Apply App manifests
         run: |
-          kubectl apply -f k8s/app/
+          kubectl apply -f k3s/app/
 
       - name: Rollout status check
         run: |
