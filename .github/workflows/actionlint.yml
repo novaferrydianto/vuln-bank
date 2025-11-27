@@ -14,6 +14,7 @@ on:
       - ".github/workflows/**"
       - "ansible/**"
       - "k8s/**"
+      - "k3s/**"
 
 permissions:
   contents: read
