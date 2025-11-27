@@ -1,0 +1,59 @@
+---
+- name: Install base packages
+  dnf:
+    name:
+      - git
+      - curl
+      - wget
+      - vim
+      - jq
+      - tar
+      - unzip
+    state: present
+
+- name: Disable SELinux (Permissive for lab)
+  selinux:
+    policy: targeted
+    state: permissive
+
+- name: Disable firewalld (lab only)
+  service:
+    name: firewalld
+    state: stopped
+    enabled: false
+
+- name: Enable kernel modules for Kubernetes
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Apply sysctl settings for Kubernetes networking
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { key: "net.bridge.bridge-nf-call-iptables", value: 1 }
+    - { key: "net.ipv4.ip_forward", value: 1 }
+
+- name: Install OpenSCAP & content
+  dnf:
+    name:
+      - openscap-scanner
+      - scap-security-guide
+    state: present
+
+- name: Run OpenSCAP CIS Level 1 (Rocky Linux 9)
+  command: >
+    oscap xccdf eval
+    --profile xccdf_org.ssgproject.content_profile_cis
+    --results-arf /tmp/openscap-arf.xml
+    --report /tmp/openscap-report.html
+    /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+  register: oscap_result
+  failed_when: false
+
+- name: OpenSCAP result info
+  debug:
+    msg: "OpenSCAP scan completed. Report: /tmp/openscap-report.html"
