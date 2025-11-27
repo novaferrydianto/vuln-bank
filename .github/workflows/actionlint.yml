@@ -19,151 +19,136 @@ permissions:
   contents: read
 
 jobs:
-  ###########################################################################
-  # 1) GitHub Workflow Lint (actionlint)
-  ###########################################################################
+# ==========================================================
+# 1) GitHub Actions Workflow Lint
+# ==========================================================
   actionlint:
-    name: Lint GitHub Workflows (actionlint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: rhysd/actionlint@v1
 
-  ###########################################################################
-  # 2) YAML Lint
-  ###########################################################################
+# ==========================================================
+# 2) YAML Lint
+# ==========================================================
   yamllint:
-    name: YAML Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install yamllint
-        run: sudo apt-get install -y yamllint
-      - name: Run yamllint
-        run: yamllint -c .yamllint . || true
+      - run: sudo apt-get update && sudo apt-get install -y yamllint
+      - run: yamllint -c .yamllint .
 
-  ###########################################################################
-  # 3) Markdown Lint (markdownlint)
-  ###########################################################################
+# ==========================================================
+# 3) Markdown Lint
+# ==========================================================
   markdownlint:
-    name: Markdown Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install markdownlint-cli
-        run: sudo npm install -g markdownlint-cli
-      - name: Run markdownlint
-        run: markdownlint '**/*.md' || true
+      - run: sudo npm install -g markdownlint-cli
+      - run: markdownlint '**/*.md'
 
-  ###########################################################################
-  # 4) Shell Lint (shellcheck)
-  ###########################################################################
+# ==========================================================
+# 4) ShellCheck
+# ==========================================================
   shellcheck:
-    name: ShellCheck Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run shellcheck
-        run: |
+      - run: |
           shopt -s globstar
-          shellcheck **/*.sh || true
+          if ls **/*.sh 1> /dev/null 2>&1; then
+            shellcheck **/*.sh
+          else
+            echo "No shell scripts found, skipping"
+          fi
 
-  ###########################################################################
-  # 5) Dockerfile Lint (Hadolint)
-  ###########################################################################
+# ==========================================================
+# 5) Dockerfile Lint (Hadolint)
+# ==========================================================
   hadolint:
-    name: Dockerfile Lint (Hadolint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install hadolint
-        run: |
-          wget -O /usr/local/bin/hadolint \
-            https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
-          chmod +x /usr/local/bin/hadolint
-      - name: Run Hadolint
-        run: |
+      - run: |
+          curl -sL \
+            https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 \
+            -o hadolint
+          chmod +x hadolint
+          sudo mv hadolint /usr/local/bin/
+      - run: |
           if ls **/Dockerfile 1> /dev/null 2>&1; then
-            hadolint **/Dockerfile || true
+            hadolint **/Dockerfile
+          else
+            echo "No Dockerfile found, skipping"
           fi
 
-  ###########################################################################
-  # 6) Terraform Lint (fmt + tflint)
-  ###########################################################################
+# ==========================================================
+# 6) Terraform Lint
+# ==========================================================
   terraform:
-    name: Terraform Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Terraform
-        uses: hashicorp/setup-terraform@v3
-      - name: Install tflint
-        run: |
-          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
-      - name: Terraform fmt
-        run: terraform fmt -check -recursive || true
-      - name: Run tflint
-        run: tflint --recursive || true
+      - uses: hashicorp/setup-terraform@v3
 
-  ###########################################################################
-  # 7) Ansible Lint
-  ###########################################################################
+      - run: terraform fmt -check -recursive
+
+      - run: |
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          tflint --recursive
+
+# ==========================================================
+# 7) Ansible Lint
+# ==========================================================
   ansible:
-    name: Ansible Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install ansible-lint
-        run: |
-          sudo pip install ansible ansible-lint
-      - name: Run ansible-lint
-        run: |
+      - run: |
+          python3 -m pip install --user ansible ansible-lint
+      - run: |
           if [ -d "ansible" ]; then
-            ansible-lint ansible/ || true
+            ansible-lint ansible/
+          else
+            echo "No ansible dir, skipping"
           fi
 
-  ###########################################################################
-  # 8) Kubernetes Manifests Lint (kubeconform + kube-score)
-  ###########################################################################
+# ==========================================================
+# 8) Kubernetes Lint
+# ==========================================================
   k8s-lint:
-    name: Kubernetes Manifests Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install kubeconform
-        run: |
-          curl -L https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
-          | tar xz && sudo mv kubeconform /usr/local/bin/
+      - run: |
+          curl -sL \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz
+          sudo mv kubeconform /usr/local/bin/
 
-      - name: Install kube-score
-        run: |
-          curl -L -o kube-score \
-            https://github.com/zegl/kube-score/releases/latest/download/kube-score_ubuntu_amd64
+      - run: |
+          curl -sL \
+            https://github.com/zegl/kube-score/releases/latest/download/kube-score_ubuntu_amd64 \
+            -o kube-score
           chmod +x kube-score
           sudo mv kube-score /usr/local/bin/
 
-      - name: Run kubeconform
-        run: |
+      - run: |
           if [ -d "k8s" ]; then
-            kubeconform -strict -output json k8s/ || true
+            kubeconform -strict -ignore-missing-schemas k8s/
+            kube-score score k8s/
+          else
+            echo "No k8s manifests found, skipping"
           fi
 
-      - name: Run kube-score
-        run: |
-          if [ -d "k8s" ]; then
-            kube-score score k8s/ || true
-          fi
-
-  ###########################################################################
-  # 9) Semgrep Lint Mode
-  ###########################################################################
+# ==========================================================
+# 9) Semgrep (Lint Mode)
+# ==========================================================
   semgrep:
-    name: Semgrep Lint Mode
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Semgrep
-        run: sudo pip install semgrep
-      - name: Semgrep scan
-        run: semgrep scan --error --config=auto || true
+      - run: python3 -m pip install --user semgrep
+      - run: semgrep scan --error --config=auto
