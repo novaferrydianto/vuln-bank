@@ -175,12 +175,11 @@ jobs:
         run: docker system prune -af
 
       - name: Build Image
-        run: |
-          docker build -t $DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG .
+        run: docker build -t $IMAGE_REPO:$IMAGE_TAG .
 
       - name: Push Image
         run: |
-          docker push $DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG
+          run: docker push $IMAGE_REPO:$IMAGE_TAG
 
 # ==========================================================
 # 4) DEPLOY
