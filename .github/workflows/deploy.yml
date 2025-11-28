@@ -160,7 +160,7 @@ jobs:
 # 3) BUILD + SIGN + PUSH (ENTERPRISE STANDARD)
 # ==========================================================
   build_and_push:
-    runs-on: [self-hosted, bastion]
+    runs-on: self-hosted
     needs: security_gate
 
     steps:
