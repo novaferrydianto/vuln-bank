@@ -1,75 +1,148 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Register - Vulnerable Bank</title>
+    <title>Register - Vuln Bank</title>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex,nofollow">
+
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-16.svg') }}" sizes="16x16">
+    <link rel="icon" sizes="16x16" href="{{ url_for('static', filename='favicon-16.svg') }}">
+
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
+
 <body>
-    <div class="container">
-        <h1>Create Account</h1>
-        <div id="message"></div>
-        <!-- Vulnerability: Form doesn't validate input on client side -->
-        <!-- Vulnerability: No CSRF protection -->
-        <form id="registerForm">
-            <input type="text" name="username" placeholder="Username" required>
-            <!-- Vulnerability: No password complexity requirements -->
-            <!-- Vulnerability: Password in plain text -->
-            <input type="password" name="password" placeholder="Password" required>
-            <button type="submit">Register</button>
-        </form>
-        <div class="links">
-            <a href="{{ url_for('login') }}">Already have an account? Login</a>
-        </div>
+<div class="container">
+    <h1>Create Account</h1>
+
+    <div id="message" role="alert" aria-live="polite"></div>
+
+    <form id="registerForm" autocomplete="off" novalidate>
+        <input
+            type="text"
+            name="username"
+            placeholder="Username"
+            required
+            minlength="3"
+            maxlength="32"
+            pattern="[A-Za-z0-9_]+"
+            title="Letters, numbers, underscore only"
+        >
+
+        <input
+            type="password"
+            name="password"
+            placeholder="Strong Password"
+            required
+            minlength="10"
+            autocomplete="new-password"
+        >
+
+        <button type="submit">Register</button>
+    </form>
+
+    <div class="links">
+        <a href="{{ url_for('login') }}">Already have an account? Login</a>
     </div>
 
-    <script>
-        // Vulnerability: No input sanitization
-        // Vulnerability: No XSS protection
-        document.addEventListener('DOMContentLoaded', function() {
-            document.getElementById('registerForm').addEventListener('submit', async (event) => {
-                event.preventDefault();
-                
-                const formData = new FormData(event.target);
-                const jsonData = {};
-                formData.forEach((value, key) => jsonData[key] = value);
-                
-                try {
-                    const response = await fetch('/register', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(jsonData)
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        // Vulnerability: innerHTML used instead of textContent
-                        document.getElementById('message').innerHTML = data.message;
-                        document.getElementById('message').style.color = 'green';
-                        document.getElementById('message').className = 'success';
-                        
-                        // Redirect to login after 2 seconds
-                        setTimeout(() => {
-                            window.location.href = '/login';
-                        }, 2000);
-                    } else {
-                        document.getElementById('message').innerHTML = data.message;
-                        document.getElementById('message').style.color = 'red';
-                        document.getElementById('message').className = 'error';
-                    }
-                } catch (error) {
-                    document.getElementById('message').innerHTML = 'Registration failed. Please try again.';
-                    document.getElementById('message').style.color = 'red';
-                    document.getElementById('message').className = 'error';
-                }
+    <div class="version-indicator">
+        Registration Flow: v2 (CSRF + Hardened)
+    </div>
+</div>
+
+<script>
+/* ======================================================
+   REGISTER — HARDENED + SAFE DEFAULTS
+   ====================================================== */
+
+function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    return parts.length === 2 ? parts.pop().split(";").shift() : null;
+}
+
+function showMessage(msg, type = "error") {
+    const el = document.getElementById("message");
+    el.textContent = msg;          // ✅ anti-XSS
+    el.className = type;
+    el.style.color = type === "success" ? "green" : "red";
+}
+
+function validatePassword(password) {
+    /*
+      Client-side rules (backend MUST enforce too):
+      - ≥ 10 chars
+      - upper + lower + number
+    */
+    return (
+        password.length >= 10 &&
+        /[a-z]/.test(password) &&
+        /[A-Z]/.test(password) &&
+        /[0-9]/.test(password)
+    );
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const form = document.getElementById("registerForm");
+    const button = form.querySelector("button");
+
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        showMessage("");
+        button.disabled = true;
+
+        const payload = {
+            username: form.username.value.trim(),
+            password: form.password.value
+        };
+
+        if (!validatePassword(payload.password)) {
+            showMessage(
+                "Password must be at least 10 characters and contain upper, lower, and number."
+            );
+            button.disabled = false;
+            return;
+        }
+
+        const csrfToken = getCookie("csrf_token");
+
+        try {
+            const res = await fetch("/register", {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRF-Token": csrfToken || ""
+                },
+                body: JSON.stringify(payload)
             });
-        });
-    </script>
+
+            const result = await res.json();
+
+            if (res.ok && result.status === "success") {
+                showMessage(
+                    "Registration successful. Redirecting to login…",
+                    "success"
+                );
+
+                setTimeout(() => {
+                    window.location.href = "/login";
+                }, 2000);
+            } else {
+                showMessage(
+                    "Registration failed. Please try a different username."
+                );
+                button.disabled = false;
+            }
+        } catch {
+            showMessage("Network error. Please try again later.");
+            button.disabled = false;
+        }
+    });
+});
+</script>
 </body>
 </html>
