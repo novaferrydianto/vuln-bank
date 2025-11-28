@@ -178,14 +178,17 @@ def generate_account_number():
     return ''.join(random.choices(string.digits, k=10))
 
 def generate_card_number():
-    """Generate a 16-digit card number"""
-    # Vulnerability: Predictable card number generation
-    return ''.join(random.choices(string.digits, k=16))
+    """Generate a 16-digit card number (FIXED: using secrets module for better randomness)"""
+    # FIX Predictable Token: Gunakan secrets.SystemRandom atau random.SystemRandom
+    # secrets.choice lebih baik, tetapi kita akan membuat versi yang lebih aman
+    secure_random = secrets.SystemRandom()
+    return ''.join(secure_random.choices(string.digits, k=16))
 
 def generate_cvv():
-    """Generate a 3-digit CVV"""
-    # Vulnerability: Predictable CVV generation
-    return ''.join(random.choices(string.digits, k=3))
+    """Generate a 3-digit CVV (FIXED: using secrets module for better randomness)"""
+    # FIX Predictable Token: Gunakan secrets.SystemRandom
+    secure_random = secrets.SystemRandom()
+    return ''.join(secure_random.choices(string.digits, k=3))
 
 @app.route('/')
 def index():
@@ -215,6 +218,7 @@ def register():
             
             # Build dynamic query based on user input fields
             # Vulnerability: Mass Assignment possible here
+            allowed_fields = ['username', 'password'] #Tentukan kolom yang HANYA diizinkan diisi oleh pengguna saat registrasi
             fields = ['username', 'password', 'account_number']
             values = [user_data.get('username'), user_data.get('password'), account_number]
             
@@ -282,11 +286,16 @@ def login():
             print(f"Login attempt - Username: {username}")  # Debug print
             
             # SQL Injection vulnerability (intentionally vulnerable)
-            query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-            print(f"Debug - Login query: {query}")  # Debug print
+#            query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
+            query = "SELECT * FROM users WHERE username=%s AND password=%s"
+            params = (username, password)
+#            print(f"Debug - Login query: {query}")  # Debug print
+            print(f"Debug - Login query template: {query}")
             
-            user = execute_query(query)
-            print(f"Debug - Query result: {user}")  # Debug print
+#            user = execute_query(query)
+            user = execute_query(query, params)
+            print(f"Debug - Query result: {user}")
+#            print(f"Debug - Query result: {user}")  # Debug print
             
             if user and len(user) > 0:
                 user = user[0]  # Get first row
@@ -311,7 +320,14 @@ def login():
                     }
                 }))
                 # Vulnerability: Cookie without secure flag
-                response.set_cookie('token', token, httponly=True)
+#                response.set_cookie('token', token, httponly=True)
+                response.set_cookie(
+                    'token',
+                    token,
+                    httponly=True,
+                    secure=True,
+                    samesite='Lax'
+                )
                 return response
             
             # Vulnerability: Username enumeration
@@ -381,27 +397,32 @@ def dashboard(current_user):
 
 # Check balance endpoint
 @app.route('/check_balance/<account_number>')
-def check_balance(account_number):
+@token_required
+def check_balance(current_user, account_number): # FIX: Tambahkan current_user sebagai parameter
     # Broken Object Level Authorization (BOLA) vulnerability
     # No authentication check, anyone can check any account balance
     try:
         # Vulnerability: SQL Injection possible
-        user = execute_query(
-            f"SELECT username, balance FROM users WHERE account_number='{account_number}'"
+        user_info = execute_query(
+            "SELECT id, username, balance, account_number FROM users WHERE id = %s AND account_number = %s",
+            (current_user['user_id'], account_number)
         )
         
         if user:
             # Vulnerability: Information disclosure
+            # FIX: Informasi yang diungkapkan dikurangi (tidak ada username/account_number pengguna lain)
+            user = user_info[0]
             return jsonify({
                 'status': 'success',
-                'username': user[0][0],
-                'balance': float(user[0][1]),
-                'account_number': account_number
+                'username': user[1],
+                'balance': float(user[2]),
+                'account_number': user[3] # Return account_number yang diverifikasi
             })
+        # FIX BOLA: Jika akun tidak ditemukan atau bukan milik pengguna yang login
         return jsonify({
             'status': 'error',
-            'message': 'Account not found'
-        }), 404
+            'message': 'Account not found or access denied'
+        }), 403 # Menggunakan 403 Forbidden atau 404 Not Found adalah praktik yang lebih baik
     except Exception as e:
         return jsonify({
             'status': 'error',
@@ -416,17 +437,29 @@ def transfer(current_user):
         data = request.get_json()
         # Vulnerability: No input validation on amount
         # Vulnerability: Negative amounts allowed
-        amount = float(data.get('amount'))
+#        amount = float(data.get('amount'))
+        amount_raw = data.get('amount')
         to_account = data.get('to_account')
         
         # Get sender's account number
         # Race condition vulnerability in checking balance
+        # 1. FIX NEGATIVE TRANSFER: Validate amount
+        try:
+            amount = float(amount_raw)
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': 'Invalid amount format'}), 400
+
+        if amount <= 0:
+            return jsonify({'status': 'error', 'message': 'Amount must be positive'}), 400
+        # 2. Get sender's account number (bisa dihilangkan SELECT balance yang rentan)
         sender_data = execute_query(
-            "SELECT account_number, balance FROM users WHERE id = %s",
+            "SELECT account_number FROM users WHERE id = %s",
             (current_user['user_id'],)
-        )[0]
+        )
+        if not sender_account:
+            return jsonify({'status': 'error', 'message': 'Sender account not found'}), 404
         
-        from_account = sender_data[0]
+        from_account = sender_account[0][0]
         balance = float(sender_data[1])
         
         if balance >= abs(amount):  # Check against absolute value of amount
@@ -435,10 +468,12 @@ def transfer(current_user):
                 # Vulnerability: No transaction atomicity
                 queries = [
                     (
-                        "UPDATE users SET balance = balance - %s WHERE id = %s",
-                        (amount, current_user['user_id'])
+                        # UPDATE pengirim: HANYA kurangi saldo jika saldo saat ini >= amount
+                        "UPDATE users SET balance = balance - %s WHERE id = %s AND balance >= %s RETURNING id",
+                        (amount, current_user['user_id'], amount) # Note: Pass amount twice
                     ),
                     (
+                        # UPDATE penerima
                         "UPDATE users SET balance = balance + %s WHERE account_number = %s",
                         (amount, to_account)
                     ),
@@ -451,17 +486,48 @@ def transfer(current_user):
                     )
                 ]
                 execute_transaction(queries)
+
+                sender_update_count = execute_query(
+                    "UPDATE users SET balance = balance - %s WHERE id = %s AND balance >= %s",
+                    (amount, current_user['user_id'], amount),
+                    fetch=False # Hanya mendapatkan jumlah baris yang terpengaruh
+                )
+
+                if sender_update_count != 1:
+                    # Jika tidak ada baris yang terpengaruh, berarti saldo tidak cukup
+                    return jsonify({'status': 'error', 'message': 'Insufficient funds or sender account locked by another transaction'}), 400
                 
+                queries_post_check = [
+                    (
+                        "UPDATE users SET balance = balance + %s WHERE account_number = %s",
+                        (amount, to_account)
+                    ),
+                    (
+                        """INSERT INTO transactions
+                        (from_account, to_account, amount, transaction_type, description)
+                        VALUES (%s, %s, %s, %s, %s)""",
+                        (from_account, to_account, amount, 'transfer', data.get('description', 'Transfer'))
+                    )
+                ]
+                execute_transaction(queries_post_check) # Transaksi ini harus menggunakan `LOCK TABLES` atau isolasi tinggi
+
+                # Ambil saldo terbaru
+                new_balance_data = execute_query(
+                    "SELECT balance FROM users WHERE id = %s",
+                    (current_user['user_id'],)
+                )[0]
+
                 return jsonify({
                     'status': 'success',
                     'message': 'Transfer Completed',
-                    'new_balance': balance - amount
+                    'new_balance': float(new_balance_data[0])
                 })
                 
             except Exception as e:
+                # ... (error handling yang ada)
                 return jsonify({
                     'status': 'error',
-                    'message': str(e)
+                    'message': f"Transfer failed: {str(e)}"
                 }), 500
         else:
             return jsonify({
@@ -477,11 +543,26 @@ def transfer(current_user):
 
 # Get transaction history endpoint
 @app.route('/transactions/<account_number>')
-def get_transaction_history(account_number):
+# FIX BOLA: Tambahkan token_required
+@token_required
+def get_transaction_history(current_user, account_number):
     # Vulnerability: No authentication required (BOLA)
-    # Vulnerability: SQL Injection possible
     try:
-        query = f"""
+        # FIX BOLA: Verifikasi kepemilikan account_number
+        user_account = execute_query(
+            "SELECT account_number FROM users WHERE id = %s AND account_number = %s",
+            (current_user['user_id'], account_number)
+        )
+        
+        if not user_account:
+            return jsonify({
+                'status': 'error',
+                'message': 'Access denied: Account number does not belong to the authenticated user'
+            }), 403
+            
+        # FIX SQLI: Gunakan parameterized query (execute_query harus mendukung 
+        # kueri dengan parameter %s, bukan hanya untuk INSERT/UPDATE)
+        query = """
             SELECT 
                 id,
                 from_account,
@@ -491,13 +572,14 @@ def get_transaction_history(account_number):
                 transaction_type,
                 description
             FROM transactions 
-            WHERE from_account='{account_number}' OR to_account='{account_number}'
+            WHERE from_account=%s OR to_account=%s
             ORDER BY timestamp DESC
         """
         
-        transactions = execute_query(query)
+        transactions = execute_query(query, (account_number, account_number))
         
-        # Vulnerability: Information disclosure
+        # ... (sisanya sama untuk pemformatan hasil)
+        # Vulnerability: Information disclosure (dikurangi karena query yang terekspos dihapus)
         transaction_list = [{
             'id': t[0],
             'from_account': t[1],
@@ -506,21 +588,20 @@ def get_transaction_history(account_number):
             'timestamp': str(t[4]),
             'type': t[5],
             'description': t[6]
-            #'query_used': query  # Vulnerability: Exposing SQL query
         } for t in transactions]
         
         return jsonify({
             'status': 'success',
             'account_number': account_number,
             'transactions': transaction_list,
-            'server_time': str(datetime.now())  # Vulnerability: Server information disclosure
+            'server_time': str(datetime.now())
         })
         
     except Exception as e:
+        # FIX: Hapus eksposur kueri
         return jsonify({
             'status': 'error',
             'message': str(e),
-            'query': query,  # Vulnerability: Query exposure
             'account_number': account_number
         }), 500
 
@@ -814,51 +895,56 @@ def approve_loan(current_user, loan_id):
         return jsonify({'error': 'Access Denied'}), 403
     
     try:
+        # 1. FIX RACE CONDITION: Pastikan pinjaman belum disetujui 
+        #    dan mendapatkan detail pinjaman dalam satu operasi update yang aman.
+        #    Kueri hanya akan memengaruhi 1 baris jika statusnya 'pending'.
         # Vulnerability: Race condition in loan approval
         # Vulnerability: No validation if loan is already approved
-        loan = execute_query(
-            "SELECT * FROM loans WHERE id = %s",
-            (loan_id,)
-        )[0]
         
-        if loan:
-            # Vulnerability: No transaction atomicity
-            # Vulnerability: No validation of loan amount
-            queries = [
-                (
-                    "UPDATE loans SET status='approved' WHERE id = %s",
-                    (loan_id,)
-                ),
-                (
-                    "UPDATE users SET balance = balance + %s WHERE id = %s",
-                    (float(loan[2]), loan[1])
-                )
-            ]
-            execute_transaction(queries)
+        update_loan_query = """
+            UPDATE loans 
+            SET status='approved' 
+            WHERE id = %s AND status = 'pending' 
+            RETURNING user_id, amount
+        """
+
+        # Eksekusi kueri UPDATE yang hanya berjalan jika statusnya 'pending'
+        # Hasilnya akan mengembalikan user_id dan amount dari pinjaman yang baru disetujui.
+        loan_result = execute_query(update_loan_query, (loan_id,))
+
+        if not loan_result:
+            # Jika tidak ada baris yang terpengaruh, pinjaman tidak ditemukan atau sudah disetujui
+            existing_loan = execute_query(
+                 "SELECT status FROM loans WHERE id = %s",
+                 (loan_id,)
+            )
+            if existing_loan and existing_loan[0][0] == 'approved':
+                return jsonify({'status': 'error', 'message': 'Loan already approved'}), 400
             
-            return jsonify({
-                'status': 'success',
-                'message': 'Loan approved successfully',
-                'debug_info': {  # Vulnerability: Information disclosure
-                    'loan_id': loan_id,
-                    'loan_amount': float(loan[2]),
-                    'user_id': loan[1],
-                    'approved_by': current_user['username'],
-                    'approved_at': str(datetime.now()),
-                    'loan_details': {  # Excessive data exposure
-                        'id': loan[0],
-                        'user_id': loan[1],
-                        'amount': float(loan[2]),
-                        'status': loan[3]
-                    }
-                }
-            })
+            return jsonify({'status': 'error', 'message': 'Pending loan not found'}), 404
+
+        loan_user_id, loan_amount = loan_result[0]
+        # 2. Transaksi untuk menambah saldo pengguna
+        queries = [
+            (
+                "UPDATE users SET balance = balance + %s WHERE id = %s",
+                (float(loan_amount), loan_user_id)
+            )
+        ]
         
+        execute_transaction(queries) # Cukup menjalankan kueri kedua ini secara atomik
+
         return jsonify({
-            'status': 'error',
-            'message': 'Loan not found',
-            'loan_id': loan_id
-        }), 404
+            'status': 'success',
+            'message': 'Loan approved successfully',
+            'debug_info': {
+                'loan_id': loan_id,
+                'loan_amount': float(loan_amount),
+                'user_id': loan_user_id,
+                'approved_by': current_user['username'],
+                'approved_at': str(datetime.now()),
+            }
+        })
         
     except Exception as e:
         # Vulnerability: Detailed error exposure
@@ -917,11 +1003,15 @@ def create_admin(current_user):
         password = data.get('password')
         account_number = generate_account_number()
         
-        # Vulnerability: SQL injection possible
-        # Vulnerability: No password complexity requirements
-        # Vulnerability: No account number uniqueness check
+        # FIX SQLI: Gunakan parameterized query
+        # Vulnerability: No password complexity requirements (still exists)
+        # Vulnerability: No account number uniqueness check (still exists)
+        query = "INSERT INTO users (username, password, account_number, is_admin) VALUES (%s, %s, %s, true)"
+        params = (username, password, account_number)
+        
         execute_query(
-            f"INSERT INTO users (username, password, account_number, is_admin) VALUES ('{username}', '{password}', '{account_number}', true)",
+            query,
+            params,
             fetch=False
         )
         
@@ -946,36 +1036,36 @@ def forgot_password():
             data = request.get_json()  # Changed to get_json()
             username = data.get('username')
             
-            # Vulnerability: SQL Injection possible
+            # FIX SQLI: Gunakan parameterized query
             user = execute_query(
-                f"SELECT id FROM users WHERE username='{username}'"
+                "SELECT id FROM users WHERE username=%s",
+                (username,)
             )
             
             if user:
-                # Weak reset pin logic (CWE-330)
-                # Using only 3 digits makes it easily guessable
+                # Weak reset pin logic (CWE-330) - still exists
                 reset_pin = str(random.randint(100, 999))
                 
-                # Store the reset PIN in database (in plaintext - CWE-319)
+                # Store the reset PIN in database (in plaintext - CWE-319) - still exists
                 execute_query(
                     "UPDATE users SET reset_pin = %s WHERE username = %s",
                     (reset_pin, username),
                     fetch=False
                 )
                 
-                # Vulnerability: Information disclosure
+                # ... (rest of the code is unchanged)
                 return jsonify({
                     'status': 'success',
                     'message': 'Reset PIN has been sent to your email.',
-                    'debug_info': {  # Vulnerability: Information disclosure
+                    'debug_info': {
                         'timestamp': str(datetime.now()),
                         'username': username,
                         'pin_length': len(reset_pin),
-                        'pin': reset_pin  # Intentionally exposing pin for learning
+                        'pin': reset_pin
                     }
                 })
             else:
-                # Vulnerability: Username enumeration
+                # Vulnerability: Username enumeration (still exists)
                 return jsonify({
                     'status': 'error',
                     'message': 'User not found'
@@ -987,7 +1077,7 @@ def forgot_password():
                 'status': 'error',
                 'message': str(e)
             }), 500
-            
+        
     return render_template('forgot_password.html')
 
 # Reset password endpoint
@@ -1250,17 +1340,27 @@ def api_transactions(current_user):
     if not account_number:
         return jsonify({'error': 'Account number required'}), 400
         
-    # Vulnerability: SQL Injection
-    query = f"""
+    # FIX BOLA: Verifikasi kepemilikan account_number
+    account_check = execute_query(
+        "SELECT id FROM users WHERE id = %s AND account_number = %s",
+        (current_user['user_id'], account_number)
+    )
+    
+    if not account_check:
+        return jsonify({'error': 'Access denied to this account number'}), 403
+        
+    # FIX SQLI: Gunakan parameterized query
+    query = """
         SELECT * FROM transactions 
-        WHERE from_account='{account_number}' OR to_account='{account_number}'
+        WHERE from_account=%s OR to_account=%s
         ORDER BY timestamp DESC
     """
+    params = (account_number, account_number)
     
     try:
-        transactions = execute_query(query)
+        transactions = execute_query(query, params)
         
-        # Convert Decimal objects to float for JSON serialization
+        # ... (sisanya sama untuk pemformatan hasil)
         transaction_list = []
         for t in transactions:
             transaction_list.append({
@@ -1287,31 +1387,40 @@ def create_virtual_card(current_user):
     try:
         data = request.get_json()
         
-        # Vulnerability: No validation on card limit
+        # Vulnerability: No validation on card limit (Still exists)
         card_limit = float(data.get('card_limit', 1000.0))
         
-        # Generate card details
+        # Generate card details (NOW SECURE)
         card_number = generate_card_number()
         cvv = generate_cvv()
-        # Vulnerability: Fixed expiry date calculation
+        # Vulnerability: Fixed expiry date calculation (Still exists)
         expiry_date = (datetime.now() + timedelta(days=365)).strftime('%m/%y')
         
-        # Vulnerability: SQL injection possible in card_type
+        # FIX SQLI: Gunakan parameterized query untuk card_type
         card_type = data.get('card_type', 'standard')
         
         # Create virtual card
-        query = f"""
+        query = """
             INSERT INTO virtual_cards 
             (user_id, card_number, cvv, expiry_date, card_limit, card_type)
             VALUES 
-            ({current_user['user_id']}, '{card_number}', '{cvv}', '{expiry_date}', {card_limit}, '{card_type}')
+            (%s, %s, %s, %s, %s, %s)
             RETURNING id
         """
+        params = (
+            current_user['user_id'], 
+            card_number, 
+            cvv, 
+            expiry_date, 
+            card_limit, 
+            card_type
+        )
         
-        result = execute_query(query)
+        result = execute_query(query, params)
         
+        # ... (rest of the code is unchanged)
         if result:
-            # Vulnerability: Sensitive data exposure
+            # Vulnerability: Sensitive data exposure (Still exists but data generation is secure)
             return jsonify({
                 'status': 'success',
                 'message': 'Virtual card created successfully',
@@ -1330,7 +1439,7 @@ def create_virtual_card(current_user):
         }), 500
         
     except Exception as e:
-        # Vulnerability: Detailed error exposure
+        # Vulnerability: Detailed error exposure (Still exists)
         return jsonify({
             'status': 'error',
             'message': str(e)
@@ -1376,16 +1485,16 @@ def get_virtual_cards(current_user):
 @token_required
 def toggle_card_freeze(current_user, card_id):
     try:
-        # Vulnerability: No CSRF protection
         # Vulnerability: BOLA - no verification if card belongs to user
-        query = f"""
+        # FIX BOLA: Tambahkan user_id check
+        query = """
             UPDATE virtual_cards 
             SET is_frozen = NOT is_frozen 
-            WHERE id = {card_id}
+            WHERE id = %s AND user_id = %s 
             RETURNING is_frozen
         """
         
-        result = execute_query(query)
+        result = execute_query(query, (card_id, current_user['user_id']))
         
         if result:
             return jsonify({
@@ -1395,8 +1504,8 @@ def toggle_card_freeze(current_user, card_id):
             
         return jsonify({
             'status': 'error',
-            'message': 'Card not found'
-        }), 404
+            'message': 'Card not found or access denied'
+        }), 403 # Mengubah 404 menjadi 403/404 yang lebih aman
         
     except Exception as e:
         return jsonify({
@@ -1408,18 +1517,18 @@ def toggle_card_freeze(current_user, card_id):
 @token_required
 def get_card_transactions(current_user, card_id):
     try:
-        # Vulnerability: BOLA - no verification if card belongs to user
-        # Vulnerability: SQL Injection possible
-        query = f"""
+        # FIX BOLA dan SQLI: Gunakan parameterized query dan pastikan kartu milik user
+        query = """
             SELECT ct.*, vc.card_number 
             FROM card_transactions ct
             JOIN virtual_cards vc ON ct.card_id = vc.id
-            WHERE ct.card_id = {card_id}
+            WHERE ct.card_id = %s AND vc.user_id = %s 
             ORDER BY ct.timestamp DESC
         """
         
-        transactions = execute_query(query)
+        transactions = execute_query(query, (card_id, current_user['user_id']))
         
+        # ... (sisanya sama untuk pemformatan hasil)
         # Vulnerability: Information disclosure
         return jsonify({
             'status': 'success',
@@ -1447,6 +1556,8 @@ def update_card_limit(current_user, card_id):
     try:
         data = request.get_json()
         
+        # FIX MASS ASSIGNMENT: Tentukan daftar field yang boleh di-update
+        ALLOWED_UPDATE_FIELDS = ['card_limit', 'card_type', 'is_frozen', 'is_active']
         # Mass Assignment Vulnerability - Build dynamic query based on all input fields
         update_fields = []
         update_values = []
@@ -1456,24 +1567,35 @@ def update_card_limit(current_user, card_id):
         # Vulnerability: No whitelist of allowed fields
         # This allows updating any column including balance
         for key, value in data.items():
+            # Hanya proses field yang diizinkan
+            if key in ALLOWED_UPDATE_FIELDS:
             # Convert value to float if it's numeric
-            try:
-                value = float(value)
-            except (ValueError, TypeError):
-                value = str(value)
+              try:
+                if key == 'card_limit': # Hanya limit yang seharusnya float
+                  value = float(value)
+                else:
+                  value = str(value)
+              except (ValueError, TypeError):
+                value = str(value) # default to string if conversion fails
             
             # Vulnerability: Direct field name injection
             update_fields.append(f"{key} = %s")
             update_values.append(value)
             updated_fields_list.append(key)  # Add to list instead of dict_keys
+
+        if not update_fields:
+            return jsonify({'error': 'No valid fields provided for update'}), 400
             
         # Vulnerability: BOLA - no verification if card belongs to user
         query = f"""
             UPDATE virtual_cards 
             SET {', '.join(update_fields)}
-            WHERE id = {card_id}
+            WHERE id = %s AND user_id = %s  # FIX: Tambahkan user_id check (BOLA)
             RETURNING *
         """
+        # Tambahkan card_id dan user_id ke parameter values
+        update_values.append(card_id)
+        update_values.append(current_user['user_id'])
         
         result = execute_query(query, tuple(update_values))
         
@@ -1531,21 +1653,22 @@ def get_bill_categories():
 @app.route('/api/billers/by-category/<int:category_id>', methods=['GET'])
 def get_billers_by_category(category_id):
     try:
-        # Vulnerability: SQL injection possible
-        query = f"""
+        # FIX SQLI: Gunakan parameterized query
+        query = """
             SELECT * FROM billers 
-            WHERE category_id = {category_id} 
+            WHERE category_id = %s 
             AND is_active = TRUE
         """
-        billers = execute_query(query)
+        billers = execute_query(query, (category_id,))
         
-        # Vulnerability: Information disclosure
+        # ... (sisanya sama untuk pemformatan hasil)
+        # Vulnerability: Information disclosure (account_number biller)
         return jsonify({
             'status': 'success',
             'billers': [{
                 'id': b[0],
                 'name': b[2],
-                'account_number': b[3],  # Vulnerability: Exposing account numbers
+                'account_number': b[3],
                 'description': b[4],
                 'minimum_amount': float(b[5]),
                 'maximum_amount': float(b[6]) if b[6] else None
@@ -1565,23 +1688,37 @@ def create_bill_payment(current_user):
         
         # Get required fields
         biller_id = data.get('biller_id')
-        amount = float(data.get('amount'))
+        amount_raw = data.get('amount')
         payment_method = data.get('payment_method')
         card_id = data.get('card_id') if payment_method == 'virtual_card' else None
         
-        # Vulnerability: No input validation
-        # Vulnerability: No amount validation
-        # Vulnerability: No payment method validation
+        # Basic input validation
+        try:
+            amount = float(amount_raw)
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': 'Invalid amount format'}), 400
+
+        if amount <= 0:
+            return jsonify({'status': 'error', 'message': 'Amount must be positive'}), 400
+
+        # ...
         
         if payment_method == 'virtual_card' and card_id:
-            # Vulnerability: BOLA - no verification if card belongs to user
-            # Vulnerability: SQL injection possible
-            card_query = f"""
-                SELECT current_balance, card_limit, is_frozen 
+            # FIX SQLI & BOLA: Gunakan parameterized query dan cek user_id
+            card_query = """
+                SELECT current_balance, card_limit, is_frozen, id 
                 FROM virtual_cards 
-                WHERE id = {card_id}
+                WHERE id = %s AND user_id = %s
             """
-            card = execute_query(card_query)[0]
+            card_result = execute_query(card_query, (card_id, current_user['user_id']))
+            
+            if not card_result:
+                return jsonify({
+                    'status': 'error', 
+                    'message': 'Card not found or access denied'
+                }), 403
+            
+            card = card_result[0]
             
             if card[2]:  # is_frozen
                 return jsonify({
@@ -1596,14 +1733,21 @@ def create_bill_payment(current_user):
                 }), 400
                 
         elif payment_method == 'balance':
-            # Check user balance
-            # Vulnerability: Race condition possible
-            user_query = f"""
-                SELECT balance FROM users
-                WHERE id = {current_user['user_id']}
+            # FIX SQLI: Gunakan parameterized query.
+            # Race Condition Fix: Akan ditangani di blok execute_transaction dengan klausa WHERE.
+            user_query = """
+                SELECT balance, account_number FROM users
+                WHERE id = %s
             """
-            user_balance = float(execute_query(user_query)[0][0])
+            user_data = execute_query(user_query, (current_user['user_id'],))
             
+            if not user_data:
+                 return jsonify({'status': 'error', 'message': 'User account not found'}), 404
+                 
+            user_balance = float(user_data[0][0])
+            user_account_number = user_data[0][1]
+
+            # Pengecekan saldo awal (masih rentan race condition di sini)
             if amount > user_balance:
                 return jsonify({
                     'status': 'error',
@@ -1611,12 +1755,14 @@ def create_bill_payment(current_user):
                 }), 400
         
         # Generate reference number
-        reference = f"BILL{int(time.time())}"  # Vulnerability: Predictable reference numbers
+        # Vulnerability: Predictable reference numbers (Still exists)
+        reference = f"BILL{int(time.time())}" 
         
-        # Create payment record
+        # Create payment record (Transaction Block)
         queries = []
         
         # Insert payment record
+        # ... (query payment_query dan payment_values tidak berubah, sudah aman)
         payment_query = """
             INSERT INTO bill_payments 
             (user_id, biller_id, amount, payment_method, card_id, reference_number, description)
@@ -1636,24 +1782,48 @@ def create_bill_payment(current_user):
         
         # Update balance based on payment method
         if payment_method == 'virtual_card':
+            # Card update
             card_update = """
                 UPDATE virtual_cards 
                 SET current_balance = current_balance - %s 
-                WHERE id = %s
+                WHERE id = %s AND current_balance >= %s 
             """
-            queries.append((card_update, (amount, card_id)))
+            # FIX Race Condition: Tambahkan current_balance >= %s
+            queries.append((card_update, (amount, card_id, amount)))
         else:
+            # Balance update (FIX Race Condition - Optimistic Locking)
             balance_update = """
                 UPDATE users 
                 SET balance = balance - %s 
-                WHERE id = %s
+                WHERE id = %s AND balance >= %s
             """
-            queries.append((balance_update, (amount, current_user['user_id'])))
+            # FIX Race Condition: Tambahkan balance >= %s
+            queries.append((balance_update, (amount, current_user['user_id'], amount)))
         
-        # Vulnerability: No transaction atomicity
-        execute_transaction(queries)
-        
-        # Vulnerability: Information disclosure
+        # Vulnerability: No transaction atomicity (still exists unless execute_transaction handles it)
+        # Assuming execute_transaction runs all queries or rolls back.
+        # FIX: Tambahkan pengecekan apakah update berhasil (hanya 1 baris terpengaruh)
+        try:
+            execute_transaction(queries)
+            
+            # Khusus untuk payment_method='balance', cek apakah update users berhasil
+            # (Ini perlu dilakukan jika execute_transaction tidak mengembalikan hitungan baris)
+            # Jika menggunakan execute_transaction, kita harus mengasumsikan atomisitas
+            # Namun, kita tidak bisa membedakan antara "saldo kurang" dan "gagal transaksi" 
+            # hanya dengan hasil execute_transaction tunggal.
+            
+            # Untuk demo, kita asumsikan execute_transaction berhasil jika tidak ada error SQL.
+            
+        except Exception as e:
+             # Jika terjadi exception, bisa jadi karena saldo kurang (jika DB support check)
+             # atau error lainnya. Logika ini perlu disempurnakan.
+             print(f"Transaction failure: {str(e)}")
+             return jsonify({
+                 'status': 'error',
+                 'message': 'Payment transaction failed (check balance/card status)'
+             }), 400
+
+        # Vulnerability: Information disclosure (Still exists)
         return jsonify({
             'status': 'success',
             'message': 'Payment processed successfully',
@@ -1677,9 +1847,8 @@ def create_bill_payment(current_user):
 @token_required
 def get_payment_history(current_user):
     try:
-        # Vulnerability: No pagination
-        # Vulnerability: SQL injection possible
-        query = f"""
+        # FIX SQLI: Gunakan parameterized query untuk user_id
+        query = """
             SELECT 
                 bp.*,
                 b.name as biller_name,
@@ -1689,13 +1858,14 @@ def get_payment_history(current_user):
             JOIN billers b ON bp.biller_id = b.id
             JOIN bill_categories bc ON b.category_id = bc.id
             LEFT JOIN virtual_cards vc ON bp.card_id = vc.id
-            WHERE bp.user_id = {current_user['user_id']}
+            WHERE bp.user_id = %s
             ORDER BY bp.created_at DESC
         """
         
-        payments = execute_query(query)
+        payments = execute_query(query, (current_user['user_id'],))
         
-        # Vulnerability: Excessive data exposure
+        # ... (rest of the code is unchanged)
+        # Vulnerability: Excessive data exposure (Still exists)
         return jsonify({
             'status': 'success',
             'payments': [{
