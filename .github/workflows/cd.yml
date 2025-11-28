@@ -12,6 +12,7 @@ env:
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   DOCKER_BUILDKIT: 1
+  KUBECONFIG: /home/bastion/.kube/config
 
 jobs:
   release:
