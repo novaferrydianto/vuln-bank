@@ -163,13 +163,16 @@ jobs:
     needs: security_gate
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Docker Login
         shell: bash
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
             -u "${{ secrets.DOCKERHUB_USERNAME }}" \
             --password-stdin
+
+      - name: Cleanup before build
+        run: docker system prune -af
 
       - name: Build Image
         run: |
