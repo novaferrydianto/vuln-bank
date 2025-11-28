@@ -1,270 +1,305 @@
-from flask import jsonify, request
-from functools import wraps
-import jwt
-import datetime
+from flask import Flask, render_template, request, redirect, url_for, jsonify, make_response
+from datetime import datetime, timedelta
+import random
+import string
 import os
+import secrets
+import uuid
+import logging
 import time
+
+from dotenv import load_dotenv
+from auth import generate_token, token_required, init_auth_routes
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_swagger_ui import get_swaggerui_blueprint
+from flask_cors import CORS
+from database import (
+    init_connection_pool,
+    init_db,
+    execute_query,
+    get_connection,
+    return_connection,
+)
+from functools import wraps
 from collections import defaultdict
+import requests
+from urllib.parse import urlparse
 
-from database import execute_query, verify_password
+# =========================================================
+# APP & CONFIG
+# =========================================================
 
-# ======================================================
-# CONFIG
-# ======================================================
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
-    raise RuntimeError("JWT_SECRET is not set")
+app = Flask(__name__)
+CORS(app)
 
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_MINUTES = int(os.getenv("JWT_EXPIRES_MINUTES", "60"))
+app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
-# Login rate-limit / brute-force protection
-LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
-LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))     # 15 minutes
-LOGIN_BLOCK_MINUTES = int(os.getenv("LOGIN_BLOCK_MINUTES", "15"))       # 15 minutes
+init_connection_pool()
 
-# key: (client_ip, username_lower) -> dict(count, first_ts, blocked_until)
-_login_tracker = defaultdict(lambda: {
-    "count": 0,
-    "first_ts": 0.0,
-    "blocked_until": 0.0,
-})
+# =========================================================
+# SWAGGER
+# =========================================================
 
+SWAGGER_URL = "/api/docs"
+API_URL = "/static/openapi.json"
 
-# ======================================================
+swaggerui_blueprint = get_swaggerui_blueprint(
+    SWAGGER_URL,
+    API_URL,
+    config={"app_name": "Vuln Bank API", "validatorUrl": None},
+)
+app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
+
+# =========================================================
+# RATE LIMIT LOGIN
+# =========================================================
+
+login_attempts = defaultdict(list)
+
+def rate_limit(limit=5, window=60):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            ip = request.remote_addr
+            now = time.time()
+            login_attempts[ip] = [t for t in login_attempts[ip] if now - t < window]
+            if len(login_attempts[ip]) >= limit:
+                return jsonify({"error": "Too many login attempts"}), 429
+            login_attempts[ip].append(now)
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# =========================================================
 # HELPERS
-# ======================================================
+# =========================================================
 
-def _now() -> float:
-    return time.time()
+UPLOAD_FOLDER = "static/uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 
-def _get_client_ip() -> str:
-    """
-    Best effort IP extraction.
-    In prod behind reverse proxy, ensure X-Forwarded-For is trusted.
-    """
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        # "client, proxy1, proxy2"
-        return xff.split(",")[0].strip()
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip
-    return request.remote_addr or "0.0.0.0"
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def generate_account_number():
+    return "".join(random.choices(string.digits, k=10))
 
-def _get_login_key(ip: str, username: str | None) -> tuple[str, str]:
-    uname = (username or "").strip().lower()
-    return ip, uname
+def generate_card_number():
+    return "".join(secrets.choice(string.digits) for _ in range(16))
 
+def generate_cvv():
+    return "".join(secrets.choice(string.digits) for _ in range(3))
 
-def _is_blocked(key: tuple[str, str]) -> bool:
-    rec = _login_tracker.get(key)
-    if not rec:
-        return False
-    return rec["blocked_until"] > _now()
+# =========================================================
+# BASIC ROUTES
+# =========================================================
 
+@app.route("/")
+def index():
+    resp = make_response(render_template("index.html"))
+    resp.set_cookie("csrf_token", secrets.token_urlsafe(32), samesite="Lax")
+    return resp
 
-def _register_failed_attempt(key: tuple[str, str]) -> dict:
-    """
-    Update tracker on failed login.
-    Returns record dict (for debug/logging if needed).
-    """
-    now = _now()
-    rec = _login_tracker[key]
+# =========================================================
+# AUTH
+# =========================================================
 
-    # Reset window if sudah lewat
-    if rec["first_ts"] == 0.0 or (now - rec["first_ts"]) > LOGIN_WINDOW_SECONDS:
-        rec["count"] = 0
-        rec["first_ts"] = now
-        rec["blocked_until"] = 0.0
-
-    rec["count"] += 1
-
-    if rec["count"] >= LOGIN_MAX_ATTEMPTS:
-        # block for LOGIN_BLOCK_MINUTES
-        rec["blocked_until"] = now + LOGIN_BLOCK_MINUTES * 60
-        # reset counter (next window)
-        rec["count"] = 0
-        rec["first_ts"] = now
-
-    return rec
-
-
-def _reset_login_key(key: tuple[str, str]) -> None:
-    if key in _login_tracker:
-        del _login_tracker[key]
-
-
-# ======================================================
-# JWT UTIL
-# ======================================================
-
-def generate_token(user_id: int, username: str, is_admin: bool = False) -> str:
-    now = datetime.datetime.utcnow()
-
-    payload = {
-        "sub": str(user_id),
-        "user_id": user_id,
-        "username": username,
-        "is_admin": bool(is_admin),
-        "iat": now,
-        "nbf": now,
-        "exp": now + datetime.timedelta(minutes=ACCESS_TOKEN_MINUTES),
-    }
-
-    token = jwt.encode(
-        payload,
-        JWT_SECRET,
-        algorithm=JWT_ALGORITHM,
-    )
-
-    return token if isinstance(token, str) else token.decode()
-
-
-def verify_token(token: str):
-    try:
-        return jwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=[JWT_ALGORITHM],
-            options={
-                "require": ["exp", "iat", "nbf"],
-                "verify_signature": True,
-                "verify_exp": True,
-            },
-        )
-    except jwt.InvalidTokenError:
-        return None
-
-
-# ======================================================
-# AUTH DECORATOR
-# ======================================================
-
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.headers.get("Authorization", "")
-
-        if not auth.startswith("Bearer "):
-            return jsonify({"error": "Unauthorized"}), 401
-
-        token = auth.split(" ", 1)[1].strip()
-        payload = verify_token(token)
-
-        if not payload:
-            return jsonify({"error": "Invalid or expired token"}), 401
-
-        return f(payload, *args, **kwargs)
-
-    return decorated
-
-
-# ======================================================
-# AUTH ROUTES
-# ======================================================
-
-def init_auth_routes(app):
-
-    # ---------------- LOGIN ----------------
-    @app.route("/api/login", methods=["POST"])
-    def api_login():
-        """
-        Secure login:
-        - bcrypt password check (via verify_password)
-        - no username enumeration (generic 'Invalid credentials')
-        - IP + username based brute-force protection
-        """
-        data = request.get_json(silent=True) or {}
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        data = request.get_json() or {}
         username = data.get("username")
         password = data.get("password")
 
         if not username or not password:
-            # Generic message, no hint
-            return jsonify({"error": "Invalid credentials"}), 401
+            return jsonify({"error": "Missing fields"}), 400
 
-        client_ip = _get_client_ip()
-        key = _get_login_key(client_ip, username)
+        if execute_query("SELECT id FROM users WHERE username=%s", (username,)):
+            return jsonify({"error": "Username already exists"}), 400
 
-        # 1) Check if blocked
-        if _is_blocked(key):
-            return jsonify({
-                "error": "Too many login attempts. Please try again later."
-            }), 429
+        hashed = generate_password_hash(password)
+        account_number = generate_account_number()
 
-        try:
-            # 2) Fetch user row (by username only)
-            rows = execute_query(
-                """
-                SELECT id, username, password_hash, is_admin
-                FROM users
-                WHERE username = %s
-                """,
-                (username,),
-            )
+        execute_query(
+            "INSERT INTO users (username, password, account_number) VALUES (%s,%s,%s)",
+            (username, hashed, account_number),
+            fetch=False,
+        )
 
-            if not rows:
-                # Register failed attempt and generic error
-                _register_failed_attempt(key)
-                return jsonify({"error": "Invalid credentials"}), 401
+        return jsonify({"status": "success"}), 201
 
-            user_id, db_username, password_hash, is_admin = rows[0]
+    return render_template("register.html")
 
-            # 3) Verify password via bcrypt
-            if not verify_password(password, password_hash):
-                _register_failed_attempt(key)
-                return jsonify({"error": "Invalid credentials"}), 401
 
-            # 4) Success -> reset tracker
-            _reset_login_key(key)
+@app.route("/login", methods=["GET", "POST"])
+@rate_limit()
+def login():
+    if request.method == "POST":
+        data = request.get_json() or {}
+        username = data.get("username")
+        password = data.get("password")
 
-            token = generate_token(
-                user_id=user_id,
-                username=db_username,
-                is_admin=is_admin,
-            )
+        rows = execute_query(
+            "SELECT id, username, password, is_admin FROM users WHERE username=%s",
+            (username,),
+        )
 
-            return jsonify({
-                "status": "success",
-                "token": token,
-                "expires_in_minutes": ACCESS_TOKEN_MINUTES,
-            })
+        if not rows or not check_password_hash(rows[0][2], password):
+            return jsonify({"error": "Invalid username or password"}), 401
 
-        except Exception:
-            # NOTE: sengaja generic, jangan bocorin detail DB
-            return jsonify({"error": "Authentication failed"}), 500
+        user = rows[0]
+        token = generate_token(user[0], user[1], user[3])
 
-    # ---------------- BALANCE ----------------
-    @app.route("/api/check_balance", methods=["GET"])
-    @token_required
-    def api_check_balance(current_user):
+        resp = make_response(jsonify({"status": "success"}))
+        resp.set_cookie("token", token, httponly=True, secure=True, samesite="Lax")
+        return resp
+
+    return render_template("login.html")
+
+# =========================================================
+# DASHBOARD
+# =========================================================
+
+@app.route("/dashboard")
+@token_required
+def dashboard(current_user):
+    user = execute_query(
+        "SELECT id, username, balance, account_number, is_admin FROM users WHERE id=%s",
+        (current_user["user_id"],),
+    )[0]
+
+    loans = execute_query(
+        "SELECT id, amount, status FROM loans WHERE user_id=%s",
+        (current_user["user_id"],),
+    )
+
+    return render_template(
+        "dashboard.html",
+        username=user[1],
+        balance=float(user[2]),
+        account_number=user[3],
+        loans=loans,
+        is_admin=user[4],
+    )
+
+# =========================================================
+# FORGOT & RESET PASSWORD
+# =========================================================
+
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.get_json() or {}
+    username = data.get("username")
+
+    rows = execute_query("SELECT id FROM users WHERE username=%s", (username,))
+    if rows:
+        pin = "".join(secrets.choice(string.digits) for _ in range(6))
+        expires = datetime.utcnow() + timedelta(minutes=10)
+
+        execute_query(
+            "UPDATE users SET reset_pin=%s, reset_pin_expires=%s WHERE username=%s",
+            (pin, expires, username),
+            fetch=False,
+        )
+
+    return jsonify({"status": "success"})
+
+
+@app.route("/reset-password", methods=["POST"])
+def reset_password():
+    data = request.get_json() or {}
+    username = data.get("username")
+    reset_pin = data.get("reset_pin")
+    new_password = data.get("new_password")
+
+    rows = execute_query(
         """
-        BOLA-safe:
-        - user hanya bisa lihat saldo miliknya sendiri
+        SELECT id FROM users
+        WHERE username=%s AND reset_pin=%s AND reset_pin_expires > NOW()
+        """,
+        (username, reset_pin),
+    )
+
+    if not rows:
+        return jsonify({"error": "Invalid or expired PIN"}), 400
+
+    hashed = generate_password_hash(new_password)
+
+    execute_query(
         """
-        try:
-            rows = execute_query(
-                """
-                SELECT username, balance, account_number
-                FROM users
-                WHERE id = %s
-                """,
+        UPDATE users
+        SET password=%s, reset_pin=NULL, reset_pin_expires=NULL
+        WHERE username=%s
+        """,
+        (hashed, username),
+        fetch=False,
+    )
+
+    return jsonify({"status": "success"})
+
+# =========================================================
+# MONEY TRANSFER (ATOMIC)
+# =========================================================
+
+@app.route("/transfer", methods=["POST"])
+@token_required
+def transfer(current_user):
+    data = request.get_json() or {}
+    to_account = data.get("to_account")
+    amount = float(data.get("amount", 0))
+
+    if amount <= 0:
+        return jsonify({"error": "Invalid amount"}), 400
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT account_number, balance FROM users WHERE id=%s FOR UPDATE",
                 (current_user["user_id"],),
             )
+            sender_account, sender_balance = cur.fetchone()
 
-            if not rows:
-                return jsonify({"error": "Account not found"}), 404
+            if sender_balance < amount:
+                return jsonify({"error": "Insufficient balance"}), 400
 
-            username, balance, account_number = rows[0]
+            cur.execute(
+                "UPDATE users SET balance = balance - %s WHERE id=%s",
+                (amount, current_user["user_id"]),
+            )
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE account_number=%s",
+                (amount, to_account),
+            )
+            cur.execute(
+                """
+                INSERT INTO transactions (from_account, to_account, amount, transaction_type)
+                VALUES (%s,%s,%s,'transfer')
+                """,
+                (sender_account, to_account, amount),
+            )
 
-            return jsonify({
-                "username": username,
-                "balance": float(balance),
-                "account_number": account_number,
-            })
+        conn.commit()
+        return jsonify({"status": "success"})
 
-        except Exception:
-            return jsonify({"error": "Failed to fetch balance"}), 500
+    except Exception as e:
+        conn.rollback()
+        logging.error(e)
+        return jsonify({"error": "Transfer failed"}), 500
+    finally:
+        return_connection(conn)
+
+# =========================================================
+# MAIN
+# =========================================================
+
+if __name__ == "__main__":
+    init_db()
+    init_auth_routes(app)
+    app.run(host="0.0.0.0", port=5000, debug=False)
