@@ -27,11 +27,14 @@ spec:
       labels:
         app: vuln-bank
     spec:
+      template:
+        spec:
+          imagePullSecrets:
+            - name: dockerhub-secret
       nodeSelector:
         node-role.kubernetes.io/app: "true"
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false
@@ -74,10 +77,15 @@ spec:
             readOnlyRootFilesystem: true
             runAsUser: 10000
             runAsGroup: 10000
-            runAsNonRoot: true
             capabilities:
               drop:
                 - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -100,6 +108,7 @@ metadata:
   name: vuln-bank
   namespace: vuln-bank-app
 spec:
+  ingressClassName: traefik
   rules:
   - host: vuln-bank.local
     http:
