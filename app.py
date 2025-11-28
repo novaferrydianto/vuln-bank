@@ -1422,12 +1422,18 @@ def update_card_limit(current_user, card_id):
     try:
         data = request.get_json() or {}
 
-        allowed_fields = ["card_limit", "card_type", "is_frozen", "is_active"]
+        # Safe allowed fields mapping
+        field_map = {
+            "card_limit": "card_limit",
+            "card_type": "card_type",
+            "is_frozen": "is_frozen",
+            "is_active": "is_active",
+        }
         update_fields = []
         update_values = []
 
         for key, value in data.items():
-            if key not in allowed_fields:
+            if key not in field_map:
                 continue
 
             if key == "card_limit":
@@ -1453,7 +1459,8 @@ def update_card_limit(current_user, card_id):
                         ),
                         400,
                     )
-            update_fields.append(f"{key} = %s")
+            # Always use safe mapped column name, not raw user input
+            update_fields.append(f"{field_map[key]} = %s")
             update_values.append(value)
 
         if not update_fields:
