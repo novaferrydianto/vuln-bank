@@ -226,6 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
+          export KUBECONFIG=$HOME/.kube/config
           sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_REPO:$IMAGE_TAG|g" k3s/app/*.yml
           kubectl apply -f k3s/db/
           kubectl apply -f k3s/app/
