@@ -31,7 +31,7 @@ env:
 jobs:
   security_scans:
     name: Security Scans
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     outputs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
@@ -167,7 +167,7 @@ jobs:
 # 2) SECURITY GATE
 # ==========================================================
   security_gate:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: security_scans
     steps:
       - run: |
