@@ -32,7 +32,7 @@ env:
 jobs:
   security_scans:
     name: Security Scans
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     outputs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
@@ -88,7 +88,7 @@ jobs:
       # SAST - SonarCloud
       # --------------------------
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@v3
+        uses: SonarSource/sonarqube-scan-action@v6 
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
