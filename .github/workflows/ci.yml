@@ -1,0 +1,48 @@
+name: Vuln Bank CI
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_BIN: python3.11
+  REPORT_DIR: security-reports
+
+jobs:
+  security_scans:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sanity check
+        run: |
+          $PYTHON_BIN --version
+
+      - name: Install tools
+        run: |
+          $PYTHON_BIN -m pip install --upgrade pip
+          $PYTHON_BIN -m pip install semgrep pip-audit
+          command -v jq || sudo dnf install -y jq
+
+      - name: Gitleaks
+        run: |
+          gitleaks detect --source . || true
+
+      - name: SAST (Semgrep)
+        run: |
+          semgrep ci --config p/ci || true
+
+      - name: SCA (pip-audit)
+        run: |
+          test -f requirements.txt && \
+          $PYTHON_BIN -m pip_audit -r requirements.txt || true
+
+      - name: Trivy FS
+        run: |
+          trivy fs --severity HIGH,CRITICAL . || true
