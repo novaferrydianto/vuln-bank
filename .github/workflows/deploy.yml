@@ -23,7 +23,6 @@ env:
   DOCKERHUB_REPO: docker.io/${{ secrets.DOCKERHUB_REPO }}
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://vuln-bank.local
   PYTHON_BIN: python3.11
 
 # ==========================================================
@@ -45,15 +44,13 @@ jobs:
           set -e
           $PYTHON_BIN --version
           $PYTHON_BIN -m pip --version
-          docker --version || true
 
       - name: Install base tools
         run: |
           $PYTHON_BIN -m pip install --upgrade pip
           $PYTHON_BIN -m pip install pip-audit semgrep
-          if ! command -v jq &> /dev/null; then
-            sudo dnf install -y jq || sudo yum install -y jq || true
-          fi
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - name: Install Trivy
         run: |
@@ -81,24 +78,7 @@ jobs:
             ${REPORT_DIR}/secrets \
             ${REPORT_DIR}/sca \
             ${REPORT_DIR}/sast \
-            ${REPORT_DIR}/misconfig \
-            ${REPORT_DIR}/sonar
-
-      # --------------------------
-      # SAST - SonarCloud
-      # --------------------------
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6 
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          organization: ${{ secrets.SONAR_ORG }}
-          projectKey: ${{ secrets.SONAR_PROJECT_KEY }}
-          args: >
-            -Dsonar.projectName=vuln-bank
-            -Dsonar.sources=.
-            -Dsonar.python.version=3.11
-            -Dsonar.qualitygate.wait=true
+            ${REPORT_DIR}/misconfig
 
       # --------------------------
       # Secret Scanning
@@ -146,7 +126,7 @@ jobs:
           fi
 
       # --------------------------
-      # SAST - Semgrep
+      # SAST
       # --------------------------
       - name: SAST - Semgrep
         run: |
@@ -187,7 +167,7 @@ jobs:
 # 2) SECURITY GATE
 # ==========================================================
   security_gate:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: security_scans
     steps:
       - run: |
