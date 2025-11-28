@@ -162,6 +162,7 @@ jobs:
   build_and_push:
     runs-on: self-hosted
     needs: security_gate
+    if: github.ref == 'refs/heads/main'
 
     steps:
       - uses: actions/checkout@v4
@@ -225,7 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_REPO:$IMAGE_TAG|" k3s/app/values.yaml
+          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_REPO:$IMAGE_TAG|g" k3s/app/*.yml
           kubectl apply -f k3s/db/
           kubectl apply -f k3s/app/
           kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
