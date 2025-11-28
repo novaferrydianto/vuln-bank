@@ -88,7 +88,7 @@ jobs:
       # SAST - SonarCloud
       # --------------------------
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@c9a9b5f2c4f8ad1843bb7c1d7b32e45a4e00a3b7
+        uses: SonarSource/sonarcloud-github-action@v3
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
