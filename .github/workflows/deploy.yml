@@ -21,7 +21,7 @@ concurrency:
 env:
   APP_NAME: vuln-bank
   IMAGE_NAME: vuln-bank
-  DOCKERHUB_REPO: docker.io/${{ secrets.DOCKERHUB_REPO }}
+  IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
   DAST_TARGET_URL: http://vuln-bank.local
@@ -179,7 +179,7 @@ jobs:
 
       - name: Push Image
         run: |
-          run: docker push $IMAGE_REPO:$IMAGE_TAG
+          docker push $IMAGE_REPO:$IMAGE_TAG
 
 # ==========================================================
 # 4) DEPLOY
