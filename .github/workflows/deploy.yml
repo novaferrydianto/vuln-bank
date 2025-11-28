@@ -159,7 +159,7 @@ jobs:
 # 3) BUILD & PUSH
 # ==========================================================
   build_and_push:
-    runs-on: self-hosted, bastion
+    runs-on: self-hosted
     needs: security_gate
     steps:
       - uses: actions/checkout@v4
