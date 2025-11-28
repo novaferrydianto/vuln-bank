@@ -159,14 +159,25 @@ jobs:
 # 3) BUILD & PUSH
 # ==========================================================
   build_and_push:
-    runs-on: self-hosted
+    runs-on: self-hosted, bastion
     needs: security_gate
     steps:
       - uses: actions/checkout@v4
-      - run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
-          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-      - run: docker build -t $DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG .
-      - run: docker push $DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG
+      
+      - name: Docker Login
+        shell: bash
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --password-stdin
+
+      - name: Build Image
+        run: |
+          docker build -t $DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG .
+
+      - name: Push Image
+        run: |
+          docker push $DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG
 
 # ==========================================================
 # 4) DEPLOY
