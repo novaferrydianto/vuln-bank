@@ -26,6 +26,7 @@ env:
   REPORT_DIR: security-reports
   DAST_TARGET_URL: http://vuln-bank.local
   PYTHON_BIN: python3.11
+  DOCKER_BUILDKIT: 1
 
 # ==========================================================
 # 1) SECURITY SCANS
@@ -156,30 +157,63 @@ jobs:
           echo "✅ Security Gate Passed"
 
 # ==========================================================
-# 3) BUILD & PUSH
+# 3) BUILD + SIGN + PUSH (ENTERPRISE STANDARD)
 # ==========================================================
   build_and_push:
-    runs-on: self-hosted, bastion
+    runs-on: [self-hosted, bastion]
     needs: security_gate
+
     steps:
       - uses: actions/checkout@v4
 
+      # ---------- Docker Auth ----------
       - name: Docker Login
-        shell: bash
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
             -u "${{ secrets.DOCKERHUB_USERNAME }}" \
             --password-stdin
 
+      # ---------- Cleanup ----------
       - name: Cleanup before build
-        run: docker system prune -af
+        run: |
+          docker image prune -af
+          docker builder prune -af
 
+      # ---------- Build ----------
       - name: Build Image
-        run: docker build -t $IMAGE_REPO:$IMAGE_TAG .
+        run: |
+          docker build -t $IMAGE_REPO:$IMAGE_TAG .
 
+      # ---------- Push ----------
       - name: Push Image
         run: |
           docker push $IMAGE_REPO:$IMAGE_TAG
+
+      # ==========================================================
+      # COSIGN SIGN (KEYLESS / OIDC)
+      # ==========================================================
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Cosign Sign Image
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign \
+            --yes \
+            $IMAGE_REPO:$IMAGE_TAG
+
+      # ==========================================================
+      # COSIGN VERIFY (POST-PUSH SAFETY CHECK)
+      # ==========================================================
+      - name: Cosign Verify Image
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/.+/.+/.github/workflows/.+.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            $IMAGE_REPO:$IMAGE_TAG
 
 # ==========================================================
 # 4) DEPLOY
@@ -191,7 +225,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          sed -i "s|IMAGE_PLACEHOLDER|$DOCKERHUB_REPO/$IMAGE_NAME:$IMAGE_TAG|" k3s/app/values.yaml
+          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_REPO:$IMAGE_TAG|" k3s/app/values.yaml
           kubectl apply -f k3s/db/
           kubectl apply -f k3s/app/
           kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
