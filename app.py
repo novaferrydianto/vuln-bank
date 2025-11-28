@@ -576,38 +576,29 @@ def upload_profile_picture(current_user):
 @app.route('/upload_profile_picture_url', methods=['POST'])
 @token_required
 def upload_profile_picture_url(current_user):
-    import ipaddress
+    # SSRF mitigation: Only allow selection from server-defined image URLs
     try:
         data = request.get_json() or {}
-        image_url = data.get('image_url')
+        image_id = data.get('image_id')
 
-        if not image_url:
-            return jsonify({'status': 'error', 'message': 'image_url is required'}), 400
+        # Mapping of allowed image IDs to URLs (server-side list)
+        ALLOWED_IMAGES = {
+            'unsplash_1': 'https://images.unsplash.com/photo-1519125323398-675f0ddb6308',
+            'imgur_cat': 'https://i.imgur.com/Cat123.jpg',
+            'imgur_dog': 'https://i.imgur.com/Dog456.png',
+        }
 
-        # Mitigate SSRF: Only allow URLs from trusted hosts over HTTPS
-        ALLOWED_HOSTS = {'images.unsplash.com', 'i.imgur.com', 'imgur.com'}  # Add more as needed
-        parsed_url = urlparse(image_url)
-        if parsed_url.scheme != 'https':
-            return jsonify({'status': 'error', 'message': 'Only HTTPS URLs are allowed.'}), 400
-        if parsed_url.hostname not in ALLOWED_HOSTS:
-            return jsonify({'status': 'error', 'message': f'Host {parsed_url.hostname} is not allowed.'}), 400
-        try:
-            # Block requests to private IP addresses
-            host_ip = None
-            import socket
-            host_ip = socket.gethostbyname(parsed_url.hostname)
-            ip_obj = ipaddress.ip_address(host_ip)
-            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_reserved or ip_obj.is_link_local:
-                return jsonify({'status': 'error', 'message': 'Refusing requests to private or link-local IPs.'}), 400
-        except Exception as ip_e:
-            return jsonify({'status': 'error', 'message': 'Could not resolve host IP.'}), 400
+        if not image_id or image_id not in ALLOWED_IMAGES:
+            return jsonify({'status': 'error', 'message': 'image_id is required and must be valid'}), 400
 
-        # SSL verification enabled; follow redirects
+        image_url = ALLOWED_IMAGES[image_id]
+
         resp = requests.get(image_url, timeout=10, allow_redirects=True, verify=True)
         if resp.status_code >= 400:
             return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
 
-        # Derive filename from URL path (user-controlled, but filtered)
+        # Derive filename from URL path (server-controlled)
+        parsed_url = urlparse(image_url)
         basename = os.path.basename(parsed_url.path) or 'downloaded'
         filename = secure_filename(basename)
         filename = f"{random.randint(1, 1000000)}_{filename}"
