@@ -1,270 +1,203 @@
 from flask import jsonify, request
-from functools import wraps
 import jwt
 import datetime
-import os
-import time
-from collections import defaultdict
+import sqlite3  
+from functools import wraps
 
-from database import execute_query, verify_password
+# Vulnerable JWT implementation with common security issues
 
-# ======================================================
-# CONFIG
-# ======================================================
+# Weak secret key (CWE-326)
+JWT_SECRET = "secret123"
 
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
-    raise RuntimeError("JWT_SECRET is not set")
+# Vulnerable algorithm selection - allows 'none' algorithm
+ALGORITHMS = ['HS256', 'none']
 
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_MINUTES = int(os.getenv("JWT_EXPIRES_MINUTES", "60"))
-
-# Login rate-limit / brute-force protection
-LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
-LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))     # 15 minutes
-LOGIN_BLOCK_MINUTES = int(os.getenv("LOGIN_BLOCK_MINUTES", "15"))       # 15 minutes
-
-# key: (client_ip, username_lower) -> dict(count, first_ts, blocked_until)
-_login_tracker = defaultdict(lambda: {
-    "count": 0,
-    "first_ts": 0.0,
-    "blocked_until": 0.0,
-})
-
-
-# ======================================================
-# HELPERS
-# ======================================================
-
-def _now() -> float:
-    return time.time()
-
-
-def _get_client_ip() -> str:
+def generate_token(user_id, username, is_admin=False):
     """
-    Best effort IP extraction.
-    In prod behind reverse proxy, ensure X-Forwarded-For is trusted.
+    Generate a JWT token with weak implementation
+    Vulnerability: No token expiration (CWE-613)
     """
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        # "client, proxy1, proxy2"
-        return xff.split(",")[0].strip()
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip
-    return request.remote_addr or "0.0.0.0"
-
-
-def _get_login_key(ip: str, username: str | None) -> tuple[str, str]:
-    uname = (username or "").strip().lower()
-    return ip, uname
-
-
-def _is_blocked(key: tuple[str, str]) -> bool:
-    rec = _login_tracker.get(key)
-    if not rec:
-        return False
-    return rec["blocked_until"] > _now()
-
-
-def _register_failed_attempt(key: tuple[str, str]) -> dict:
-    """
-    Update tracker on failed login.
-    Returns record dict (for debug/logging if needed).
-    """
-    now = _now()
-    rec = _login_tracker[key]
-
-    # Reset window if sudah lewat
-    if rec["first_ts"] == 0.0 or (now - rec["first_ts"]) > LOGIN_WINDOW_SECONDS:
-        rec["count"] = 0
-        rec["first_ts"] = now
-        rec["blocked_until"] = 0.0
-
-    rec["count"] += 1
-
-    if rec["count"] >= LOGIN_MAX_ATTEMPTS:
-        # block for LOGIN_BLOCK_MINUTES
-        rec["blocked_until"] = now + LOGIN_BLOCK_MINUTES * 60
-        # reset counter (next window)
-        rec["count"] = 0
-        rec["first_ts"] = now
-
-    return rec
-
-
-def _reset_login_key(key: tuple[str, str]) -> None:
-    if key in _login_tracker:
-        del _login_tracker[key]
-
-
-# ======================================================
-# JWT UTIL
-# ======================================================
-
-def generate_token(user_id: int, username: str, is_admin: bool = False) -> str:
-    now = datetime.datetime.utcnow()
-
     payload = {
-        "sub": str(user_id),
-        "user_id": user_id,
-        "username": username,
-        "is_admin": bool(is_admin),
-        "iat": now,
-        "nbf": now,
-        "exp": now + datetime.timedelta(minutes=ACCESS_TOKEN_MINUTES),
+        'user_id': user_id,
+        'username': username,
+        'is_admin': is_admin,
+        # Missing 'exp' claim - tokens never expire
+        'iat': datetime.datetime.utcnow()
     }
+    
+    # Vulnerability: Using a weak secret key
+    token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+    return token
 
-    token = jwt.encode(
-        payload,
-        JWT_SECRET,
-        algorithm=JWT_ALGORITHM,
-    )
-
-    return token if isinstance(token, str) else token.decode()
-
-
-def verify_token(token: str):
+def verify_token(token):
+    """
+    Verify JWT token with multiple vulnerabilities
+    - Accepts 'none' algorithm (CWE-347)
+    - No signature verification in some cases
+    - No expiration check
+    """
     try:
-        return jwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=[JWT_ALGORITHM],
-            options={
-                "require": ["exp", "iat", "nbf"],
-                "verify_signature": True,
-                "verify_exp": True,
-            },
-        )
-    except jwt.InvalidTokenError:
+        # Vulnerability: Accepts any algorithm, including 'none'
+        payload = jwt.decode(token, JWT_SECRET, algorithms=ALGORITHMS)
+        return payload
+    except jwt.exceptions.InvalidSignatureError:
+        # Vulnerability: Still accepts tokens in some error cases
+        try:
+            # Second try without verification
+            payload = jwt.decode(token, options={'verify_signature': False})
+            return payload
+        except:
+            return None
+    except Exception as e:
+        # Vulnerability: Detailed error exposure in logs
+        print(f"Token verification error: {str(e)}")
         return None
 
-
-# ======================================================
-# AUTH DECORATOR
-# ======================================================
 
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth = request.headers.get("Authorization", "")
+        token = None
+        
+        # Try to get token from Authorization header
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            try:
+                # Handle 'Bearer' token format
+                if 'Bearer' in auth_header:
+                    token = auth_header.split(' ')[1]
+                else:
+                    token = auth_header
+            except IndexError:
+                token = None
+                
+        # Vulnerability: Multiple token locations (token hijacking risk)
+        # Also check query parameters (vulnerable by design)
+        if not token and 'token' in request.args:
+            token = request.args['token']
+            
+        # Also check form data (vulnerable by design)
+        if not token and 'token' in request.form:
+            token = request.form['token']
+            
+        # Also check cookies (vulnerable by design)
+        if not token and 'token' in request.cookies:
+            token = request.cookies['token']
+            
+        if not token:
+            return jsonify({'error': 'Token is missing'}), 401
 
-        if not auth.startswith("Bearer "):
-            return jsonify({"error": "Unauthorized"}), 401
-
-        token = auth.split(" ", 1)[1].strip()
-        payload = verify_token(token)
-
-        if not payload:
-            return jsonify({"error": "Invalid or expired token"}), 401
-
-        return f(payload, *args, **kwargs)
-
+        try:
+            current_user = verify_token(token)
+            if current_user is None:
+                return jsonify({'error': 'Invalid token'}), 401
+                
+            # Vulnerability: No token expiration check
+            return f(current_user, *args, **kwargs)
+            
+        except Exception as e:
+            # Vulnerability: Detailed error exposure
+            return jsonify({
+                'error': 'Invalid token', 
+                'details': str(e)
+            }), 401
+            
     return decorated
 
-
-# ======================================================
-# AUTH ROUTES
-# ======================================================
-
+# New API endpoints with JWT authentication
 def init_auth_routes(app):
-
-    # ---------------- LOGIN ----------------
-    @app.route("/api/login", methods=["POST"])
+    @app.route('/api/login', methods=['POST'])
     def api_login():
-        """
-        Secure login:
-        - bcrypt password check (via verify_password)
-        - no username enumeration (generic 'Invalid credentials')
-        - IP + username based brute-force protection
-        """
-        data = request.get_json(silent=True) or {}
-        username = data.get("username")
-        password = data.get("password")
+        auth = request.get_json()
+        
+        if not auth or not auth.get('username') or not auth.get('password'):
+            return jsonify({'error': 'Missing credentials'}), 401
+            
+        # Vulnerability: SQL Injection still possible here
+        conn = sqlite3.connect('bank.db')
+        c = conn.cursor()
+        query = f"SELECT * FROM users WHERE username='{auth.get('username')}' AND password='{auth.get('password')}'"
+        c.execute(query)
+        user = c.fetchone()
+        conn.close()
+        
+        if not user:
+            return jsonify({'error': 'Invalid credentials'}), 401
+            
+        # Generate token
+        token = generate_token(user[0], user[1], user[5])
+        
+        # Vulnerability: Exposed sensitive data in response
+        return jsonify({
+            'token': token,
+            'user_id': user[0],
+            'username': user[1],
+            'account_number': user[3],
+            'is_admin': user[5],
+            'debug_info': {
+                'login_time': str(datetime.datetime.now()),
+                'ip_address': request.remote_addr,
+                'user_agent': request.headers.get('User-Agent')
+            }
+        })
 
-        if not username or not password:
-            # Generic message, no hint
-            return jsonify({"error": "Invalid credentials"}), 401
-
-        client_ip = _get_client_ip()
-        key = _get_login_key(client_ip, username)
-
-        # 1) Check if blocked
-        if _is_blocked(key):
-            return jsonify({
-                "error": "Too many login attempts. Please try again later."
-            }), 429
-
-        try:
-            # 2) Fetch user row (by username only)
-            rows = execute_query(
-                """
-                SELECT id, username, password_hash, is_admin
-                FROM users
-                WHERE username = %s
-                """,
-                (username,),
-            )
-
-            if not rows:
-                # Register failed attempt and generic error
-                _register_failed_attempt(key)
-                return jsonify({"error": "Invalid credentials"}), 401
-
-            user_id, db_username, password_hash, is_admin = rows[0]
-
-            # 3) Verify password via bcrypt
-            if not verify_password(password, password_hash):
-                _register_failed_attempt(key)
-                return jsonify({"error": "Invalid credentials"}), 401
-
-            # 4) Success -> reset tracker
-            _reset_login_key(key)
-
-            token = generate_token(
-                user_id=user_id,
-                username=db_username,
-                is_admin=is_admin,
-            )
-
-            return jsonify({
-                "status": "success",
-                "token": token,
-                "expires_in_minutes": ACCESS_TOKEN_MINUTES,
-            })
-
-        except Exception:
-            # NOTE: sengaja generic, jangan bocorin detail DB
-            return jsonify({"error": "Authentication failed"}), 500
-
-    # ---------------- BALANCE ----------------
-    @app.route("/api/check_balance", methods=["GET"])
+    @app.route('/api/check_balance', methods=['GET'])
     @token_required
     def api_check_balance(current_user):
-        """
-        BOLA-safe:
-        - user hanya bisa lihat saldo miliknya sendiri
-        """
-        try:
-            rows = execute_query(
-                """
-                SELECT username, balance, account_number
-                FROM users
-                WHERE id = %s
-                """,
-                (current_user["user_id"],),
-            )
-
-            if not rows:
-                return jsonify({"error": "Account not found"}), 404
-
-            username, balance, account_number = rows[0]
-
+        # Vulnerability: No additional authorization check
+        # Any valid token can check any account balance
+        account_number = request.args.get('account_number')
+        
+        conn = sqlite3.connect('bank.db')
+        c = conn.cursor()
+        c.execute(f"SELECT username, balance FROM users WHERE account_number='{account_number}'")
+        user = c.fetchone()
+        conn.close()
+        
+        if user:
             return jsonify({
-                "username": username,
-                "balance": float(balance),
-                "account_number": account_number,
+                'username': user[0],
+                'balance': user[1],
+                'checked_by': current_user['username']
             })
+        return jsonify({'error': 'Account not found'}), 404
 
-        except Exception:
-            return jsonify({"error": "Failed to fetch balance"}), 500
+    @app.route('/api/transfer', methods=['POST'])
+    @token_required
+    def api_transfer(current_user):
+        data = request.get_json()
+        
+        if not data or not data.get('to_account') or not data.get('amount'):
+            return jsonify({'error': 'Missing transfer details'}), 400
+            
+        # Vulnerability: No amount validation
+        amount = float(data.get('amount'))
+        to_account = data.get('to_account')
+        
+        conn = sqlite3.connect('bank.db')
+        c = conn.cursor()
+        
+        # Vulnerability: Race condition in transfer
+        c.execute(f"SELECT balance FROM users WHERE id={current_user['user_id']}")
+        balance = c.fetchone()[0]
+        
+        if balance >= amount:
+            # Vulnerability: SQL injection possible in to_account
+            c.execute(f"UPDATE users SET balance = balance - {amount} WHERE id={current_user['user_id']}")
+            c.execute(f"UPDATE users SET balance = balance + {amount} WHERE account_number='{to_account}'")
+            conn.commit()
+            
+            # Vulnerability: Information disclosure
+            c.execute(f"SELECT username, balance FROM users WHERE account_number='{to_account}'")
+            recipient = c.fetchone()
+            
+            conn.close()
+            return jsonify({
+                'status': 'success',
+                'new_balance': balance - amount,
+                'recipient': recipient[0],
+                'recipient_new_balance': recipient[1]
+            })
+            
+        conn.close()
+        return jsonify({'error': 'Insufficient funds'}), 400

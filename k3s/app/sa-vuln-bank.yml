@@ -1,0 +1,10 @@
+apiVersion: v1
+automountServiceAccountToken: false
+imagePullSecrets:
+  - name: dockerhub-secret
+kind: ServiceAccount
+metadata:
+  labels:
+    app: vuln-bank-app
+  name: sa-vuln-bank
+  namespace: vuln-bank-app

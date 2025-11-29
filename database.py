@@ -1,232 +1,252 @@
 import os
-import time
-import logging
-from datetime import datetime
-
 import psycopg2
 from psycopg2 import pool
-import bcrypt
+from datetime import datetime
+import time
 
-# =====================================================
-# LOGGING (NO SECRET LEAK)
-# =====================================================
-logger = logging.getLogger("vulnbank.db")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] [DB] %(message)s",
-        "%Y-%m-%dT%H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-
-# =====================================================
-# DATABASE CONFIG (ENV ONLY)
-# =====================================================
+# Vulnerable database configuration
+# CWE-259: Use of Hard-coded Password
+# CWE-798: Use of Hard-coded Credentials
 DB_CONFIG = {
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host": os.getenv("DB_HOST", "db"),
-    "port": os.getenv("DB_PORT", "5432"),
-    # Uncomment if DB supports TLS
-    # "sslmode": os.getenv("DB_SSLMODE", "require"),
+    'dbname': os.getenv('DB_NAME', 'vulnerable_bank'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', 'postgres'),  # Hardcoded password in default value
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'port': os.getenv('DB_PORT', '5432')
 }
 
-def _safe_config(cfg: dict) -> dict:
-    redacted = dict(cfg)
-    if redacted.get("password"):
-        redacted["password"] = "***redacted***"
-    return redacted
+# Create a connection pool
+connection_pool = None
 
-logger.info("Loaded DB config: %s", _safe_config(DB_CONFIG))
-
-# =====================================================
-# PASSWORD SECURITY (bcrypt)
-# =====================================================
-BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "12"))
-
-def hash_password(password: str) -> str:
-    salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
-    return bcrypt.hashpw(password.encode(), salt).decode()
-
-def verify_password(password: str, password_hash: str) -> bool:
-    try:
-        return bcrypt.checkpw(
-            password.encode(),
-            password_hash.encode(),
-        )
-    except Exception:
-        return False
-
-# =====================================================
-# CONNECTION POOL
-# =====================================================
-connection_pool: pool.SimpleConnectionPool | None = None
-
-def init_connection_pool(
-    min_connections=1,
-    max_connections=10,
-    max_retries=5,
-    retry_delay=2,
-):
+def init_connection_pool(min_connections=1, max_connections=10, max_retries=5, retry_delay=2):
+    """
+    Initialize the database connection pool with retry mechanism
+    Vulnerability: No connection encryption enforced
+    """
     global connection_pool
-    retry = 0
-
-    while retry < max_retries:
+    retry_count = 0
+    
+    while retry_count < max_retries:
         try:
             connection_pool = psycopg2.pool.SimpleConnectionPool(
                 min_connections,
                 max_connections,
-                **DB_CONFIG,
+                **DB_CONFIG
             )
-            logger.info("✅ Database connection pool ready")
+            print("Database connection pool created successfully")
             return
         except Exception as e:
-            retry += 1
-            logger.error("DB connection failed (%s/%s): %s", retry, max_retries, e)
-            time.sleep(retry_delay)
-
-    raise RuntimeError("❌ Database connection failed (max retries reached)")
+            retry_count += 1
+            print(f"Failed to connect to database (attempt {retry_count}/{max_retries}): {e}")
+            if retry_count < max_retries:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print("Max retries reached. Could not establish database connection.")
+                raise e
 
 def get_connection():
-    if not connection_pool:
-        raise RuntimeError("Connection pool not initialized")
-    return connection_pool.getconn()
+    if connection_pool:
+        return connection_pool.getconn()
+    raise Exception("Connection pool not initialized")
 
-def return_connection(conn):
-    if connection_pool and conn:
-        connection_pool.putconn(conn)
+def return_connection(connection):
+    if connection_pool:
+        connection_pool.putconn(connection)
 
-# =====================================================
-# DATABASE INITIALIZATION (SECURE SCHEMA)
-# =====================================================
 def init_db():
+    """
+    Initialize database tables
+    Multiple vulnerabilities present for learning purposes
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
-            # USERS
-            cursor.execute("""
+            # Create users table
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
+                    password TEXT NOT NULL,  -- Vulnerability: Passwords stored in plaintext
                     account_number TEXT NOT NULL UNIQUE,
-                    balance NUMERIC(15,2) NOT NULL DEFAULT 1000.00 CHECK (balance >= 0),
-                    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                    balance DECIMAL(15, 2) DEFAULT 1000.0,
+                    is_admin BOOLEAN DEFAULT FALSE,
                     profile_picture TEXT,
-                    reset_pin_hash TEXT,
-                    reset_pin_expires_at TIMESTAMP
+                    reset_pin TEXT  -- Vulnerability: Reset PINs stored in plaintext
                 )
-            """)
-
-            # TRANSACTIONS (money-safe)
-            cursor.execute("""
+            ''')
+            
+            # Create loans table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS loans (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    amount DECIMAL(15, 2),
+                    status TEXT DEFAULT 'pending'
+                )
+            ''')
+            
+            # Create transactions table
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS transactions (
                     id SERIAL PRIMARY KEY,
                     from_account TEXT NOT NULL,
                     to_account TEXT NOT NULL,
-                    amount NUMERIC(15,2) NOT NULL CHECK (amount > 0),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    amount DECIMAL(15, 2) NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     transaction_type TEXT NOT NULL,
-                    description TEXT,
-                    CONSTRAINT no_self_transfer CHECK (from_account <> to_account)
+                    description TEXT
                 )
-            """)
-
-            # LOANS
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS loans (
+            ''')
+            
+            # Create virtual cards table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS virtual_cards (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                    amount NUMERIC(15,2) CHECK (amount > 0),
-                    status TEXT DEFAULT 'pending'
+                    card_number TEXT NOT NULL UNIQUE,  -- Vulnerability: Card numbers stored in plaintext
+                    cvv TEXT NOT NULL,  -- Vulnerability: CVV stored in plaintext
+                    expiry_date TEXT NOT NULL,
+                    card_limit DECIMAL(15, 2) DEFAULT 1000.0,
+                    current_balance DECIMAL(15, 2) DEFAULT 0.0,
+                    is_frozen BOOLEAN DEFAULT FALSE,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TIMESTAMP,
+                    card_type TEXT DEFAULT 'standard'  -- Vulnerability: No validation on card type
                 )
-            """)
+            ''')
 
-            # BILL CATEGORIES
-            cursor.execute("""
+            # Create virtual card transactions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS card_transactions (
+                    id SERIAL PRIMARY KEY,
+                    card_id INTEGER REFERENCES virtual_cards(id) ON DELETE CASCADE,
+                    amount DECIMAL(15, 2) NOT NULL,
+                    merchant_name TEXT,  -- Vulnerability: No input validation
+                    transaction_type TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    description TEXT
+                )
+            ''')
+            
+            # Create default admin account if it doesn't exist
+            cursor.execute("SELECT * FROM users WHERE username='admin'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    """
+                    INSERT INTO users (username, password, account_number, balance, is_admin) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    ('admin', 'admin123', 'ADMIN001', 1000000.0, True)
+                )
+            
+            # Create bill categories table
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS bill_categories (
                     id SERIAL PRIMARY KEY,
-                    name TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL UNIQUE,
                     description TEXT,
                     is_active BOOLEAN DEFAULT TRUE
                 )
-            """)
+            ''')
 
-            # BILLERS
-            cursor.execute("""
+            # Create billers table
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS billers (
                     id SERIAL PRIMARY KEY,
                     category_id INTEGER REFERENCES bill_categories(id),
                     name TEXT NOT NULL,
-                    account_number TEXT NOT NULL,
-                    minimum_amount NUMERIC(15,2) DEFAULT 0 CHECK (minimum_amount >= 0),
-                    maximum_amount NUMERIC(15,2),
+                    account_number TEXT NOT NULL,  -- Vulnerability: No encryption
+                    description TEXT,
+                    minimum_amount DECIMAL(15, 2) DEFAULT 0,
+                    maximum_amount DECIMAL(15, 2),  -- Vulnerability: No validation
                     is_active BOOLEAN DEFAULT TRUE
                 )
-            """)
+            ''')
 
-            # BILL PAYMENTS (reference UNIQUE)
-            cursor.execute("""
+            # Create bill payments table
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS bill_payments (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                     biller_id INTEGER REFERENCES billers(id),
-                    amount NUMERIC(15,2) NOT NULL CHECK (amount > 0),
-                    payment_method TEXT NOT NULL,
-                    reference_number TEXT UNIQUE NOT NULL,
+                    amount DECIMAL(15, 2) NOT NULL,
+                    payment_method TEXT NOT NULL,  -- 'balance' or 'virtual_card'
+                    card_id INTEGER REFERENCES virtual_cards(id),  -- NULL if paid with balance
+                    reference_number TEXT,  -- Vulnerability: No unique constraint
                     status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    processed_at TIMESTAMP,
+                    description TEXT
                 )
+            ''')
+
+            # Insert default bill categories
+            cursor.execute("""
+                INSERT INTO bill_categories (name, description) 
+                VALUES 
+                ('Utilities', 'Water, Electricity, Gas bills'),
+                ('Telecommunications', 'Phone, Internet, Cable TV'),
+                ('Insurance', 'Life, Health, Auto insurance'),
+                ('Credit Cards', 'Credit card bill payments')
+                ON CONFLICT (name) DO NOTHING
             """)
 
-            # DEFAULT ADMIN
-            cursor.execute("SELECT 1 FROM users WHERE username = %s", ("admin",))
-            if not cursor.fetchone():
-                cursor.execute("""
-                    INSERT INTO users (username, password_hash, account_number, balance, is_admin)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (
-                    "admin",
-                    hash_password("admin123"),
-                    "ADMIN001",
-                    1_000_000,
-                    True
-                ))
-
+            # Insert sample billers
+            cursor.execute("""
+                INSERT INTO billers (category_id, name, account_number, description, minimum_amount) 
+                VALUES 
+                (1, 'City Water', 'WATER001', 'City Water Utility', 10),
+                (1, 'PowerGen Electric', 'POWER001', 'Electricity Provider', 20),
+                (2, 'TeleCom Services', 'TEL001', 'Phone and Internet', 25),
+                (2, 'CableTV Plus', 'CABLE001', 'Cable TV Services', 30),
+                (3, 'HealthFirst Insurance', 'INS001', 'Health Insurance', 100),
+                (4, 'Universal Bank Card', 'CC001', 'Credit Card Payments', 50)
+                ON CONFLICT DO NOTHING
+            """)
+            
             conn.commit()
-            logger.info("✅ Database schema initialized (secure)")
-
+            print("Database initialized successfully")
+            
     except Exception as e:
+        # Vulnerability: Detailed error information exposed
+        print(f"Error initializing database: {e}")
         conn.rollback()
-        logger.exception("DB init failed: %s", e)
-        raise
+        raise e
     finally:
         return_connection(conn)
 
-# =====================================================
-# QUERY HELPERS (SAFE)
-# =====================================================
 def execute_query(query, params=None, fetch=True):
+    """
+    Execute a database query
+    Vulnerability: This function still allows for SQL injection if called with string formatting
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(query, params)
+            result = None
             if fetch:
-                return cursor.fetchall()
-
-            if query.strip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                result = cursor.fetchall()
+            # Always commit for INSERT, UPDATE, DELETE operations
+            if query.strip().upper().startswith(('INSERT', 'UPDATE', 'DELETE')):
                 conn.commit()
+            return result
     except Exception as e:
+        # Vulnerability: Error details might be exposed to users
         conn.rollback()
-        logger.error("Query failed: %s", e)
-        raise
+        raise e
     finally:
         return_connection(conn)
 
 def execute_transaction(queries_and_params):
+    """
+    Execute multiple queries in a transaction
+    Vulnerability: No input validation on queries
+    queries_and_params: list of tuples (query, params)
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
@@ -234,8 +254,8 @@ def execute_transaction(queries_and_params):
                 cursor.execute(query, params)
             conn.commit()
     except Exception as e:
+        # Vulnerability: Transaction rollback exposed
         conn.rollback()
-        logger.error("Transaction rollback: %s", e)
-        raise
+        raise e
     finally:
         return_connection(conn)
