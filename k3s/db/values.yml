@@ -36,8 +36,19 @@ spec:
             cpu: "500m"
             memory: "1Gi"
           limits:
-              cpu: "2000m"
-              memory: "2Gi"
+            cpu: "2000m"
+            memory: "2Gi"
+        volumeMounts:
+          - name: pgdata
+            mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: pgdata
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
 ---
 apiVersion: v1
 kind: Service
@@ -51,48 +62,3 @@ spec:
   ports:
     - port: 5432
       targetPort: 5432
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: vulnbank-db
-  namespace: vuln-bank-db
-spec:
-  type: ClusterIP
-  selector:
-    app: vulnbank-db
-  ports:
-    - port: 5432
-      targetPort: 5432
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: db-default-deny
-  namespace: vuln-bank-db
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-    - Egress
----
-
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-app-to-db
-  namespace: vuln-bank-db
-spec:
-  podSelector:
-    matchLabels:
-      app: vulnbank-db
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              name: vuln-bank-app
-      ports:
-        - protocol: TCP
-          port: 5432

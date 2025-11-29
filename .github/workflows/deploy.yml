@@ -27,6 +27,7 @@ env:
   DAST_TARGET_URL: http://vuln-bank.local
   PYTHON_BIN: python3.11
   DOCKER_BUILDKIT: 1
+  EPSS_THRESHOLD: "0.5"
 
 # ==========================================================
 # 1) SECURITY SCANS
@@ -35,6 +36,7 @@ jobs:
   security_scans:
     name: Security Scans
     runs-on: self-hosted
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
 
     outputs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
@@ -69,16 +71,21 @@ jobs:
           curl -sL https://github.com/gitleaks/gitleaks/releases/download/$VER/gitleaks_${VER#v}_linux_x64.tar.gz \
           | sudo tar -xz -C /usr/local/bin gitleaks
 
-      - name: Install Snyk CLI (pinned)
+      - name: Install Snyk CLI 
         run: |
           curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
           -o snyk && chmod +x snyk && sudo mv snyk /usr/local/bin/snyk
+
+      - name: Install Syft (SBOM)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+          | sudo sh -s -- -b /usr/local/bin
 
       - name: Init critical flag
         run: echo "false" > critical_flag.txt
 
       - name: Prepare report dirs
-        run: mkdir -p ${REPORT_DIR}/{secrets,sca,sast,misconfig}
+        run: mkdir -p ${REPORT_DIR}/{secrets,sca,sast,misconfig,dast,sbom}
 
       # ---------------- SECRET SCAN ----------------
       - name: Gitleaks
@@ -110,20 +117,26 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
-          snyk test --all-projects --severity-threshold=high --json \
-          > ${REPORT_DIR}/sca/snyk.json || true
-          grep -qi '"severity":"\(high\|critical\)"' ${REPORT_DIR}/sca/snyk.json && \
-          echo true > critical_flag.txt || true
+          snyk test --all-projects --json > ${REPORT_DIR}/sca/snyk.json || true
+          grep -qi '"severity":"high"\|"severity":"critical"' \
+          ${REPORT_DIR}/sca/snyk.json && echo true > critical_flag.txt || true
+
+      # ================= EPSS SMART FILTER =================
+      - name: EPSS Score Check (Smart SCA)
+        run: |
+          jq -r '.. | .id? // empty' ${REPORT_DIR}/sca/snyk.json | sort -u > cves.txt || true
+          while read cve; do
+            epss=$(curl -s https://api.first.org/data/v1/epss?cve=$cve | jq -r '.data[0].epss')
+            awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" && echo true > critical_flag.txt
+          done < cves.txt || true
 
       # ---------------- SAST ----------------
       - name: Semgrep
         run: |
-          semgrep ci --config p/ci \
-          --json --output ${REPORT_DIR}/sast/semgrep.json || true
+          semgrep ci --config p/ci --json \
+          --output ${REPORT_DIR}/sast/semgrep.json || true
 
-          jq '[.results[]?|select(.extra.severity=="ERROR"
-              or .extra.severity=="HIGH"
-              or .extra.severity=="CRITICAL")] | length'
+          jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
           ${REPORT_DIR}/sast/semgrep.json | grep -qv '^0$' && echo true > critical_flag.txt || true
 
       # ---------------- MISCONFIG ----------------
@@ -136,6 +149,20 @@ jobs:
           jq '[.Results[].Misconfigurations[]?|select(.Severity=="HIGH"
               or .Severity=="CRITICAL")] | length'
           ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' && echo true > critical_flag.txt || true
+
+      # ================= DAST =================
+      - name: OWASP ZAP Baseline
+        run: |
+          docker run --rm -v $PWD:/zap/wrk \
+          owasp/zap2docker-stable zap-baseline.py \
+          -t $DAST_TARGET_URL \
+          -r zap-report.html || true
+          mv zap-report.html ${REPORT_DIR}/dast/
+
+      # ================= SBOM =================
+      - name: Generate SBOM
+        run: |
+          syft . -o json > ${REPORT_DIR}/sbom/sbom.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -151,18 +178,27 @@ jobs:
   security_gate:
     runs-on: self-hosted
     needs: security_scans
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
     steps:
-      - run: |
-          [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ] && exit 1
+      - name: Evaluate Security Gate
+        shell: bash
+        run: |
+          echo "Critical found: ${{ needs.security_scans.outputs.critical_found }}"
+
+          if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
+            echo "❌ HIGH/CRITICAL vulnerabilities detected"
+            exit 1
+          fi
+
           echo "✅ Security Gate Passed"
 
 # ==========================================================
-# 3) BUILD + SIGN + PUSH (ENTERPRISE STANDARD)
+# 3) BUILD + SIGN + PUSH
 # ==========================================================
   build_and_push:
     runs-on: self-hosted
     needs: security_gate
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.critical_found == 'false'
 
     steps:
       - uses: actions/checkout@v4

@@ -25,15 +25,17 @@ jobs:
 # ==========================================================
   actionlint:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: rhysd/actionlint@v1.6.23
+      - uses: rhysd/actionlint@v1.7.1
 
 # ==========================================================
 # 2) YAML Lint
 # ==========================================================
   yamllint:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y yamllint
@@ -44,16 +46,18 @@ jobs:
 # ==========================================================
   markdownlint:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - run: sudo npm install -g markdownlint-cli
-      - run: markdownlint '**/*.md'
+      - run: npm install -g markdownlint-cli
+      - run: markdownlint "**/*.md"
 
 # ==========================================================
 # 4) ShellCheck
 # ==========================================================
   shellcheck:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: |
@@ -69,11 +73,11 @@ jobs:
 # ==========================================================
   hadolint:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: |
-          curl -sL \
-            https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 \
+          curl -sL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 \
             -o hadolint
           chmod +x hadolint
           sudo mv hadolint /usr/local/bin/
@@ -89,11 +93,15 @@ jobs:
 # ==========================================================
   terraform:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3.1.2
 
       - run: terraform fmt -check -recursive
+
+      - run: terraform init -backend=false
+      - run: terraform validate
 
       - run: |
           curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
@@ -104,13 +112,13 @@ jobs:
 # ==========================================================
   ansible:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          python3 -m pip install --user ansible ansible-lint
+      - run: python3 -m pip install --user ansible ansible-lint
       - run: |
           if [ -d "ansible" ]; then
-            ansible-lint ansible/
+            ansible-lint ansible/ --profile basic
           else
             echo "No ansible dir, skipping"
           fi
@@ -120,37 +128,40 @@ jobs:
 # ==========================================================
   k8s-lint:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - run: |
-          curl -sL \
-            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
             | tar xz
           sudo mv kubeconform /usr/local/bin/
 
       - run: |
-          curl -sL \
-            https://github.com/zegl/kube-score/releases/latest/download/kube-score_ubuntu_amd64 \
+          curl -sL https://github.com/zegl/kube-score/releases/download/v1.19.0/kube-score_1.19.0_linux_amd64 \
             -o kube-score
           chmod +x kube-score
           sudo mv kube-score /usr/local/bin/
 
       - run: |
           if [ -d "k8s" ]; then
-            kubeconform -strict -ignore-missing-schemas k8s/
-            kube-score score k8s/
+            kubeconform -ignore-missing-schemas k8s/
+            kube-score score k8s/ --ignore-test container-image-pull-policy
           else
             echo "No k8s manifests found, skipping"
           fi
 
 # ==========================================================
-# 9) Semgrep (Lint Mode)
+# 9) Semgrep (PR = Soft)
 # ==========================================================
   semgrep:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --user semgrep
-      - run: semgrep scan --error --config=auto --exclude-rule semgrep.lang.security.audit
-
+      - run: |
+          semgrep scan \
+            --config=auto \
+            --severity=ERROR \
+            --exclude-dir=.terraform

@@ -18,10 +18,10 @@ spec:
     matchLabels:
       app: vuln-bank
   strategy:
+    type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 0
-    type: RollingUpdate
   template:
     metadata:
       labels:
@@ -36,7 +36,6 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 60
       containers:
         - name: vuln-bank
           image: IMAGE_PLACEHOLDER
@@ -59,14 +58,13 @@ spec:
             runAsUser: 10000
             runAsGroup: 10000
             capabilities:
-              drop:
-                - ALL
+              drop: ["ALL"]
           volumeMounts:
             - name: tmp
               mountPath: /tmp
       volumes:
-      - name: tmp
-        emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -78,7 +76,7 @@ spec:
   selector:
     app: vuln-bank
   ports:
-    - port: 5000
+    - port: 80
       targetPort: 5000
 ---
 apiVersion: networking.k8s.io/v1
@@ -100,4 +98,4 @@ spec:
           service:
             name: vuln-bank
             port:
-              number: 5000
+              number: 80
