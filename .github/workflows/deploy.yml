@@ -164,7 +164,7 @@ jobs:
             zap-baseline.py \
             -t "$DAST_TARGET_URL" \
             -r zap-report.html \
-           || true
+            || true
 
           if [ -f zap-report.html ]; then
             mv zap-report.html ${REPORT_DIR}/dast/
