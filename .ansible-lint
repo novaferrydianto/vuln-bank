@@ -1,5 +1,0 @@
-profile: basic
-skip_list:
-  - fqcn-builtins
-  - schema
-  - unnamed-task
