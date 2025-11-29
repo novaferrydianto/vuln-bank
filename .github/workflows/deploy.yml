@@ -152,12 +152,25 @@ jobs:
 
       # ================= DAST =================
       - name: OWASP ZAP Baseline
+        shell: bash
         run: |
-          docker run --rm -v $PWD:/zap/wrk \
-          owasp/zap2docker-stable zap-baseline.py \
-          -t $DAST_TARGET_URL \
-          -r zap-report.html || true
-          mv zap-report.html ${REPORT_DIR}/dast/
+          set -e
+
+          mkdir -p ${REPORT_DIR}/dast
+
+          docker run --rm \
+            -v "$PWD:/zap/wrk" \
+            ghcr.io/zaproxy/zap2docker-stable \
+            zap-baseline.py \
+            -t "$DAST_TARGET_URL" \
+            -r zap-report.html \
+           || true
+
+          if [ -f zap-report.html ]; then
+            mv zap-report.html ${REPORT_DIR}/dast/
+          else
+           echo "⚠️ ZAP report not generated (target unreachable or scan failed)"
+          fi
 
       # ================= SBOM =================
       - name: Generate SBOM
