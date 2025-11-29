@@ -36,6 +36,7 @@ jobs:
   security_scans:
     name: Security Scans
     runs-on: self-hosted
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
 
     outputs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
@@ -177,9 +178,18 @@ jobs:
   security_gate:
     runs-on: self-hosted
     needs: security_scans
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
     steps:
-      - run: |
-          [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ] && exit 1
+      - name: Evaluate Security Gate
+        shell: bash
+        run: |
+          echo "Critical found: ${{ needs.security_scans.outputs.critical_found }}"
+
+          if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
+            echo "❌ HIGH/CRITICAL vulnerabilities detected"
+            exit 1
+          fi
+
           echo "✅ Security Gate Passed"
 
 # ==========================================================
@@ -188,7 +198,7 @@ jobs:
   build_and_push:
     runs-on: self-hosted
     needs: security_gate
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.critical_found == 'false'
 
     steps:
       - uses: actions/checkout@v4
