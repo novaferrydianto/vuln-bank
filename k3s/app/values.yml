@@ -41,35 +41,18 @@ spec:
         - name: vuln-bank
           image: IMAGE_PLACEHOLDER
           imagePullPolicy: Always
-          env:
-          - name: DB_HOST
-            value: vulnbank-db.vuln-bank-db.svc.cluster.local
-          - name: DB_PORT
-            value: "5432"
-          - name: DB_NAME
-            valueFrom:
-              secretKeyRef:
-                name: vulnbank-app-db-credentials
-                key: DB_NAME
-          - name: DB_USER
-            valueFrom:
-              secretKeyRef:
-                name: vulnbank-app-db-credentials
-                key: DB_USER
-          - name: DB_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: vulnbank-app-db-credentials
-                key: DB_PASSWORD
+          envFrom:
+            - secretRef:
+                name: env-vuln-bank
           ports:
             - containerPort: 5000
           resources:
             requests:
-              cpu: "100m"
-              memory: "512Mi"
-            limits:
               cpu: "250m"
               memory: "512Mi"
+            limits:
+              cpu: "512m"
+              memory: "1Gi"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

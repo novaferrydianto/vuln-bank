@@ -1,219 +1,279 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <title>Admin Panel - Vulnerable Bank</title>
-
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <!-- Icons -->
-    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
-    <link rel="icon" sizes="16x16" href="{{ url_for('static', filename='favicon-16.svg') }}">
-
-    <!-- Styles -->
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-16.svg') }}" sizes="16x16">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='admin.css') }}">
-
-    <!-- CSRF ready -->
-    {% if csrf_token is defined %}
-    <meta name="csrf-token" content="{{ csrf_token() }}">
-    {% endif %}
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-
 <body>
-<div class="container">
+    <div class="container">
+        <div id="message"></div>
 
-    <!-- STATUS MESSAGE -->
-    <div id="message" aria-live="polite"></div>
+        <div class="admin-header">
+            <h1 class="admin-title">Admin Control Panel</h1>
+        </div>
 
-    <!-- HEADER -->
-    <header class="admin-header">
-        <h1 class="admin-title">Admin Control Panel</h1>
-        <p class="admin-subtitle">Privileged Operations — Authorized Only</p>
-    </header>
+        <div class="profile-section">
+            <!-- Vulnerability: Fixed path to admin image -->
+            <img class="profile-picture" 
+                 src="{{ url_for('static', filename='uploads/admin.png') }}" 
+                 alt="Admin Profile">
+            <h2>System Administrator</h2>
+        </div>
+        
+        <div class="section">
+            <h2>User Management</h2>
+            <!-- Vulnerability: Sensitive data exposure in table -->
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Account Number</th>
+                        <th>Balance</th>
+                        <th>Admin</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user[0] }}</td>
+                        <td>{{ user[1] }}</td>
+                        <td>{{ user[3] }}</td>
+                        <td>${{ user[4] }}</td>
+                        <td>{{ user[5] }}</td>
+                        <td>
+                            <!-- Vulnerability: No confirmation for delete -->
+                            <form class="delete-account-form" data-user-id="{{ user[0] }}">
+                                <button type="submit">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
 
-    <!-- ADMIN PROFILE -->
-    <section class="profile-section">
-        <img class="profile-picture"
-             src="{{ url_for('static', filename='uploads/admin.png') }}"
-             alt="Admin Profile">
-        <h2>System Administrator</h2>
-    </section>
-
-    <!-- USER MANAGEMENT -->
-    <section class="section">
-        <h2>User Management</h2>
-
-        <table>
-            <thead>
-            <tr>
-                <th>ID</th>
-                <th>Username</th>
-                <th>Account</th>
-                <th>Balance</th>
-                <th>Admin</th>
-                <th>Action</th>
-            </tr>
-            </thead>
-            <tbody>
-            {% for user in users %}
-            <tr data-user-id="{{ user[0] }}">
-                <td>{{ user[0] }}</td>
-                <td>{{ user[1] }}</td>
-                <td>{{ user[3] }}</td>
-                <td>${{ user[4] }}</td>
-                <td>{{ 'Yes' if user[5] else 'No' }}</td>
-                <td>
-                    {% if not user[5] %}
-                    <button class="danger-btn delete-user-btn">Delete</button>
+            <div class="pagination">
+                <div class="page-summary">
+                    {% if total_users > 0 %}
+                        {% set start_user = ((page - 1) * per_page) + 1 %}
+                        {% set end_user = [page * per_page, total_users] | min %}
+                        Showing {{ start_user }}-{{ end_user }} of {{ total_users }} users
                     {% else %}
-                    <span class="muted">Protected</span>
+                        No users found
                     {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </section>
+                </div>
+                <div class="page-controls">
+                    {% if page > 1 %}
+                        <a class="page-link" href="{{ url_for('admin_panel', page=page-1, loan_page=loan_page) }}">&larr; Previous</a>
+                    {% endif %}
+                    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+                    {% if page < total_pages %}
+                        <a class="page-link" href="{{ url_for('admin_panel', page=page+1, loan_page=loan_page) }}">Next &rarr;</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
 
-    <!-- CREATE ADMIN -->
-    <section class="section">
-        <h2>Create Admin Account</h2>
+        <div class="section">
+            <h2>Create Admin Account</h2>
+            <!-- Vulnerability: No password complexity requirements -->
+            <!-- Vulnerability: No CSRF protection -->
+            <form id="createAdminForm">
+                <div class="form-group">
+                    <label for="admin_username">Username</label>
+                    <input type="text" id="admin_username" name="username" placeholder="Enter admin username" required>
+                </div>
+                <div class="form-group">
+                    <label for="admin_password">Password</label>
+                    <input type="password" id="admin_password" name="password" placeholder="Enter admin password" required>
+                </div>
+                <button type="submit">Create Admin</button>
+            </form>
+        </div>
 
-        <form id="createAdminForm">
-            {% if csrf_token is defined %}
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            {% endif %}
+        <div class="section">
+            <h2>Pending Loan Applications</h2>
+            <!-- Vulnerability: No validation of loan approval -->
+            <table>
+                <thead>
+                    <tr>
+                        <th>Loan ID</th>
+                        <th>User ID</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for loan in pending_loans %}
+                    <tr>
+                        <td>{{ loan[0] }}</td>
+                        <td>{{ loan[1] }}</td>
+                        <td>${{ loan[2] }}</td>
+                        <td>{{ loan[3] }}</td>
+                        <td>
+                            <!-- Vulnerability: No approval confirmation -->
+                            <form class="approve-loan-form" data-loan-id="{{ loan[0] }}">
+                                <button type="submit">Approve</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
 
-            <label>
-                Username
-                <input type="text" name="username" required minlength="3">
-            </label>
+            <div class="pagination">
+                <div class="page-summary">
+                    {% if total_pending_loans > 0 %}
+                        {% set loan_start = ((loan_page - 1) * loan_per_page) + 1 %}
+                        {% set loan_end = [loan_page * loan_per_page, total_pending_loans] | min %}
+                        Showing {{ loan_start }}-{{ loan_end }} of {{ total_pending_loans }} pending loans
+                    {% else %}
+                        No pending loans found
+                    {% endif %}
+                </div>
+                <div class="page-controls">
+                    {% if loan_page > 1 %}
+                        <a class="page-link" href="{{ url_for('admin_panel', page=page, loan_page=loan_page-1) }}">&larr; Previous</a>
+                    {% endif %}
+                    <span class="page-info">Page {{ loan_page }} of {{ loan_total_pages }}</span>
+                    {% if loan_page < loan_total_pages %}
+                        <a class="page-link" href="{{ url_for('admin_panel', page=page, loan_page=loan_page+1) }}">Next &rarr;</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <a href="{{ url_for('dashboard') }}" class="button">Back to Dashboard</a>
+    </div>
 
-            <label>
-                Password
-                <input type="password" name="password"
-                       required
-                       minlength="12"
-                       autocomplete="new-password">
-            </label>
-
-            <button type="submit">Create Admin</button>
-        </form>
-    </section>
-
-    <!-- LOANS -->
-    <section class="section">
-        <h2>Pending Loan Applications</h2>
-
-        <table>
-            <thead>
-            <tr>
-                <th>ID</th>
-                <th>User</th>
-                <th>Amount</th>
-                <th>Status</th>
-                <th>Action</th>
-            </tr>
-            </thead>
-            <tbody>
-            {% for loan in pending_loans %}
-            <tr data-loan-id="{{ loan[0] }}">
-                <td>{{ loan[0] }}</td>
-                <td>{{ loan[1] }}</td>
-                <td>${{ loan[2] }}</td>
-                <td>{{ loan[3] }}</td>
-                <td>
-                    <button class="approve-loan-btn">Approve</button>
-                </td>
-            </tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </section>
-
-    <a href="{{ url_for('dashboard') }}" class="button">← Back to Dashboard</a>
-</div>
-
-<script>
-const token = localStorage.getItem("jwt_token");
-if (!token) location.href = "/login";
-
-const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
-
-function showMessage(text, ok = true) {
-    const el = document.getElementById("message");
-    el.textContent = text;
-    el.className = ok ? "success" : "error";
-}
-
-document.addEventListener("click", async e => {
-
-    if (e.target.classList.contains("delete-user-btn")) {
-        const row = e.target.closest("tr");
-        const userId = row.dataset.userId;
-
-        if (!confirm("Delete this user permanently?")) return;
-
-        const res = await fetch(`/admin/delete_account/${userId}`, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "X-CSRF-Token": csrfToken || ""
+    <script>
+        // Vulnerability: Token stored in localStorage
+        document.addEventListener('DOMContentLoaded', function() {
+            const token = localStorage.getItem('jwt_token');
+            if (!token) {
+                window.location.href = '/login';
+                return;
             }
+
+            // Add event listeners
+            document.querySelectorAll('.delete-account-form').forEach(form => {
+                form.addEventListener('submit', handleDeleteAccount);
+            });
+
+            document.querySelectorAll('.approve-loan-form').forEach(form => {
+                form.addEventListener('submit', handleLoanApproval);
+            });
+
+            document.getElementById('createAdminForm').addEventListener('submit', handleCreateAdmin);
         });
 
-        const data = await res.json();
-        if (data.status === "success") {
-            row.remove();
-            showMessage("User deleted");
-        } else showMessage("Delete failed", false);
-    }
+        async function handleDeleteAccount(event) {
+            event.preventDefault();
+            const userId = event.target.getAttribute('data-user-id');
+            
+            try {
+                const response = await fetch(`/admin/delete_account/${userId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + localStorage.getItem('jwt_token'),
+                        'Content-Type': 'application/json'
+                    }
+                });
 
-    if (e.target.classList.contains("approve-loan-btn")) {
-        const row = e.target.closest("tr");
-        const loanId = row.dataset.loanId;
-
-        if (!confirm("Approve this loan?")) return;
-
-        const res = await fetch(`/admin/approve_loan/${loanId}`, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${token}`,
-                "X-CSRF-Token": csrfToken || ""
+                const data = await response.json();
+                if (data.status === 'success') {
+                    document.getElementById('message').innerHTML = 'Account deleted successfully!';
+                    document.getElementById('message').style.color = 'green';
+                    document.getElementById('message').className = 'success';
+                    // Remove the row from the table
+                    event.target.closest('tr').remove();
+                } else {
+                    document.getElementById('message').innerHTML = data.message;
+                    document.getElementById('message').style.color = 'red';
+                    document.getElementById('message').className = 'error';
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = 'Failed to delete account.';
+                document.getElementById('message').style.color = 'red';
+                document.getElementById('message').className = 'error';
             }
-        });
+        }
 
-        const data = await res.json();
-        if (data.status === "success") {
-            row.remove();
-            showMessage("Loan approved");
-        } else showMessage("Approval failed", false);
-    }
-});
+        async function handleLoanApproval(event) {
+            event.preventDefault();
+            const loanId = event.target.getAttribute('data-loan-id');
+            
+            try {
+                const response = await fetch(`/admin/approve_loan/${loanId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + localStorage.getItem('jwt_token'),
+                        'Content-Type': 'application/json'
+                    }
+                });
 
-document.getElementById("createAdminForm").addEventListener("submit", async e => {
-    e.preventDefault();
+                const data = await response.json();
+                if (data.status === 'success') {
+                    document.getElementById('message').innerHTML = 'Loan approved successfully';
+                    document.getElementById('message').style.color = 'green';
+                    document.getElementById('message').className = 'success';
+                    // Remove the row from pending loans table
+                    event.target.closest('tr').remove();
+                } else {
+                    document.getElementById('message').innerHTML = data.message;
+                    document.getElementById('message').style.color = 'red';
+                    document.getElementById('message').className = 'error';
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = 'Failed to approve loan';
+                document.getElementById('message').style.color = 'red';
+                document.getElementById('message').className = 'error';
+            }
+        }
 
-    const form = e.target;
-    const payload = Object.fromEntries(new FormData(form));
+        async function handleCreateAdmin(event) {
+            event.preventDefault();
+            
+            const formData = new FormData(event.target);
+            const jsonData = {};
+            formData.forEach((value, key) => jsonData[key] = value);
+            
+            try {
+                const response = await fetch('/admin/create_admin', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + localStorage.getItem('jwt_token'),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(jsonData)
+                });
 
-    const res = await fetch("/admin/create_admin", {
-        method: "POST",
-        headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-            "X-CSRF-Token": csrfToken || ""
-        },
-        body: JSON.stringify(payload)
-    });
-
-    const data = await res.json();
-    if (data.status === "success") {
-        showMessage("Admin created — page will reload");
-        setTimeout(() => location.reload(), 1500);
-    } else showMessage("Failed to create admin", false);
-});
-</script>
+                const data = await response.json();
+                if (data.status === 'success') {
+                    document.getElementById('message').innerHTML = 'Admin account created successfully';
+                    document.getElementById('message').style.color = 'green';
+                    document.getElementById('message').className = 'success';
+                    // Clear form
+                    event.target.reset();
+                    // Optionally refresh page to show new admin
+                    setTimeout(() => location.reload(), 2000);
+                } else {
+                    document.getElementById('message').innerHTML = data.message;
+                    document.getElementById('message').style.color = 'red';
+                    document.getElementById('message').className = 'error';
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = 'Failed to create admin account';
+                document.getElementById('message').style.color = 'red';
+                document.getElementById('message').className = 'error';
+            }
+        }
+    </script>
 </body>
 </html>

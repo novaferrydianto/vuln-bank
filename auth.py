@@ -1,305 +1,203 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify, make_response
-from datetime import datetime, timedelta
-import random
-import string
-import os
-import secrets
-import uuid
-import logging
-import time
-
-from dotenv import load_dotenv
-from auth import generate_token, token_required, init_auth_routes
-from werkzeug.utils import secure_filename
-from werkzeug.security import generate_password_hash, check_password_hash
-from flask_swagger_ui import get_swaggerui_blueprint
-from flask_cors import CORS
-from database import (
-    init_connection_pool,
-    init_db,
-    execute_query,
-    get_connection,
-    return_connection,
-)
+from flask import jsonify, request
+import jwt
+import datetime
+import sqlite3  
 from functools import wraps
-from collections import defaultdict
-import requests
-from urllib.parse import urlparse
 
-# =========================================================
-# APP & CONFIG
-# =========================================================
+# Vulnerable JWT implementation with common security issues
 
-load_dotenv()
-logging.basicConfig(level=logging.INFO)
+# Weak secret key (CWE-326)
+JWT_SECRET = "secret123"
 
-app = Flask(__name__)
-CORS(app)
+# Vulnerable algorithm selection - allows 'none' algorithm
+ALGORITHMS = ['HS256', 'none']
 
-app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+def generate_token(user_id, username, is_admin=False):
+    """
+    Generate a JWT token with weak implementation
+    Vulnerability: No token expiration (CWE-613)
+    """
+    payload = {
+        'user_id': user_id,
+        'username': username,
+        'is_admin': is_admin,
+        # Missing 'exp' claim - tokens never expire
+        'iat': datetime.datetime.utcnow()
+    }
+    
+    # Vulnerability: Using a weak secret key
+    token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+    return token
 
-init_connection_pool()
-
-# =========================================================
-# SWAGGER
-# =========================================================
-
-SWAGGER_URL = "/api/docs"
-API_URL = "/static/openapi.json"
-
-swaggerui_blueprint = get_swaggerui_blueprint(
-    SWAGGER_URL,
-    API_URL,
-    config={"app_name": "Vuln Bank API", "validatorUrl": None},
-)
-app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
-
-# =========================================================
-# RATE LIMIT LOGIN
-# =========================================================
-
-login_attempts = defaultdict(list)
-
-def rate_limit(limit=5, window=60):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            ip = request.remote_addr
-            now = time.time()
-            login_attempts[ip] = [t for t in login_attempts[ip] if now - t < window]
-            if len(login_attempts[ip]) >= limit:
-                return jsonify({"error": "Too many login attempts"}), 429
-            login_attempts[ip].append(now)
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
-
-# =========================================================
-# HELPERS
-# =========================================================
-
-UPLOAD_FOLDER = "static/uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
-
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def generate_account_number():
-    return "".join(random.choices(string.digits, k=10))
-
-def generate_card_number():
-    return "".join(secrets.choice(string.digits) for _ in range(16))
-
-def generate_cvv():
-    return "".join(secrets.choice(string.digits) for _ in range(3))
-
-# =========================================================
-# BASIC ROUTES
-# =========================================================
-
-@app.route("/")
-def index():
-    resp = make_response(render_template("index.html"))
-    resp.set_cookie("csrf_token", secrets.token_urlsafe(32), samesite="Lax")
-    return resp
-
-# =========================================================
-# AUTH
-# =========================================================
-
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if request.method == "POST":
-        data = request.get_json() or {}
-        username = data.get("username")
-        password = data.get("password")
-
-        if not username or not password:
-            return jsonify({"error": "Missing fields"}), 400
-
-        if execute_query("SELECT id FROM users WHERE username=%s", (username,)):
-            return jsonify({"error": "Username already exists"}), 400
-
-        hashed = generate_password_hash(password)
-        account_number = generate_account_number()
-
-        execute_query(
-            "INSERT INTO users (username, password, account_number) VALUES (%s,%s,%s)",
-            (username, hashed, account_number),
-            fetch=False,
-        )
-
-        return jsonify({"status": "success"}), 201
-
-    return render_template("register.html")
-
-
-@app.route("/login", methods=["GET", "POST"])
-@rate_limit()
-def login():
-    if request.method == "POST":
-        data = request.get_json() or {}
-        username = data.get("username")
-        password = data.get("password")
-
-        rows = execute_query(
-            "SELECT id, username, password, is_admin FROM users WHERE username=%s",
-            (username,),
-        )
-
-        if not rows or not check_password_hash(rows[0][2], password):
-            return jsonify({"error": "Invalid username or password"}), 401
-
-        user = rows[0]
-        token = generate_token(user[0], user[1], user[3])
-
-        resp = make_response(jsonify({"status": "success"}))
-        resp.set_cookie("token", token, httponly=True, secure=True, samesite="Lax")
-        return resp
-
-    return render_template("login.html")
-
-# =========================================================
-# DASHBOARD
-# =========================================================
-
-@app.route("/dashboard")
-@token_required
-def dashboard(current_user):
-    user = execute_query(
-        "SELECT id, username, balance, account_number, is_admin FROM users WHERE id=%s",
-        (current_user["user_id"],),
-    )[0]
-
-    loans = execute_query(
-        "SELECT id, amount, status FROM loans WHERE user_id=%s",
-        (current_user["user_id"],),
-    )
-
-    return render_template(
-        "dashboard.html",
-        username=user[1],
-        balance=float(user[2]),
-        account_number=user[3],
-        loans=loans,
-        is_admin=user[4],
-    )
-
-# =========================================================
-# FORGOT & RESET PASSWORD
-# =========================================================
-
-@app.route("/forgot-password", methods=["POST"])
-def forgot_password():
-    data = request.get_json() or {}
-    username = data.get("username")
-
-    rows = execute_query("SELECT id FROM users WHERE username=%s", (username,))
-    if rows:
-        pin = "".join(secrets.choice(string.digits) for _ in range(6))
-        expires = datetime.utcnow() + timedelta(minutes=10)
-
-        execute_query(
-            "UPDATE users SET reset_pin=%s, reset_pin_expires=%s WHERE username=%s",
-            (pin, expires, username),
-            fetch=False,
-        )
-
-    return jsonify({"status": "success"})
-
-
-@app.route("/reset-password", methods=["POST"])
-def reset_password():
-    data = request.get_json() or {}
-    username = data.get("username")
-    reset_pin = data.get("reset_pin")
-    new_password = data.get("new_password")
-
-    rows = execute_query(
-        """
-        SELECT id FROM users
-        WHERE username=%s AND reset_pin=%s AND reset_pin_expires > NOW()
-        """,
-        (username, reset_pin),
-    )
-
-    if not rows:
-        return jsonify({"error": "Invalid or expired PIN"}), 400
-
-    hashed = generate_password_hash(new_password)
-
-    execute_query(
-        """
-        UPDATE users
-        SET password=%s, reset_pin=NULL, reset_pin_expires=NULL
-        WHERE username=%s
-        """,
-        (hashed, username),
-        fetch=False,
-    )
-
-    return jsonify({"status": "success"})
-
-# =========================================================
-# MONEY TRANSFER (ATOMIC)
-# =========================================================
-
-@app.route("/transfer", methods=["POST"])
-@token_required
-def transfer(current_user):
-    data = request.get_json() or {}
-    to_account = data.get("to_account")
-    amount = float(data.get("amount", 0))
-
-    if amount <= 0:
-        return jsonify({"error": "Invalid amount"}), 400
-
-    conn = get_connection()
+def verify_token(token):
+    """
+    Verify JWT token with multiple vulnerabilities
+    - Accepts 'none' algorithm (CWE-347)
+    - No signature verification in some cases
+    - No expiration check
+    """
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT account_number, balance FROM users WHERE id=%s FOR UPDATE",
-                (current_user["user_id"],),
-            )
-            sender_account, sender_balance = cur.fetchone()
-
-            if sender_balance < amount:
-                return jsonify({"error": "Insufficient balance"}), 400
-
-            cur.execute(
-                "UPDATE users SET balance = balance - %s WHERE id=%s",
-                (amount, current_user["user_id"]),
-            )
-            cur.execute(
-                "UPDATE users SET balance = balance + %s WHERE account_number=%s",
-                (amount, to_account),
-            )
-            cur.execute(
-                """
-                INSERT INTO transactions (from_account, to_account, amount, transaction_type)
-                VALUES (%s,%s,%s,'transfer')
-                """,
-                (sender_account, to_account, amount),
-            )
-
-        conn.commit()
-        return jsonify({"status": "success"})
-
+        # Vulnerability: Accepts any algorithm, including 'none'
+        payload = jwt.decode(token, JWT_SECRET, algorithms=ALGORITHMS)
+        return payload
+    except jwt.exceptions.InvalidSignatureError:
+        # Vulnerability: Still accepts tokens in some error cases
+        try:
+            # Second try without verification
+            payload = jwt.decode(token, options={'verify_signature': False})
+            return payload
+        except:
+            return None
     except Exception as e:
-        conn.rollback()
-        logging.error(e)
-        return jsonify({"error": "Transfer failed"}), 500
-    finally:
-        return_connection(conn)
+        # Vulnerability: Detailed error exposure in logs
+        print(f"Token verification error: {str(e)}")
+        return None
 
-# =========================================================
-# MAIN
-# =========================================================
 
-if __name__ == "__main__":
-    init_db()
-    init_auth_routes(app)
-    app.run(host="0.0.0.0", port=5000, debug=False)
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        # Try to get token from Authorization header
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            try:
+                # Handle 'Bearer' token format
+                if 'Bearer' in auth_header:
+                    token = auth_header.split(' ')[1]
+                else:
+                    token = auth_header
+            except IndexError:
+                token = None
+                
+        # Vulnerability: Multiple token locations (token hijacking risk)
+        # Also check query parameters (vulnerable by design)
+        if not token and 'token' in request.args:
+            token = request.args['token']
+            
+        # Also check form data (vulnerable by design)
+        if not token and 'token' in request.form:
+            token = request.form['token']
+            
+        # Also check cookies (vulnerable by design)
+        if not token and 'token' in request.cookies:
+            token = request.cookies['token']
+            
+        if not token:
+            return jsonify({'error': 'Token is missing'}), 401
+
+        try:
+            current_user = verify_token(token)
+            if current_user is None:
+                return jsonify({'error': 'Invalid token'}), 401
+                
+            # Vulnerability: No token expiration check
+            return f(current_user, *args, **kwargs)
+            
+        except Exception as e:
+            # Vulnerability: Detailed error exposure
+            return jsonify({
+                'error': 'Invalid token', 
+                'details': str(e)
+            }), 401
+            
+    return decorated
+
+# New API endpoints with JWT authentication
+def init_auth_routes(app):
+    @app.route('/api/login', methods=['POST'])
+    def api_login():
+        auth = request.get_json()
+        
+        if not auth or not auth.get('username') or not auth.get('password'):
+            return jsonify({'error': 'Missing credentials'}), 401
+            
+        # Vulnerability: SQL Injection still possible here
+        conn = sqlite3.connect('bank.db')
+        c = conn.cursor()
+        query = f"SELECT * FROM users WHERE username='{auth.get('username')}' AND password='{auth.get('password')}'"
+        c.execute(query)
+        user = c.fetchone()
+        conn.close()
+        
+        if not user:
+            return jsonify({'error': 'Invalid credentials'}), 401
+            
+        # Generate token
+        token = generate_token(user[0], user[1], user[5])
+        
+        # Vulnerability: Exposed sensitive data in response
+        return jsonify({
+            'token': token,
+            'user_id': user[0],
+            'username': user[1],
+            'account_number': user[3],
+            'is_admin': user[5],
+            'debug_info': {
+                'login_time': str(datetime.datetime.now()),
+                'ip_address': request.remote_addr,
+                'user_agent': request.headers.get('User-Agent')
+            }
+        })
+
+    @app.route('/api/check_balance', methods=['GET'])
+    @token_required
+    def api_check_balance(current_user):
+        # Vulnerability: No additional authorization check
+        # Any valid token can check any account balance
+        account_number = request.args.get('account_number')
+        
+        conn = sqlite3.connect('bank.db')
+        c = conn.cursor()
+        c.execute(f"SELECT username, balance FROM users WHERE account_number='{account_number}'")
+        user = c.fetchone()
+        conn.close()
+        
+        if user:
+            return jsonify({
+                'username': user[0],
+                'balance': user[1],
+                'checked_by': current_user['username']
+            })
+        return jsonify({'error': 'Account not found'}), 404
+
+    @app.route('/api/transfer', methods=['POST'])
+    @token_required
+    def api_transfer(current_user):
+        data = request.get_json()
+        
+        if not data or not data.get('to_account') or not data.get('amount'):
+            return jsonify({'error': 'Missing transfer details'}), 400
+            
+        # Vulnerability: No amount validation
+        amount = float(data.get('amount'))
+        to_account = data.get('to_account')
+        
+        conn = sqlite3.connect('bank.db')
+        c = conn.cursor()
+        
+        # Vulnerability: Race condition in transfer
+        c.execute(f"SELECT balance FROM users WHERE id={current_user['user_id']}")
+        balance = c.fetchone()[0]
+        
+        if balance >= amount:
+            # Vulnerability: SQL injection possible in to_account
+            c.execute(f"UPDATE users SET balance = balance - {amount} WHERE id={current_user['user_id']}")
+            c.execute(f"UPDATE users SET balance = balance + {amount} WHERE account_number='{to_account}'")
+            conn.commit()
+            
+            # Vulnerability: Information disclosure
+            c.execute(f"SELECT username, balance FROM users WHERE account_number='{to_account}'")
+            recipient = c.fetchone()
+            
+            conn.close()
+            return jsonify({
+                'status': 'success',
+                'new_balance': balance - amount,
+                'recipient': recipient[0],
+                'recipient_new_balance': recipient[1]
+            })
+            
+        conn.close()
+        return jsonify({'error': 'Insufficient funds'}), 400
