@@ -27,10 +27,8 @@ spec:
       labels:
         app: vuln-bank
     spec:
-      template:
-        spec:
-          imagePullSecrets:
-            - name: dockerhub-secret
+      imagePullSecrets:
+        - name: dockerhub-secret
       nodeSelector:
         node-role.kubernetes.io/app: "true"
       securityContext:
