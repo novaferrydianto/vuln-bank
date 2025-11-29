@@ -37,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ✅ Python hygiene (ONLY runs on python job)
       - name: Set up Python
         if: matrix.language == 'python'
         uses: actions/setup-python@v5
