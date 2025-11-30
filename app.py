@@ -587,42 +587,34 @@ ALLOWED_PROFILE_PIC_HOSTS = {
 def upload_profile_picture_url(current_user):
     try:
         data = request.get_json() or {}
-        image_url = data.get('image_url')
+        # Only accept a safe image path or identifier, not a full URL
+        image_path = data.get('image_path')
 
-        if not image_url:
-            return jsonify({'status': 'error', 'message': 'image_url is required'}), 400
+        if not image_path:
+            return jsonify({'status': 'error', 'message': 'image_path is required'}), 400
+        # Restrict allowed host
+        ALLOWED_PROFILE_PIC_HOST = "images.example.com"
+        BASE_PROFILE_PIC_URL = f"https://{ALLOWED_PROFILE_PIC_HOST}/avatars/"
 
-        parsed = urlparse(image_url)
+        # Only allow image_path to contain safe characters and stay within avatars/
+        import re
+        if not re.fullmatch(r"[a-zA-Z0-9_\-/]+\.((jpg)|(jpeg)|(png)|(gif))", image_path or ""):
+            return jsonify({'status': 'error', 'message': 'Invalid image path pattern'}), 400
+        if ".." in image_path or image_path.startswith("/"):
+            return jsonify({'status': 'error', 'message': 'Invalid or unsafe image path'}), 400
 
-        # SSRF prevention: only allow https, only trusted hosts, and only public IP addresses
-        if parsed.scheme != "https":
-            return jsonify({'status': 'error', 'message': 'Only HTTPS URLs allowed'}), 400
-        hostname = parsed.hostname or ""
-        if hostname not in ALLOWED_PROFILE_PIC_HOSTS:
-            return jsonify({'status': 'error', 'message': 'Host not allowed'}), 400
-
-        try:
-            # Resolve the hostname and check all IPs are public
-            addrinfos = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
-            for af, socktype, proto, canonname, sa in addrinfos:
-                ip = sa[0]
-                ip_obj = ipaddress.ip_address(ip)
-                if not ip_obj.is_global:
-                    return jsonify({'status': 'error', 'message': 'Resolved IP not allowed'}), 400
-        except Exception as e:
-            return jsonify({'status': 'error', 'message': f'Failed to resolve hostname: {e}'}), 400
+        image_url = BASE_PROFILE_PIC_URL + image_path
 
         # Download the file. Still limit redirects and enforce SSL cert validation.
         resp = requests.get(image_url, timeout=10, allow_redirects=False, verify=True)
         if resp.status_code >= 400:
             return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
 
-        # Derive filename from user-supplied path (with allowlist, still sanitize)
-        basename = os.path.basename(parsed.path) or 'downloaded'
+        # Derive filename from path (sanitize)
+        basename = os.path.basename(image_path) or 'downloaded'
         filename = secure_filename(basename)
         filename = f"{random.randint(1, 1000000)}_{filename}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
-
         # Save content directly without validation
         with open(file_path, 'wb') as f:
             f.write(resp.content)
