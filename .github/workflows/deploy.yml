@@ -252,6 +252,21 @@ jobs:
             const fs = require("fs");
             const body = fs.readFileSync("issue.md", "utf8");
 
+            // 🔍 1. Check existing open security issues
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "security,critical"
+            });
+
+            if (existing.data.length > 0) {
+              console.log("✅ Security issue already exists. Skipping creation.");
+              console.log(`#${existing.data[0].number}: ${existing.data[0].title}`);
+              return;
+            }
+
+            // 📝 2. Create issue if none exists
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -259,6 +274,8 @@ jobs:
               body: body,
               labels: ["security", "critical", "devsecops", "automated"]
             });
+
+            console.log("🚀 New security issue created.");
 
 # ==========================================================
 # 3) SECURITY GATE
