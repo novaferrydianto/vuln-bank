@@ -160,7 +160,7 @@ jobs:
 
           docker run --rm \
             -v "$PWD:/zap/wrk" \
-            ghcr.io/zaproxy/zap2docker-stable \
+            owasp/zap2docker-stable \
             zap-baseline.py \
             -t "$DAST_TARGET_URL" \
             -r zap-report.html \
