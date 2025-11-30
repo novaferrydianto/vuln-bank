@@ -156,20 +156,27 @@ jobs:
         run: |
           set -e
 
+          docker system prune -af || true
+          
           mkdir -p ${REPORT_DIR}/dast
+
+          docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
             -v "$PWD:/zap/wrk:Z" \
+            --memory=2g \
+            --cpus=2 \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t "$DAST_TARGET_URL" \
             -r zap-report.html \
             || true
 
-          if [ -f zap-report.html ]; then
+          if grep -qi "<html" zap-report.html 2>/dev/null; then
             mv zap-report.html ${REPORT_DIR}/dast/
+            echo "✅ ZAP report generated"
           else
-           echo "⚠️ ZAP report not generated (target unreachable or scan failed)"
+            echo "⚠️ ZAP failed (disk / target / runtime issue)"
           fi
 
       # ================= SBOM =================
