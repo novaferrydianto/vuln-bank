@@ -35,7 +35,7 @@ env:
 jobs:
   security_scans:
     name: Security Scans
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     continue-on-error: ${{ github.event_name == 'pull_request' }}
 
     outputs:
@@ -158,8 +158,6 @@ jobs:
 
           mkdir -p ${REPORT_DIR}/dast
 
-          docker pull ghcr.io/zaproxy/zaproxy:stable
-
           docker run --rm \
             -v "$PWD:/zap/wrk:Z" \
             ghcr.io/zaproxy/zaproxy:stable \
@@ -191,7 +189,7 @@ jobs:
 # 2) SECURITY GATE
 # ==========================================================
   security_gate:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: security_scans
     if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
     steps:
