@@ -211,7 +211,7 @@ jobs:
       - name: Prepare issue body
         shell: bash
         run: |
-          cat <<'EOF' > issue.md
+          cat <<EOF > issue.md
           ## 🚨 SECURITY ALERT – High / Critical Vulnerabilities Detected
 
           **Repository:** ${GITHUB_REPOSITORY}  
