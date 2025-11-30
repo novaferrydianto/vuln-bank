@@ -158,9 +158,11 @@ jobs:
 
           mkdir -p ${REPORT_DIR}/dast
 
+          docker pull ghcr.io/zaproxy/zaproxy:stable
+
           docker run --rm \
-            -v "$PWD:/zap/wrk" \
-            owasp/zap2docker-stable \
+            -v "$PWD:/zap/wrk:Z" \
+            ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t "$DAST_TARGET_URL" \
             -r zap-report.html \
