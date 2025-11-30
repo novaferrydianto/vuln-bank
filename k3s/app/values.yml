@@ -42,7 +42,11 @@ spec:
           imagePullPolicy: Always
           envFrom:
             - secretRef:
-                name: env-vuln-bank
+                name: env-vuln-bank           # app + JWT
+            - secretRef:
+                name: vuln-bank-db-client     # DB access (client-side)
+            - secretRef:
+                name: vuln-bank-ai-secret     # AI-Api
           ports:
             - containerPort: 5000
           resources:

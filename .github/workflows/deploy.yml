@@ -194,7 +194,74 @@ jobs:
         run: echo "critical_found=$(cat critical_flag.txt)" >> $GITHUB_OUTPUT
 
 # ==========================================================
-# 2) SECURITY GATE
+# 2) AUTO GITHUB ISSUE (ON HIGH / CRITICAL)
+# ==========================================================
+  create_security_issue:
+    name: Create Security GitHub Issue
+    runs-on: self-hosted
+    needs: security_scans
+    if: needs.security_scans.outputs.critical_found == 'true'
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare issue body
+        shell: bash
+        run: |
+          cat <<'EOF' > issue.md
+          ## 🚨 SECURITY ALERT – High / Critical Vulnerabilities Detected
+
+          **Repository:** ${GITHUB_REPOSITORY}  
+          **Branch:** ${GITHUB_REF_NAME}  
+          **Commit:** ${GITHUB_SHA}  
+          **Workflow Run:** https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          ### 🔍 Security Scans Triggered
+          - ✅ Gitleaks (Secrets)
+          - ✅ Snyk / Trivy / pip-audit (SCA + EPSS)
+          - ✅ Semgrep (SAST)
+          - ✅ Trivy Config (IaC Misconfiguration)
+          - ✅ OWASP ZAP (DAST – Baseline)
+
+          ### 📁 Full Reports
+          Download here:
+          **Actions → Artifacts → security-reports**
+
+          ### 🛑 Risk Impact
+          - Possible data leakage
+          - Account takeover
+          - Privilege escalation
+          - Financial fraud risk
+
+          ### ✅ Required Actions
+          - Triage HIGH / CRITICAL findings
+          - Apply fixes or mitigations
+          - Re-run pipeline
+
+          ---
+          _This issue was automatically created by the Vuln Bank DevSecOps Pipeline._
+          EOF
+
+      - name: Create GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const body = fs.readFileSync("issue.md", "utf8");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: "🚨 Security: High / Critical Vulnerabilities Detected",
+              body: body,
+              labels: ["security", "critical", "devsecops", "automated"]
+            });
+
+# ==========================================================
+# 3) SECURITY GATE
 # ==========================================================
   security_gate:
     runs-on: self-hosted
@@ -214,7 +281,7 @@ jobs:
           echo "✅ Security Gate Passed"
 
 # ==========================================================
-# 3) BUILD + SIGN + PUSH
+# 4) BUILD + SIGN + PUSH
 # ==========================================================
   build_and_push:
     runs-on: self-hosted
@@ -274,7 +341,7 @@ jobs:
             $IMAGE_REPO:$IMAGE_TAG
 
 # ==========================================================
-# 4) DEPLOY
+# 5) DEPLOY
 # ==========================================================
   deploy_k8s:
     runs-on: self-hosted
@@ -290,7 +357,7 @@ jobs:
           kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
 
 # ==========================================================
-# 5) SLACK (ALWAYS)
+# 6) SLACK (ALWAYS)
 # ==========================================================
   slack_notify:
     runs-on: self-hosted
