@@ -35,7 +35,7 @@ env:
 jobs:
   security_scans:
     name: Security Scans
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     continue-on-error: ${{ github.event_name == 'pull_request' }}
 
     outputs:
@@ -157,8 +157,6 @@ jobs:
           set -e
 
           mkdir -p ${REPORT_DIR}/dast
-
-          docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
             -v "$PWD:/zap/wrk:Z" \
