@@ -574,7 +574,14 @@ def upload_profile_picture(current_user):
             'file_path': file_path  # Vulnerability: Information disclosure
         }), 500
 
-# Upload profile picture by URL (Intentionally Vulnerable to SSRF)
+# Allowed hosts for profile picture downloads (must be trustworthy sources)
+ALLOWED_PROFILE_PIC_HOSTS = {
+    "images.unsplash.com",
+    "cdn.pixabay.com",
+    "upload.wikimedia.org"
+}
+
+# Upload profile picture by URL with strong SSRF mitigations
 @app.route('/upload_profile_picture_url', methods=['POST'])
 @token_required
 def upload_profile_picture_url(current_user):
@@ -585,18 +592,28 @@ def upload_profile_picture_url(current_user):
         if not image_url:
             return jsonify({'status': 'error', 'message': 'image_url is required'}), 400
 
-        # Validate URL scheme, host, and resolved IP for SSRF prevention
         parsed = urlparse(image_url)
+
+        # SSRF prevention: only allow https, only trusted hosts, and only public IP addresses
         if parsed.scheme != "https":
             return jsonify({'status': 'error', 'message': 'Only HTTPS URLs allowed'}), 400
         hostname = parsed.hostname or ""
         if hostname not in ALLOWED_PROFILE_PIC_HOSTS:
             return jsonify({'status': 'error', 'message': 'Host not allowed'}), 400
-        if not is_public_ip(hostname):
-            return jsonify({'status': 'error', 'message': 'Target host IP is not public'}), 400
 
-        # Only allow single redirect (if any), and enforce SSL
-        resp = requests.get(image_url, timeout=10, allow_redirects=True, verify=True)
+        try:
+            # Resolve the hostname and check all IPs are public
+            addrinfos = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+            for af, socktype, proto, canonname, sa in addrinfos:
+                ip = sa[0]
+                ip_obj = ipaddress.ip_address(ip)
+                if not ip_obj.is_global:
+                    return jsonify({'status': 'error', 'message': 'Resolved IP not allowed'}), 400
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': f'Failed to resolve hostname: {e}'}), 400
+
+        # Download the file. Still limit redirects and enforce SSL cert validation.
+        resp = requests.get(image_url, timeout=10, allow_redirects=False, verify=True)
         if resp.status_code >= 400:
             return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
 
