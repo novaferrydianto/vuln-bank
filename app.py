@@ -18,6 +18,8 @@ from collections import defaultdict
 import requests
 from urllib.parse import urlparse
 import platform
+import socket
+import ipaddress
 
 # Load environment variables
 load_dotenv()
@@ -583,17 +585,22 @@ def upload_profile_picture_url(current_user):
         if not image_url:
             return jsonify({'status': 'error', 'message': 'image_url is required'}), 400
 
-        # Vulnerabilities:
-        # - No URL scheme/host allowlist (SSRF)
-        # - SSL verification disabled
-        # - Follows redirects
-        # - No content-type or size validation
-        resp = requests.get(image_url, timeout=10, allow_redirects=True, verify=False)
+        # Validate URL scheme, host, and resolved IP for SSRF prevention
+        parsed = urlparse(image_url)
+        if parsed.scheme != "https":
+            return jsonify({'status': 'error', 'message': 'Only HTTPS URLs allowed'}), 400
+        hostname = parsed.hostname or ""
+        if hostname not in ALLOWED_PROFILE_PIC_HOSTS:
+            return jsonify({'status': 'error', 'message': 'Host not allowed'}), 400
+        if not is_public_ip(hostname):
+            return jsonify({'status': 'error', 'message': 'Target host IP is not public'}), 400
+
+        # Only allow single redirect (if any), and enforce SSL
+        resp = requests.get(image_url, timeout=10, allow_redirects=True, verify=True)
         if resp.status_code >= 400:
             return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
 
-        # Derive filename from URL path (user-controlled)
-        parsed = urlparse(image_url)
+        # Derive filename from user-supplied path (with allowlist, still sanitize)
         basename = os.path.basename(parsed.path) or 'downloaded'
         filename = secure_filename(basename)
         filename = f"{random.randint(1, 1000000)}_{filename}"
