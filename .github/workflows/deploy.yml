@@ -98,9 +98,10 @@ jobs:
       # ---------------- SCA ----------------
       - name: pip-audit
         run: |
-          test -f requirements.txt && \
-          $PYTHON_BIN -m pip_audit -r requirements.txt -f json \
-          -o ${REPORT_DIR}/sca/pip-audit.json || true
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt -f json \
+              -o ${REPORT_DIR}/sca/pip-audit.json || true
+          fi
 
       - name: Trivy FS
         run: |
@@ -110,8 +111,8 @@ jobs:
             --output ${REPORT_DIR}/sca/trivy-fs.json .
 
           jq '[.Results[].Vulnerabilities[]? |
-              select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length'
-          ${REPORT_DIR}/sca/trivy-fs.json | grep -qv '^0$' && echo true > critical_flag.txt || true
+              select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
+            ${REPORT_DIR}/sca/trivy-fs.json | grep -qv '^0$' && echo true > critical_flag.txt || true
 
       - name: Snyk
         env:
@@ -146,9 +147,9 @@ jobs:
             --format json \
             --output ${REPORT_DIR}/misconfig/trivy-config.json .
 
-          jq '[.Results[].Misconfigurations[]?|select(.Severity=="HIGH"
-              or .Severity=="CRITICAL")] | length'
-          ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' && echo true > critical_flag.txt || true
+          jq '[.Results[].Misconfigurations[]? |
+              select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
+            ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' && echo true > critical_flag.txt || true
 
       # ================= DAST =================
       - name: OWASP ZAP Baseline
