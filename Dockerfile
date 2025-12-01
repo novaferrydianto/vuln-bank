@@ -1,23 +1,33 @@
-FROM python:3.9-slim
-
-# Install PostgreSQL client
-RUN apt-get update && apt-get install -y \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+# ===============================
+# 1️⃣ Builder Stage
+# ===============================
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# System deps ONLY for build
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create necessary directories
-RUN mkdir -p static/uploads templates
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 COPY . .
 
-# Ensure uploads directory exists and has proper permissions
-RUN chmod 777 static/uploads
+# ===============================
+# 2️⃣ Runtime Stage (DISTROLESS)
+# ===============================
+FROM gcr.io/distroless/python3-debian12
 
+WORKDIR /app
+
+# Copy dependencies
+COPY --from=builder /install /usr/local
+COPY --from=builder /app /app
+
+# ✅ distroless runs as non-root by default
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD ["app.py"]
