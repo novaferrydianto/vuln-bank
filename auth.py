@@ -150,7 +150,7 @@ def init_auth_routes(app):
         
         conn = sqlite3.connect('bank.db')
         c = conn.cursor()
-        c.execute(f"SELECT username, balance FROM users WHERE account_number='{account_number}'")
+        c.execute("SELECT username, balance FROM users WHERE account_number = ?", (account_number,))
         user = c.fetchone()
         conn.close()
         
