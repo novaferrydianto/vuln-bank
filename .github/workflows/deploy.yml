@@ -42,7 +42,7 @@ jobs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Runner sanity check
         shell: bash
@@ -206,7 +206,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Prepare issue body
         shell: bash
@@ -306,7 +306,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.critical_found == 'false'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ---------- Docker Auth ----------
       - name: Docker Login
@@ -365,7 +365,7 @@ jobs:
     needs: build_and_push
     if: github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: |
           export KUBECONFIG=$HOME/.kube/config
           sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_REPO:$IMAGE_TAG|g" k3s/app/*.yml
