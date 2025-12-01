@@ -156,9 +156,33 @@ jobs:
         shell: bash
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         run: |
-          kubectl port-forward svc/vuln-bank 8080:80 -n vuln-bank-app &
+          set -e
+
+          # ✅ Pakai kubeconfig runner, bukan /etc/rancher/k3s/k3s.yaml
+          export KUBECONFIG=$HOME/.kube/config
+
+          echo "🔎 Using kubeconfig at: $KUBECONFIG"
+          ls -l "$KUBECONFIG" || true
+
+          # Sanity check cluster
+          kubectl get svc vuln-bank -n vuln-bank-app
+
+          # Start port-forward (single instance)
+          kubectl port-forward svc/vuln-bank 8080:80 -n vuln-bank-app > /tmp/pf.log 2>&1 &
           echo $! > pf.pid
+
+          # Tunggu app ready
           sleep 10
+
+          # Hard fail kalau emang nggak kebuka
+          curl -sf http://127.0.0.1:8080 || {
+            echo "❌ Port-forward failed or app not responding"
+            echo "--- pf.log ---"
+            cat /tmp/pf.log || true
+            exit 1
+          }
+
+          echo "✅ Port-forward to vuln-bank OK"
 
       - name: OWASP ZAP Baseline
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
