@@ -24,7 +24,7 @@ env:
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://vuln-bank.local
+  DAST_TARGET_URL: http://localhost:8080
   PYTHON_BIN: python3.11
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
@@ -34,7 +34,7 @@ env:
 # ==========================================================
 jobs:
   security_scans:
-    name: Security Scans
+    name: DevSecOps Continuous Assurance
     runs-on: self-hosted
     continue-on-error: ${{ github.event_name == 'pull_request' }}
 
@@ -152,7 +152,16 @@ jobs:
             ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' && echo true > critical_flag.txt || true
 
       # ================= DAST =================
+      - name: Port-forward Vuln Bank
+        shell: bash
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+        run: |
+          kubectl port-forward svc/vuln-bank 8080:80 -n vuln-bank-app &
+          echo $! > pf.pid
+          sleep 10
+
       - name: OWASP ZAP Baseline
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         shell: bash
         run: |
           set -e
@@ -164,12 +173,13 @@ jobs:
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
+            --network host \
             -v "$PWD:/zap/wrk:Z" \
             --memory=2g \
             --cpus=2 \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t "$DAST_TARGET_URL" \
+            -t "http://127.0.0.1:8080" \
             -r zap-report.html \
             || true
 
@@ -179,6 +189,11 @@ jobs:
           else
             echo "⚠️ ZAP failed (disk / target / runtime issue)"
           fi
+
+      - name: Cleanup port-forward
+        if: always()
+        run: |
+          [ -f pf.pid ] && kill $(cat pf.pid) || true
 
       # ================= SBOM =================
       - name: Generate SBOM
@@ -324,7 +339,12 @@ jobs:
       # ---------- Build ----------
       - name: Build Image
         run: |
-          docker build -t $IMAGE_REPO:$IMAGE_TAG .
+          docker build \
+            --provenance=true \
+            --sbom=true \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t $IMAGE_REPO:$IMAGE_TAG .
+
 
       # ---------- Push ----------
       - name: Push Image
