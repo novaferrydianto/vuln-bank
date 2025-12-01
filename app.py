@@ -285,7 +285,7 @@ def login():
             
             # SQL Injection vulnerability (intentionally vulnerable)
             query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-            print(f"Debug - Login query: {query}")  # Debug print
+            # print(f"Debug - Login query: {query}")  # Debug print -- REMOVED: do not log sensitive information (password)
             
             user = execute_query(query)
             print(f"Debug - Query result: {user}")  # Debug print
