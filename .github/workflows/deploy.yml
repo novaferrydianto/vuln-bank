@@ -24,7 +24,7 @@ env:
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://vuln-bank.local
+  DAST_TARGET_URL: http://localhost:8080
   PYTHON_BIN: python3.11
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
@@ -152,6 +152,13 @@ jobs:
             ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' && echo true > critical_flag.txt || true
 
       # ================= DAST =================
+      - name: Port-forward Vuln Bank
+        shell: bash
+        run: |
+          kubectl port-forward svc/vuln-bank 8080:80 -n vuln-bank-app &
+          echo $! > pf.pid
+          sleep 10
+
       - name: OWASP ZAP Baseline
         shell: bash
         run: |
@@ -179,6 +186,11 @@ jobs:
           else
             echo "⚠️ ZAP failed (disk / target / runtime issue)"
           fi
+
+      - name: Cleanup port-forward
+        if: always()
+        run: |
+          kill $(cat pf.pid) || true
 
       # ================= SBOM =================
       - name: Generate SBOM
@@ -324,7 +336,12 @@ jobs:
       # ---------- Build ----------
       - name: Build Image
         run: |
-          docker build -t $IMAGE_REPO:$IMAGE_TAG .
+          docker build \
+            --provenance=true \
+            --sbom=true \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t $IMAGE_REPO:$IMAGE_TAG .
+
 
       # ---------- Push ----------
       - name: Push Image
