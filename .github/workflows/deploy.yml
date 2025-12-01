@@ -171,12 +171,13 @@ jobs:
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
+            --network host \
             -v "$PWD:/zap/wrk:Z" \
             --memory=2g \
             --cpus=2 \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t "$DAST_TARGET_URL" \
+            -t "http://127.0.0.1:8080" \
             -r zap-report.html \
             || true
 
