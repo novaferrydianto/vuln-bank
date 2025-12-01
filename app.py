@@ -588,30 +588,33 @@ def upload_profile_picture_url(current_user):
     try:
         data = request.get_json() or {}
         # Only accept a safe image path or identifier, not a full URL
-        image_path = data.get('image_path')
+        image_filename = data.get('image_filename')
 
-        if not image_path:
-            return jsonify({'status': 'error', 'message': 'image_path is required'}), 400
-        # Restrict allowed host
+        # Load the whitelist of allowed profile pictures (e.g. from disk or DB)
+        AVATARS_DIR = "avatars_whitelist"  # Directory with allowed images (could point elsewhere)
+        allowed_filenames = [f for f in os.listdir(AVATARS_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif'))]
+
+        if not image_filename:
+            return jsonify({'status': 'error', 'message': 'image_filename is required'}), 400
+        # Matches only filenames (no slashes) with safe extensions
+        import re
+        if not re.fullmatch(r"[a-zA-Z0-9_\-]+\.((jpg)|(jpeg)|(png)|(gif))", image_filename or ""):
+            return jsonify({'status': 'error', 'message': 'Invalid image filename pattern'}), 400
+        if image_filename not in allowed_filenames:
+            return jsonify({'status': 'error', 'message': 'Not an approved profile picture'}), 400
+        # Restrict allowed host and URL construction
         ALLOWED_PROFILE_PIC_HOST = "images.example.com"
         BASE_PROFILE_PIC_URL = f"https://{ALLOWED_PROFILE_PIC_HOST}/avatars/"
 
-        # Only allow image_path to contain safe characters and stay within avatars/
-        import re
-        if not re.fullmatch(r"[a-zA-Z0-9_\-/]+\.((jpg)|(jpeg)|(png)|(gif))", image_path or ""):
-            return jsonify({'status': 'error', 'message': 'Invalid image path pattern'}), 400
-        if ".." in image_path or image_path.startswith("/"):
-            return jsonify({'status': 'error', 'message': 'Invalid or unsafe image path'}), 400
-
-        image_url = BASE_PROFILE_PIC_URL + image_path
+        image_url = BASE_PROFILE_PIC_URL + image_filename
 
         # Download the file. Still limit redirects and enforce SSL cert validation.
         resp = requests.get(image_url, timeout=10, allow_redirects=False, verify=True)
         if resp.status_code >= 400:
             return jsonify({'status': 'error', 'message': f'Failed to fetch URL: HTTP {resp.status_code}'}), 400
 
-        # Derive filename from path (sanitize)
-        basename = os.path.basename(image_path) or 'downloaded'
+        # Derive filename from image_filename (sanitize)
+        basename = os.path.basename(image_filename) or 'downloaded'
         filename = secure_filename(basename)
         filename = f"{random.randint(1, 1000000)}_{filename}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
