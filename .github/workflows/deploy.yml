@@ -200,7 +200,7 @@ jobs:
         run: |
           syft . -o json > ${REPORT_DIR}/sbom/sbom.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
