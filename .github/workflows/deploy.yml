@@ -34,7 +34,7 @@ env:
 # ==========================================================
 jobs:
   security_scans:
-    name: Security Scans
+    name: DevSecOps Continuous Assurance
     runs-on: self-hosted
     continue-on-error: ${{ github.event_name == 'pull_request' }}
 
@@ -154,12 +154,14 @@ jobs:
       # ================= DAST =================
       - name: Port-forward Vuln Bank
         shell: bash
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         run: |
           kubectl port-forward svc/vuln-bank 8080:80 -n vuln-bank-app &
           echo $! > pf.pid
           sleep 10
 
       - name: OWASP ZAP Baseline
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         shell: bash
         run: |
           set -e
@@ -191,7 +193,7 @@ jobs:
       - name: Cleanup port-forward
         if: always()
         run: |
-          kill $(cat pf.pid) || true
+          [ -f pf.pid ] && kill $(cat pf.pid) || true
 
       # ================= SBOM =================
       - name: Generate SBOM
