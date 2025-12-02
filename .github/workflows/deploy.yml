@@ -173,36 +173,29 @@ jobs:
 
       - name: Wait for app to be ready (DAST)
         run: |
-          for i in {1..20}; do
-            if docker exec vuln-bank-dast \
-              python -c "import requests; requests.get('http://localhost:5000', timeout=2)" \
-              > /dev/null; then
-              echo "✅ App ready for DAST"
-              exit 0
-            fi
-            echo "⏳ Waiting app..."
+          for i in {1..30}; do
+            status=$(docker inspect -f '{{.State.Health.Status}}' vuln-bank-dast 2>/dev/null || echo starting)
+            echo "Health: $status"
+
+            [ "$status" = "healthy" ] && exit 0
             sleep 5
           done
 
-          echo "❌ App not ready"
-          docker compose -f docker-compose.dast.yml ps
+          echo "❌ App not healthy"
+          docker inspect vuln-bank-dast || true
           exit 1
 
       - name: OWASP ZAP Baseline
-        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
-        shell: bash
         run: |
+          mkdir -p security-reports/dast
+
           docker exec zap zap-baseline.py \
-            -t $DAST_TARGET_URL \
-            -J zap-baseline.json \
-            -r zap-baseline.html \
+            -t http://vuln-bank:5000 \
+            -J /zap/wrk/zap-baseline.json \
+            -r /zap/wrk/zap-baseline.html \
             -m 2 || true
 
-          mv security-reports/dast/zap-baseline.* security-reports/dast/ || true
-
       - name: Get JWT token for Active ZAP
-        if: github.event_name == 'schedule'
-        shell: bash
         env:
           ZAP_LOGIN_USER: ${{ secrets.DAST_USER }}
           ZAP_LOGIN_PASS: ${{ secrets.DAST_PASS }}
@@ -214,17 +207,14 @@ jobs:
             | jq -r '.token')
 
           [ -z "$token" -o "$token" = "null" ] && exit 1
-
           echo "ZAP_AUTH_HEADER=Authorization: Bearer $token" >> $GITHUB_ENV
 
       - name: OWASP ZAP Active Scan (Authenticated)
-        if: github.event_name == 'schedule'
-        shell: bash
         run: |
           docker exec zap zap-full-scan.py \
-            -t $DAST_TARGET_URL \
-            -J zap-active.json \
-            -r zap-active.html \
+            -t http://vuln-bank:5000 \
+            -J /zap/wrk/zap-active.json \
+            -r /zap/wrk/zap-active.html \
             -m 10 \
             -z "
               -config replacer.full_list(0).description=auth
@@ -232,26 +222,23 @@ jobs:
               -config replacer.full_list(0).matchtype=REQ_HEADER
               -config replacer.full_list(0).matchstr=Authorization
               -config replacer.full_list(0).replacement=$ZAP_AUTH_HEADER
+              -config globalexcludeurl.url_list.url(0).regex=.*logout.*
             " || true
 
-          mv security-reports/dast/zap-active.* security-reports/dast/ || true
-
-      - name: Evaluate ZAP findings (HIGH)
-        shell: bash
+      - name: ZAP Security Gate (HIGH only)
+        if: github.ref == 'refs/heads/main'
         run: |
-          FILE=$(ls ${REPORT_DIR}/dast/zap-*.json | head -1 || true)
-
-          if [ -z "$FILE" ]; then
-            echo "⚠️ No ZAP report found"
+          FILE="security-reports/dast/zap-baseline.json"
+          
+          if [ ! -f "$FILE" ]; then
+            echo "⚠️ ZAP report not found, skipping ZAP gate"
             exit 0
           fi
 
           high=$(jq '[.site[].alerts[]? | select(.riskcode=="3")] | length' "$FILE")
           echo "ZAP HIGH findings: $high"
 
-          if [ "$high" != "0" ]; then
-            echo "true" > critical_flag.txt
-          fi
+          [ "$high" -gt 0 ] && exit 1 || true
 
       - name: Cleanup DAST container
         if: always()
