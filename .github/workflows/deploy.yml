@@ -201,7 +201,8 @@ jobs:
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
             -m 2 || true
-            -d
+            -d \
+            || true
 
       - name: Verify ZAP outputs
         run: |
@@ -268,6 +269,16 @@ jobs:
           EOF
 
           python3 zap-to-sarif.py
+
+      - name: Validate ZAP SARIF
+        run: |
+          test -f security-reports/dast/zap.sarif \
+            || (echo "❌ SARIF not found" && exit 1)
+
+          jq empty security-reports/dast/zap.sarif \
+            || (echo "❌ Invalid SARIF JSON" && exit 1)
+
+          echo "✅ SARIF valid"
 
       - name: Upload ZAP SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
