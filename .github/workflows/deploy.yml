@@ -201,11 +201,14 @@ jobs:
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
             -m 2 || true
+            -d
 
-      - name: Collect ZAP Report
+      - name: Verify ZAP outputs
         run: |
-          docker cp zap:/zap/wrk/zap-baseline.json security-reports/dast/zap-baseline.json || true
-          docker cp zap:/zap/wrk/zap-baseline.html security-reports/dast/zap-baseline.html || true
+          ls -lah security-reports/dast
+
+          test -f security-reports/dast/zap-baseline.json \
+            || (echo "❌ ZAP JSON missing" && exit 1)
 
       - name: Convert ZAP Report to SARIF
         run: |
