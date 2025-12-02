@@ -41,15 +41,15 @@ services:
       - vuln-bank-dast
     networks:
       - zap-net
+    user: root
     volumes:
       - ./security-reports/dast:/zap/wrk
     command:
-      - zap.sh
-      - -daemon
-      - -host
-      - 0.0.0.0
-      - -port
-      - "8080"
+      - sh
+      - -c
+      - |
+        chmod -R 777 /zap/wrk && \
+        zap.sh -daemon -host 0.0.0.0 -port 8080
 
 networks:
   zap-net:
