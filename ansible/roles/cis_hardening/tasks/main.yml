@@ -1,0 +1,31 @@
+---
+- name: CIS | Disable root SSH login
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+  notify: restart ssh
+
+- name: CIS | Disable password auth
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+  notify: restart ssh
+
+- name: CIS | Set sysctl protections
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { key: net.ipv4.ip_forward, value: 0 }
+    - { key: net.ipv4.conf.all.accept_redirects, value: 0 }
+    - { key: net.ipv4.conf.all.send_redirects, value: 0 }
+
+handlers:
+  - name: restart ssh
+    service:
+      name: sshd
+      state: restarted

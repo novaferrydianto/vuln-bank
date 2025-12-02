@@ -1,0 +1,12 @@
+---
+- name: Install GitHub runner deps
+  dnf:
+    name:
+      - libicu
+      - jq
+    state: present
+
+- name: Ensure SSH key permissions
+  file:
+    path: /home/bastion/.ssh/id_runner
+    mode: '0600'

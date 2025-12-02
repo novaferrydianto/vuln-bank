@@ -10,7 +10,7 @@ services:
     environment:
       DB_NAME: vulnerable_bank
       DB_USER: postgres
-      DB_PASSWORD: postgres
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_HOST: 192.168.107.130
       DB_PORT: 5432
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
@@ -23,11 +23,14 @@ services:
 
     cap_drop:
       - ALL
+    cap_add: []
 
     read_only: true
 
     tmpfs:
       - /tmp
+      - /var/run
+      - /var/tmp
 
     pids_limit: 100
     mem_limit: 512m
