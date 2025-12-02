@@ -24,7 +24,7 @@ env:
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://localhost:8080
+  DAST_TARGET_URL: http://localhost:5000
   PYTHON_BIN: python3.11
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
@@ -127,7 +127,8 @@ jobs:
         run: |
           jq -r '.. | .id? // empty' ${REPORT_DIR}/sca/snyk.json | sort -u > cves.txt || true
           while read cve; do
-            epss=$(curl -s https://api.first.org/data/v1/epss?cve=$cve | jq -r '.data[0].epss')
+            epss=$(curl -s https://api.first.org/data/v1/epss?cve=$cve \
+              | jq -r '.data[0].epss // 0')
             awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" && echo true > critical_flag.txt
           done < cves.txt || true
 
@@ -152,37 +153,17 @@ jobs:
             ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' && echo true > critical_flag.txt || true
 
       # ================= DAST =================
-      - name: Port-forward Vuln Bank
-        shell: bash
-        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+      - name: Build local image for DAST
         run: |
-          set -e
+          docker build \
+          -t $IMAGE_REPO:$IMAGE_TAG .
 
-          # ✅ Pakai kubeconfig runner, bukan /etc/rancher/k3s/k3s.yaml
-          export KUBECONFIG=$HOME/.kube/config
-
-          echo "🔎 Using kubeconfig at: $KUBECONFIG"
-          ls -l "$KUBECONFIG" || true
-
-          # Sanity check cluster
-          kubectl get svc vuln-bank -n vuln-bank-app
-
-          # Start port-forward (single instance)
-          kubectl port-forward svc/vuln-bank 8080:80 -n vuln-bank-app > /tmp/pf.log 2>&1 &
-          echo $! > pf.pid
-
-          # Tunggu app ready
-          sleep 10
-
-          # Hard fail kalau emang nggak kebuka
-          curl -sf http://127.0.0.1:8080 || {
-            echo "❌ Port-forward failed or app not responding"
-            echo "--- pf.log ---"
-            cat /tmp/pf.log || true
-            exit 1
-          }
-
-          echo "✅ Port-forward to vuln-bank OK"
+      - name: Run app locally for DAST
+        run: |
+          docker run -d --rm \
+          --name dast-target \
+          -p 5000:5000 \
+          $IMAGE_REPO:$IMAGE_TAG
 
       - name: OWASP ZAP Baseline
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
@@ -203,7 +184,7 @@ jobs:
             --cpus=2 \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t "http://127.0.0.1:8080" \
+            -t "${DAST_TARGET_URL}" \
             -r zap-report.html \
             || true
 
@@ -214,10 +195,10 @@ jobs:
             echo "⚠️ ZAP failed (disk / target / runtime issue)"
           fi
 
-      - name: Cleanup port-forward
+      - name: Cleanup DAST container
         if: always()
         run: |
-          [ -f pf.pid ] && kill $(cat pf.pid) || true
+          docker rm -f dast-target || true
 
       # ================= SBOM =================
       - name: Generate SBOM
@@ -337,7 +318,7 @@ jobs:
           echo "✅ Security Gate Passed"
 
 # ==========================================================
-# 4) BUILD + SIGN + PUSH
+# 4) BUILD + SIGN + PUSH + ATTEST
 # ==========================================================
   build_and_push:
     runs-on: self-hosted
@@ -345,7 +326,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.critical_found == 'false'
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       # ---------- Docker Auth ----------
       - name: Docker Login
@@ -369,29 +350,44 @@ jobs:
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t $IMAGE_REPO:$IMAGE_TAG .
 
-
       # ---------- Push ----------
       - name: Push Image
         run: |
           docker push $IMAGE_REPO:$IMAGE_TAG
 
-      # ==========================================================
-      # COSIGN SIGN (KEYLESS / OIDC)
-      # ==========================================================
+      # ---------- Cosign ----------
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
+      # ---------- Sign ----------
       - name: Cosign Sign Image
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          cosign sign \
+          cosign sign --yes $IMAGE_REPO:$IMAGE_TAG
+
+      # ---------- SBOM Attestation ----------
+      - name: Cosign Attest SBOM
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign attest \
             --yes \
+            --predicate ${REPORT_DIR}/sbom/sbom.json \
+            --type spdxjson \
             $IMAGE_REPO:$IMAGE_TAG
 
-      # ==========================================================
-      # COSIGN VERIFY (POST-PUSH SAFETY CHECK)
-      # ==========================================================
+      # ---------- Verify SBOM Attestation ----------
+      - name: Verify SBOM Attestation
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            $IMAGE_REPO:$IMAGE_TAG
+
+      # ---------- Verify Image Signature ----------
       - name: Cosign Verify Image
         env:
           COSIGN_EXPERIMENTAL: "true"
@@ -402,20 +398,34 @@ jobs:
             $IMAGE_REPO:$IMAGE_TAG
 
 # ==========================================================
-# 5) DEPLOY
+# 5) DEPLOY (DOCKER COMPOSE)
 # ==========================================================
-  deploy_k8s:
+  deploy_compose:
+    name: Deploy via Docker Compose
     runs-on: self-hosted
     needs: build_and_push
     if: github.ref == 'refs/heads/main'
+
     steps:
-      - uses: actions/checkout@v6
-      - run: |
-          export KUBECONFIG=$HOME/.kube/config
-          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_REPO:$IMAGE_TAG|g" k3s/app/*.yml
-          kubectl apply -f k3s/db/
-          kubectl apply -f k3s/app/
-          kubectl rollout status deployment/vuln-bank -n vuln-bank-app --timeout=120s
+      - uses: actions/checkout@v4
+
+      - name: Deploy to VM2 (Frontend)
+        shell: bash
+        run: |
+          ssh hosting@192.168.107.131 << 'EOF'
+            set -e
+
+            cd /opt/vuln-bank-app
+
+            docker pull xbash81/vuln-bank:${{ github.sha }}
+
+            sed -i "s|IMAGE_PLACEHOLDER|xbash81/vuln-bank:${{ github.sha }}|g" docker-compose.yml
+
+            docker compose down
+            docker compose up -d
+
+            docker ps | grep vuln-bank
+          EOF
 
 # ==========================================================
 # 6) SLACK (ALWAYS)
