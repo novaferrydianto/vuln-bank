@@ -24,7 +24,7 @@ env:
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://localhost:5000
+  DAST_TARGET_URL: http://vuln-bank:5000
   PYTHON_BIN: python3.11
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
@@ -164,51 +164,41 @@ jobs:
       # ================= DAST (ZAP) =================
       - name: Build local image for DAST
         run: |
-          docker build -t $IMAGE_REPO:$IMAGE_TAG .
+          docker build -t vuln-bank:${{ github.sha }} .
 
-      - name: Run app locally for DAST
+      - name: Start DAST environment (Docker Compose)
         run: |
-          docker run -d --rm \
-            --name dast-target \
-            -p 5000:5000 \
-            $IMAGE_REPO:$IMAGE_TAG
+          IMAGE_TAG=${{ github.sha }} docker compose \
+            -f docker-compose.dast.yml up -d
 
       - name: Wait for app to be ready (DAST)
-        shell: bash
         run: |
           for i in {1..20}; do
-            if curl -sf "${DAST_TARGET_URL}/" > /dev/null; then
-              echo "✅ App ready for ZAP"
+            if docker exec vuln-bank-dast \
+              python -c "import requests; requests.get('http://localhost:5000', timeout=2)" \
+              > /dev/null; then
+              echo "✅ App ready for DAST"
               exit 0
             fi
-            echo "⏳ Waiting for app..."
+            echo "⏳ Waiting app..."
             sleep 5
           done
 
-          echo "❌ App not reachable"
-          docker logs dast-target || true
+          echo "❌ App not ready"
+          docker compose -f docker-compose.dast.yml ps
           exit 1
 
       - name: OWASP ZAP Baseline
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         shell: bash
         run: |
-          set -e || true
-          docker system prune -af || true
-          mkdir -p ${REPORT_DIR}/dast
-          docker pull ghcr.io/zaproxy/zaproxy:stable
+          docker exec zap zap-baseline.py \
+            -t $DAST_TARGET_URL \
+            -J zap-baseline.json \
+            -r zap-baseline.html \
+            -m 2 || true
 
-          docker run --rm \
-            --network host \
-            -v "$PWD:/zap/wrk:Z" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-              -t "${DAST_TARGET_URL}" \
-              -J zap-baseline.json \
-              -r zap-baseline.html \
-              -m 2 || echo "ZAP baseline exited non-zero"
-
-          mv zap-baseline.* ${REPORT_DIR}/dast/ || true
+          mv security-reports/dast/zap-baseline.* security-reports/dast/ || true
 
       - name: Get JWT token for Active ZAP
         if: github.event_name == 'schedule'
@@ -217,15 +207,13 @@ jobs:
           ZAP_LOGIN_USER: ${{ secrets.DAST_USER }}
           ZAP_LOGIN_PASS: ${{ secrets.DAST_PASS }}
         run: |
-          token=$(curl -s -X POST "${DAST_TARGET_URL}/auth/login" \
+          token=$(docker exec zap curl -s -X POST \
+            http://vuln-bank:5000/auth/login \
             -H "Content-Type: application/json" \
             -d "{\"username\":\"$ZAP_LOGIN_USER\",\"password\":\"$ZAP_LOGIN_PASS\"}" \
             | jq -r '.token')
 
-          if [ -z "$token" ] || [ "$token" = "null" ]; then
-            echo "❌ JWT login failed"
-            exit 1
-          fi
+          [ -z "$token" -o "$token" = "null" ] && exit 1
 
           echo "ZAP_AUTH_HEADER=Authorization: Bearer $token" >> $GITHUB_ENV
 
@@ -233,29 +221,20 @@ jobs:
         if: github.event_name == 'schedule'
         shell: bash
         run: |
-          mkdir -p ${REPORT_DIR}/dast
+          docker exec zap zap-full-scan.py \
+            -t $DAST_TARGET_URL \
+            -J zap-active.json \
+            -r zap-active.html \
+            -m 10 \
+            -z "
+              -config replacer.full_list(0).description=auth
+              -config replacer.full_list(0).enabled=true
+              -config replacer.full_list(0).matchtype=REQ_HEADER
+              -config replacer.full_list(0).matchstr=Authorization
+              -config replacer.full_list(0).replacement=$ZAP_AUTH_HEADER
+            " || true
 
-          docker run --rm \
-            --network host \
-            -e ZAP_AUTH_HEADER="${ZAP_AUTH_HEADER}" \
-            -v "$PWD:/zap/wrk:Z" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-full-scan.py \
-              -t "${DAST_TARGET_URL}" \
-              -J zap-active.json \
-              -r zap-active.html \
-              -m 10 \
-              -z "
-                -config replacer.full_list(0).description=auth
-                -config replacer.full_list(0).enabled=true
-                -config replacer.full_list(0).matchtype=REQ_HEADER
-                -config replacer.full_list(0).matchstr=Authorization
-                -config replacer.full_list(0).replacement=${ZAP_AUTH_HEADER}
-                -config scanner.attackOnStart=true
-                -config globalexcludeurl.url_list.url(0).regex=.*logout.*
-              " || true
-
-          mv zap-active.* ${REPORT_DIR}/dast/ || true
+          mv security-reports/dast/zap-active.* security-reports/dast/ || true
 
       - name: Evaluate ZAP findings (HIGH)
         shell: bash
@@ -277,7 +256,7 @@ jobs:
       - name: Cleanup DAST container
         if: always()
         run: |
-          docker ps -a | grep dast-target && docker rm -f dast-target || true
+          docker compose -f docker-compose.dast.yml down -v
 
       # ================= SBOM =================
       - name: Generate SBOM

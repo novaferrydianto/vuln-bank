@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  vuln-bank:
+    image: vuln-bank:${IMAGE_TAG}
+    container_name: vuln-bank-dast
+    environment:
+      DB_NAME: vulnerable_bank
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: 192.168.107.130
+      DB_PORT: 5432
+    networks:
+      - zap-net
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    container_name: zap
+    depends_on:
+      - vuln-bank
+    networks:
+      - zap-net
+    volumes:
+      - ./security-reports/dast:/zap/wrk
+
+networks:
+  zap-net:
+    driver: bridge
