@@ -1096,9 +1096,10 @@ def api_v1_forgot_password():
         data = request.get_json()
         username = data.get('username')
         
-        # Vulnerability: SQL Injection possible
+        # FIX: Use parameterized query to prevent SQL Injection
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s",
+            (username,)
         )
         
         if user:
