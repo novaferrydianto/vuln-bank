@@ -243,14 +243,33 @@ def execute_query(query, params=None, fetch=True):
 
 def execute_transaction(queries_and_params):
     """
-    Execute multiple queries in a transaction
-    Vulnerability: No input validation on queries
+    Execute multiple queries in a transaction.
+    WARNING: Do NOT use string formatting or f-strings to construct queries.
+    Always use SQL parameterization (query string with %s placeholders and a tuple/list of params).
+    This function will raise an Exception if unsafe patterns are detected in the SQL.
+
     queries_and_params: list of tuples (query, params)
     """
+    unsafe_tokens = ('%', '{', '}')
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
             for query, params in queries_and_params:
+                # Check for likely unsafe query construction
+                # Only allow queries with parameter placeholders (%s), but no actual string formatting
+                # Raise if query seems to contain formatting or brace-style interpolation
+                if any(token in query for token in ('{', '}')) and not query.strip().startswith("CALL"):
+                    raise ValueError(
+                        f"Unsafe query detected: braces/bracket formatting found in query.\n"
+                        f"Use parameterized queries with %s placeholders only, never f-strings or .format().\nQuery: {query}"
+                    )
+                # Very basic check: forbid percent sign unless it's with '%%' or '%s'
+                percents = [i for i in range(len(query)) if query[i] == '%']
+                for i in percents:
+                    if not (i+1 < len(query) and query[i+1] in ('s', '%')):
+                        raise ValueError(
+                            f"Potential unsafe percent-formatting in query: {query}"
+                        )
                 cursor.execute(query, params)
             conn.commit()
     except Exception as e:
