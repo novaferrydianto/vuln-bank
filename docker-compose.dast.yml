@@ -6,31 +6,31 @@ services:
     expose:
       - "5000"
     restart: "no"
+    command: python app.py
     environment:
       DB_NAME: vulnerable_bank
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_HOST: db
       DB_PORT: 5432
-    command: python app.py
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:5000/ || exit 1"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5000 || exit 1"]
       interval: 5s
       timeout: 2s
       retries: 12
-      start_period: 30s
+      start_period: 40s
 
   db:
     image: postgres:16
     container_name: vuln-bank-dast-db
+    networks: [zap-net]
     environment:
       POSTGRES_DB: vulnerable_bank
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    networks: [zap-net]
     volumes:
       - postgres_dast_data:/var/lib/postgresql/data
     healthcheck:

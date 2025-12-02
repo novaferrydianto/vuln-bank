@@ -185,6 +185,11 @@ jobs:
           docker inspect vuln-bank-dast || true
           exit 1
 
+      - name: ❗ DAST Failure Diagnostics (GET LOGS)
+        if: always()
+        run: |
+          docker logs vuln-bank-dast
+
       - name: OWASP ZAP Baseline
         run: |
           mkdir -p security-reports/dast
