@@ -155,15 +155,30 @@ jobs:
       # ================= DAST =================
       - name: Build local image for DAST
         run: |
-          docker build \
-          -t $IMAGE_REPO:$IMAGE_TAG .
+          docker build -t $IMAGE_REPO:$IMAGE_TAG .
 
       - name: Run app locally for DAST
         run: |
           docker run -d --rm \
-          --name dast-target \
-          -p 5000:5000 \
-          $IMAGE_REPO:$IMAGE_TAG
+            --name dast-target \
+            -p 5000:5000 \
+            $IMAGE_REPO:$IMAGE_TAG
+
+      - name: Wait for app to be ready (DAST)
+        shell: bash
+        run: |
+          for i in {1..20}; do
+            if curl -sf "${DAST_TARGET_URL}/" > /dev/null; then
+              echo "✅ App ready for ZAP"
+              exit 0
+            fi
+            echo "⏳ Waiting for app..."
+            sleep 5
+          done
+
+          echo "❌ App not reachable"
+          docker logs dast-target || true
+          exit 1
 
       - name: OWASP ZAP Baseline
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
@@ -172,33 +187,92 @@ jobs:
           set -e
 
           docker system prune -af || true
-          
           mkdir -p ${REPORT_DIR}/dast
-
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
             --network host \
             -v "$PWD:/zap/wrk:Z" \
-            --memory=2g \
-            --cpus=2 \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t "${DAST_TARGET_URL}" \
-            -r zap-report.html \
-            || true
+              -t "${DAST_TARGET_URL}" \
+              -J zap-report.json \
+              -r zap-report.html \
+              -m 2 \
+            || echo "ZAP baseline exited non-zero"
 
-          if grep -qi "<html" zap-report.html 2>/dev/null; then
-            mv zap-report.html ${REPORT_DIR}/dast/
-            echo "✅ ZAP report generated"
-          else
-            echo "⚠️ ZAP failed (disk / target / runtime issue)"
+          mv zap-baseline.* ${REPORT_DIR}/dast/
+
+      - name: Get JWT token for Active ZAP
+        if: github.event_name == 'schedule'
+        shell: bash
+        env:
+          ZAP_LOGIN_USER: ${{ secrets.DAST_USER }}
+          ZAP_LOGIN_PASS: ${{ secrets.DAST_PASS }}
+        run: |
+          token=$(curl -s -X POST "${DAST_TARGET_URL}/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"$ZAP_LOGIN_USER\",\"password\":\"$ZAP_LOGIN_PASS\"}" \
+            | jq -r '.token')
+
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "❌ JWT login failed"
+            exit 1
+          fi
+
+          echo "ZAP_AUTH_HEADER=Authorization: Bearer $token" >> $GITHUB_ENV
+
+      - name: OWASP ZAP Active Scan (Authenticated)
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          mkdir -p ${REPORT_DIR}/dast
+
+          docker run --rm \
+            --network host \
+            -e ZAP_AUTH_HEADER="${ZAP_AUTH_HEADER}" \
+            -v "$PWD:/zap/wrk:Z" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-full-scan.py \
+            -t "${DAST_TARGET_URL}" \
+            -J zap-active.json \
+            -r zap-active.html \
+            -m 10 \
+            -z "
+              -config replacer.full_list(0).description=auth
+              -config replacer.full_list(0).enabled=true
+              -config replacer.full_list(0).matchtype=REQ_HEADER
+              -config replacer.full_list(0).matchstr=Authorization
+              -config replacer.full_list(0).replacement=${ZAP_AUTH_HEADER}
+
+              -config scanner.attackOnStart=true
+              -config globalexcludeurl.url_list.url(0).regex=.*logout.*
+            "
+
+          mv zap-active.* ${REPORT_DIR}/dast/
+
+      - name: Evaluate ZAP findings (HIGH)
+        shell: bash
+        run: |
+          FILE=$(ls ${REPORT_DIR}/dast/zap-*.json | head -1 || true)
+
+          if [ -z "$FILE" ]; then
+            echo "⚠️ No ZAP report found"
+            exit 0
+          fi
+
+          high=$(jq '[.site[].alerts[]? | select(.riskcode=="3")] | length' "$FILE")
+
+          echo "ZAP HIGH findings: $high"
+
+          if [ "$high" != "0" ]; then
+            echo "true" > critical_flag.txt
           fi
 
       - name: Cleanup DAST container
         if: always()
         run: |
-          docker rm -f dast-target || true
+          docker ps -a | grep dast-target && docker rm -f dast-target || true
 
       # ================= SBOM =================
       - name: Generate SBOM
