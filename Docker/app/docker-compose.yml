@@ -1,0 +1,50 @@
+services:
+  vuln-bank:
+    image: IMAGE_PLACEHOLDER
+    container_name: vuln-bank-app
+    restart: unless-stopped
+
+    ports:
+      - "5000:5000"
+
+    environment:
+      DB_NAME: vulnerable_bank
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: 192.168.107.130
+      DB_PORT: 5432
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+
+    volumes:
+      - uploads:/app/static/uploads:rw
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+    cap_add: []
+
+    read_only: true
+
+    tmpfs:
+      - /tmp
+      - /var/run
+      - /var/tmp
+
+    pids_limit: 100
+    mem_limit: 512m
+    cpus: 0.5
+    stop_grace_period: 30s
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import requests; requests.get('http://127.0.0.1:5000', timeout=2)"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
