@@ -204,14 +204,37 @@ jobs:
           ZAP_LOGIN_USER: ${{ secrets.ZAP_LOGIN_USER }}
           ZAP_LOGIN_PASS: ${{ secrets.ZAP_LOGIN_USER }}
         run: |
-          token=$(docker exec zap curl -s -X POST \
-            http://vuln-bank-dast:5000/auth/login \
-            -H "Content-Type: application/json" \
-            -d "{\"username\":\"$ZAP_LOGIN_USER\",\"password\":\"$ZAP_LOGIN_PASS\"}" \
-            | jq -r '.token')
+          set -euo pipefail
 
-          [ -z "$token" -o "$token" = "null" ] && exit 1
-          echo "ZAP_AUTH_HEADER=Authorization: Bearer $token" >> $GITHUB_ENV
+          echo "🔐 ZAP login attempt..."
+
+          response=$(docker exec zap curl -s -w "\n%{http_code}" \
+            -X POST \
+            ${DAST_TARGET_URL}/auth/login \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"$ZAP_LOGIN_USER\",\"password\":\"$ZAP_LOGIN_PASS\"}")
+
+          body=$(echo "$response" | sed '$d')
+          status=$(echo "$response" | tail -n1)
+
+          echo "HTTP status: $status"
+
+          if [ "$status" != "200" ]; then
+            echo "❌ Login failed"
+            echo "$body"
+            exit 1
+          fi
+
+          token=$(echo "$body" | jq -r '.token // empty')
+
+          if [ -z "$token" ]; then
+            echo "❌ Token missing in response"
+            echo "$body"
+            exit 1
+          fi
+
+          echo "✅ JWT token acquired"
+          echo "ZAP_AUTH_HEADER=Authorization: Bearer $token" >> $GITHUB_ENV  
 
       - name: OWASP ZAP Active Scan (Authenticated)
         run: |
