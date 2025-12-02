@@ -1,22 +1,44 @@
 FROM python:3.9-slim
 
-# Install PostgreSQL client
-RUN apt-get update && apt-get install -y \
+# -----------------------------
+# 1. System hardening essentials
+# -----------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------
+# 2. Create non-root user
+# -----------------------------
+RUN addgroup --system appgroup \
+    && adduser --system --ingroup appgroup appuser
 
 WORKDIR /app
 
+# -----------------------------
+# 3. Install deps as root (one-time)
+# -----------------------------
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Create necessary directories
-RUN mkdir -p static/uploads templates
-
+# -----------------------------
+# 4. Copy app files
+# -----------------------------
 COPY . .
 
-# Ensure uploads directory exists and has proper permissions
-RUN chmod 777 static/uploads
+# -----------------------------
+# 5. Secure writable paths only
+# -----------------------------
+RUN mkdir -p /app/static/uploads \
+    && chown -R appuser:appgroup /app/static/uploads \
+    && chmod 750 /app/static/uploads
+
+# -----------------------------
+# 6. Drop privileges
+# -----------------------------
+USER appuser
 
 EXPOSE 5000
 
