@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   vuln-bank:
     image: vuln-bank:${IMAGE_TAG}
@@ -16,6 +14,7 @@ services:
   zap:
     image: ghcr.io/zaproxy/zaproxy:stable
     container_name: zap
+    command: sleep infinity   # ✅ KEEP ZAP ALIVE
     depends_on:
       - vuln-bank
     networks:
