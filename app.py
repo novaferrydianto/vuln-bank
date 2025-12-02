@@ -1149,7 +1149,8 @@ def api_v2_forgot_password():
         
         # Vulnerability: SQL Injection still possible
         user = execute_query(
-            f"SELECT id FROM users WHERE username='{username}'"
+            "SELECT id FROM users WHERE username = %s",
+            (username,)
         )
         
         if user:
