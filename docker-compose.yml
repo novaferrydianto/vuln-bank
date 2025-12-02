@@ -1,50 +1,42 @@
-services:
-  vuln-bank:
-    image: IMAGE_PLACEHOLDER
-    container_name: vuln-bank-app
-    restart: unless-stopped
+version: '3.8'
 
+services:
+  web:
+    build: .
     ports:
       - "5000:5000"
+      - "80:5000"
+      # - "443:5000" 
 
     environment:
-      DB_NAME: vulnerable_bank
-      DB_USER: postgres
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_HOST: 192.168.107.130
-      DB_PORT: 5432
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-
+      - DB_NAME=vulnerable_bank
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_HOST=db 
+      - DB_PORT=5432
+    depends_on:
+      - db
     volumes:
-      - uploads:/app/static/uploads:rw
+      - ./static/uploads:/app/static/uploads
+    networks:
+      - vuln_network
 
-    security_opt:
-      - no-new-privileges:true
+  db:
+    image: postgres:13
+    environment:
+      - POSTGRES_DB=vulnerable_bank
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - vuln_network
 
-    cap_drop:
-      - ALL
-    cap_add: []
+volumes:
+  postgres_data:
 
-    read_only: true
-
-    tmpfs:
-      - /tmp
-      - /var/run
-      - /var/tmp
-
-    pids_limit: 100
-    mem_limit: 512m
-    cpus: 0.5
-    stop_grace_period: 30s
-
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import requests; requests.get('http://127.0.0.1:5000', timeout=2)"
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+networks:
+  vuln_network:
+    driver: bridge
