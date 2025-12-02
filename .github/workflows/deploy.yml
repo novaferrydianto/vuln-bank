@@ -193,14 +193,17 @@ jobs:
           exit 1
 
       - name: OWASP ZAP Baseline Scan
+        shell: bash
         run: |
           mkdir -p security-reports/dast
 
-          docker exec zap zap-baseline.py \
+          docker exec zap \
+            zap-baseline.py \
             -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
-            -m 2
+            -m 2 \
+            -I \
             || true
 
       - name: Verify ZAP outputs
