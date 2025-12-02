@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   issues: write
+  security-events: write
   id-token: write
 
 concurrency:
@@ -43,6 +44,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Runner sanity check
         shell: bash
@@ -199,6 +202,75 @@ jobs:
             -r /zap/wrk/zap-baseline.html \
             -m 2 || true
 
+      - name: Collect ZAP Report
+        run: |
+          docker cp zap:/zap/wrk/zap-baseline.json security-reports/dast/zap-baseline.json || true
+          docker cp zap:/zap/wrk/zap-baseline.html security-reports/dast/zap-baseline.html || true
+
+      - name: Convert ZAP Report to SARIF
+        run: |
+          cat > zap-to-sarif.py << 'EOF'
+          import json
+
+          zap = json.load(open("security-reports/dast/zap-baseline.json"))
+
+          sarif = {
+              "version": "2.1.0",
+              "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+              "runs": [{
+                  "tool": {
+                      "driver": {
+                          "name": "OWASP ZAP",
+                          "informationUri": "https://www.zaproxy.org/",
+                          "rules": []
+                      }
+                  },
+                  "results": []
+              }]
+          }
+
+          rules = {}
+          results = []
+
+          for site in zap.get("site", []):
+              for alert in site.get("alerts", []):
+                  rule_id = f"ZAP-{alert.get('pluginid', '0')}"
+
+                  rules[rule_id] = {
+                      "id": rule_id,
+                      "name": alert.get("alert", "ZAP Finding"),
+                      "shortDescription": {"text": alert.get("alert", "")},
+                      "fullDescription": {"text": alert.get("desc", "")}
+                  }
+
+                  for inst in alert.get("instances", []):
+                      results.append({
+                          "ruleId": rule_id,
+                          "level": "error" if alert.get("riskcode") == "3" else "warning",
+                          "message": {"text": alert.get("desc", "")},
+                          "locations": [{
+                              "physicalLocation": {
+                                  "artifactLocation": {
+                                      "uri": inst.get("uri", "unknown")
+                                  }
+                              }
+                          }]
+                      })
+
+          sarif["runs"][0]["tool"]["driver"]["rules"] = list(rules.values())
+          sarif["runs"][0]["results"] = results
+
+          with open("security-reports/dast/zap.sarif", "w") as f:
+              json.dump(sarif, f, indent=2)
+          EOF
+
+          python3 zap-to-sarif.py
+
+      - name: Upload ZAP SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-reports/dast/zap.sarif
+
       - name: ZAP Security Gate (HIGH only)
         if: github.ref == 'refs/heads/main'
         run: |
@@ -249,6 +321,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Prepare issue body
         shell: bash
@@ -347,6 +421,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Docker Login
         run: |
