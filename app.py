@@ -998,7 +998,8 @@ def forgot_password():
             
             # Vulnerability: SQL Injection possible
             user = execute_query(
-                f"SELECT id FROM users WHERE username='{username}'"
+                "SELECT id FROM users WHERE username = %s",
+                (username,)
             )
             
             if user:
