@@ -1,26 +1,33 @@
 services:
-  vuln-bank:
+  vuln-bank-dast:
     image: vuln-bank:${IMAGE_TAG}
     container_name: vuln-bank-dast
-    environment:
-      DB_NAME: vulnerable_bank
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_HOST: 192.168.107.130
-      DB_PORT: 5432
+    restart: unless-stopped
     networks:
       - zap-net
+    expose:
+      - "5000"
+    environment:
+      FLASK_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5000/ || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 10s
+    command: python app.py
 
   zap:
-    image: ghcr.io/zaproxy/zaproxy:stable
+    image: owasp/zap2docker-stable
     container_name: zap
-    command: sleep infinity   # ✅ KEEP ZAP ALIVE
     depends_on:
-      - vuln-bank
+      vuln-bank-dast:
+        condition: service_healthy
     networks:
       - zap-net
     volumes:
       - ./security-reports/dast:/zap/wrk
+    command: ["sleep", "infinity"]
 
 networks:
   zap-net:
