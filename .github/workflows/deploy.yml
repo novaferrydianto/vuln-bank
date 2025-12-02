@@ -201,8 +201,8 @@ jobs:
 
       - name: Get JWT token for Active ZAP
         env:
-          ZAP_LOGIN_USER: ${{ secrets.DAST_USER }}
-          ZAP_LOGIN_PASS: ${{ secrets.DAST_PASS }}
+          ZAP_LOGIN_USER: ${{ secrets.ZAP_LOGIN_USER }}
+          ZAP_LOGIN_PASS: ${{ secrets.ZAP_LOGIN_USER }}
         run: |
           token=$(docker exec zap curl -s -X POST \
             http://vuln-bank-dast:5000/auth/login \
