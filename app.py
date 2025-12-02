@@ -193,6 +193,14 @@ def generate_cvv():
 def index():
     return render_template('index.html')
 
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    return jsonify({
+        "status": "ok",
+        "service": "vuln-bank",
+        "time": datetime.utcnow().isoformat()
+    }), 200
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':

@@ -1,25 +1,52 @@
+version: '3.8'
+
+networks:
+  zap-net:
+    driver: bridge
+
 services:
   vuln-bank-dast:
     image: vuln-bank:${IMAGE_TAG}
     container_name: vuln-bank-dast
-    environment:
-      DB_NAME: vulnerable_bank
-      DB_USER: postgres
-      DB_PASSWORD: ${DB_PASSWORD} # Ambil dari .env atau Secrets
-      DB_HOST: 192.168.107.130 # Target ke VM3
-      DB_PORT: 5432
     networks:
       - zap-net
     expose:
       - "5000"
     restart: unless-stopped
+    environment:
+      DB_NAME: vulnerable_bank
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      # ...
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5000/ || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:5000/healthz || exit 1"]
       interval: 5s
       timeout: 2s
       retries: 12
       start_period: 30s
     command: python app.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16
+    container_name: vuln-bank-dast-db
+    environment:
+      POSTGRES_DB: vulnerable_bank
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # Pastikan ini cocok dengan DB_PASSWORD di atas
+    volumes:
+      - postgres_dast_data:/var/lib/postgresql/data
+    networks:
+      - zap-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   zap:
     image: ghcr.io/zaproxy/zaproxy:stable
@@ -33,6 +60,6 @@ services:
       - ./security-reports/dast:/zap/wrk
     command: ["zap.sh", "-daemon", "-host", "0.0.0.0", "-port", "8080"]
 
-networks:
-  zap-net:
-    driver: bridge
+volumes:
+  postgres_dast_data:
+# Tambahkan healthcheck ke DB service agar 'depends_on: service_healthy' berfungsi
