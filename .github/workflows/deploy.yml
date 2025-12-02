@@ -200,7 +200,7 @@ jobs:
             -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
-            -m 2 || true
+            -m 2
             -d \
             || true
 
