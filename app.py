@@ -389,7 +389,8 @@ def check_balance(account_number):
     try:
         # Vulnerability: SQL Injection possible
         user = execute_query(
-            f"SELECT username, balance FROM users WHERE account_number='{account_number}'"
+            "SELECT username, balance FROM users WHERE account_number = %s",
+            (account_number,)
         )
         
         if user:
@@ -483,7 +484,7 @@ def get_transaction_history(account_number):
     # Vulnerability: No authentication required (BOLA)
     # Vulnerability: SQL Injection possible
     try:
-        query = f"""
+        query = """
             SELECT 
                 id,
                 from_account,
@@ -493,11 +494,11 @@ def get_transaction_history(account_number):
                 transaction_type,
                 description
             FROM transactions 
-            WHERE from_account='{account_number}' OR to_account='{account_number}'
+            WHERE from_account=%s OR to_account=%s
             ORDER BY timestamp DESC
         """
         
-        transactions = execute_query(query)
+        transactions = execute_query(query, (account_number, account_number))
         
         # Vulnerability: Information disclosure
         transaction_list = [{
@@ -1476,12 +1477,12 @@ def create_virtual_card(current_user):
 def get_virtual_cards(current_user):
     try:
         # Vulnerability: No pagination
-        query = f"""
+        query = """
             SELECT * FROM virtual_cards 
-            WHERE user_id = {current_user['user_id']}
+            WHERE user_id = %s
         """
         
-        cards = execute_query(query)
+        cards = execute_query(query, (current_user['user_id'],))
         
         # Vulnerability: Sensitive data exposure
         return jsonify({
@@ -1513,14 +1514,14 @@ def toggle_card_freeze(current_user, card_id):
     try:
         # Vulnerability: No CSRF protection
         # Vulnerability: BOLA - no verification if card belongs to user
-        query = f"""
+        query = """
             UPDATE virtual_cards 
             SET is_frozen = NOT is_frozen 
-            WHERE id = {card_id}
+            WHERE id = %s
             RETURNING is_frozen
         """
         
-        result = execute_query(query)
+        result = execute_query(query, (card_id,))
         
         if result:
             return jsonify({
@@ -1545,15 +1546,15 @@ def get_card_transactions(current_user, card_id):
     try:
         # Vulnerability: BOLA - no verification if card belongs to user
         # Vulnerability: SQL Injection possible
-        query = f"""
+        query = """
             SELECT ct.*, vc.card_number 
             FROM card_transactions ct
             JOIN virtual_cards vc ON ct.card_id = vc.id
-            WHERE ct.card_id = {card_id}
+            WHERE ct.card_id = %s
             ORDER BY ct.timestamp DESC
         """
         
-        transactions = execute_query(query)
+        transactions = execute_query(query, (card_id,))
         
         # Vulnerability: Information disclosure
         return jsonify({
@@ -1606,11 +1607,11 @@ def update_card_limit(current_user, card_id):
         query = f"""
             UPDATE virtual_cards 
             SET {', '.join(update_fields)}
-            WHERE id = {card_id}
+            WHERE id = %s
             RETURNING *
         """
         
-        result = execute_query(query, tuple(update_values))
+        result = execute_query(query, tuple(update_values) + (card_id,))
         
         if result:
             # Vulnerability: Information disclosure - returning all updated fields
@@ -1667,12 +1668,12 @@ def get_bill_categories():
 def get_billers_by_category(category_id):
     try:
         # Vulnerability: SQL injection possible
-        query = f"""
+        query = """
             SELECT * FROM billers 
-            WHERE category_id = {category_id} 
+            WHERE category_id = %s 
             AND is_active = TRUE
         """
-        billers = execute_query(query)
+        billers = execute_query(query, (category_id,))
         
         # Vulnerability: Information disclosure
         return jsonify({
