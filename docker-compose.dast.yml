@@ -1,58 +1,42 @@
+version: '3.8'
+
 services:
-  vuln-bank-dast:
-    image: vuln-bank:${IMAGE_TAG}
-    container_name: vuln-bank-dast
-    networks: [zap-net]
-    expose:
-      - "5000"
-    restart: "no"
-    command: python app.py
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+      - "80:5000"
+      # - "443:5000" 
+
     environment:
-      DB_NAME: vulnerable_bank
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_HOST: db
-      DB_PORT: 5432
+      - DB_NAME=vulnerable_bank
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_HOST=db 
+      - DB_PORT=5432
     depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 5000 || exit 1"]
-      interval: 5s
-      timeout: 2s
-      retries: 12
-      start_period: 40s
+      - db
+    volumes:
+      - ./static/uploads:/app/static/uploads
+    networks:
+      - vuln_network
 
   db:
-    image: postgres:16
-    container_name: vuln-bank-dast-db
-    networks: [zap-net]
+    image: postgres:13
     environment:
-      POSTGRES_DB: vulnerable_bank
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      - POSTGRES_DB=vulnerable_bank
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
     volumes:
-      - postgres_dast_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  zap:
-    image: ghcr.io/zaproxy/zaproxy:stable
-    container_name: zap
-    networks: [zap-net]
-    depends_on:
-      vuln-bank-dast:
-        condition: service_healthy
-    volumes:
-      - ./security-reports/dast:/zap/wrk
-    command: ["zap.sh", "-daemon", "-host", "0.0.0.0", "-port", "8080"]
-
-networks:
-  zap-net:
-    driver: bridge
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - vuln_network
 
 volumes:
-  postgres_dast_data:
+  postgres_data:
+
+networks:
+  vuln_network:
+    driver: bridge
