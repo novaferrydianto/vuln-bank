@@ -1,5 +1,5 @@
 flask==2.2.5
-werkzeug==3.0.6
+werkzeug==3.1.4
 pyjwt==2.4.0
 flask-swagger-ui==4.11.1
 flask-cors==6.0.0
