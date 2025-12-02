@@ -174,9 +174,11 @@ jobs:
       - name: ✅ Wait for app port (DAST-safe)
         run: |
           for i in {1..30}; do
-            if docker exec vuln-bank-dast curl -sf http://localhost:5000 >/dev/null 2>&1; then
-              echo "✅ App port open"
-              exit 0
+            if docker run --rm --network container:vuln-bank-dast \
+              curlimages/curl:8.6.0 \
+              -sf http://127.0.0.1:5000 >/dev/null; then
+            echo "✅ App port open"
+            exit 0
           fi
           echo "⏳ waiting for app port..."
           sleep 3
