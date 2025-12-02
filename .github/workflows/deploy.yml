@@ -447,7 +447,7 @@ jobs:
           ssh hosting@192.168.107.131 << 'EOF'
             set -euo pipefail
 
-            cd /opt/vuln-bank-app
+            cd /opt/vuln-bank-app/containers/app
 
             echo "⬇️ Pull new image"
             docker pull xbash81/vuln-bank:${{ github.sha }}

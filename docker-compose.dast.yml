@@ -2,13 +2,11 @@ services:
   vuln-bank-dast:
     image: vuln-bank:${IMAGE_TAG}
     container_name: vuln-bank-dast
-    restart: unless-stopped
     networks:
       - zap-net
     expose:
       - "5000"
-    environment:
-      FLASK_ENV: production
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:5000/ || exit 1"]
       interval: 5s
@@ -18,7 +16,7 @@ services:
     command: python app.py
 
   zap:
-    image: owasp/zap2docker-stable
+    image: ghcr.io/zaproxy/zaproxy:stable
     container_name: zap
     depends_on:
       vuln-bank-dast:
@@ -27,7 +25,7 @@ services:
       - zap-net
     volumes:
       - ./security-reports/dast:/zap/wrk
-    command: ["sleep", "infinity"]
+    command: ["zap.sh", "-daemon", "-host", "0.0.0.0", "-port", "8080"]
 
 networks:
   zap-net:
