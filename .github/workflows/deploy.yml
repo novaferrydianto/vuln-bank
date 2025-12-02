@@ -196,7 +196,7 @@ jobs:
         shell: bash
         run: |
           docker exec zap \
-            zap-baseline.py \
+            zap-full-scan.py \
             -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
@@ -204,6 +204,7 @@ jobs:
             -I \
             || true
 
+            
       - name: Verify ZAP outputs
         run: |
           ls -lah security-reports/dast
