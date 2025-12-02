@@ -1,0 +1,30 @@
+---
+- name: Ensure local directory for compliance reports (on control node)
+  delegate_to: localhost
+  run_once: true
+  file:
+    path: "./compliance-reports"
+    state: directory
+    mode: '0755'
+
+- name: Fetch OpenSCAP HTML report
+  fetch:
+    src: "/var/oscap-reports/{{ inventory_hostname }}-oscap-report.html"
+    dest: "./compliance-reports/{{ inventory_hostname }}/"
+    flat: no
+  ignore_errors: true
+
+- name: Fetch OpenSCAP ARF results
+  fetch:
+    src: "/var/oscap-reports/{{ inventory_hostname }}-oscap-results.arf.xml"
+    dest: "./compliance-reports/{{ inventory_hostname }}/"
+    flat: no
+  ignore_errors: true
+
+# Optional: hook for other tools (Trivy, Falco logs, etc.)
+- name: Fetch Falco log file (optional)
+  fetch:
+    src: "/var/log/falco.log"
+    dest: "./compliance-reports/{{ inventory_hostname }}/"
+    flat: no
+  ignore_errors: true

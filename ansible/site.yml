@@ -1,18 +1,53 @@
 ---
-- name: Base VM provisioning & hardening (ALL nodes)
-  hosts: bastion,app_node,db_node
+# ==========================================================
+# Bastion Node (Local)
+# ==========================================================
+- name: Bastion Hardening + Runner Setup
+  hosts: bastion
   become: true
-  roles:
-    - base_hardening
 
-- name: Install K3s server (Control Plane)
-  hosts: k3s_server
-  become: true
   roles:
-    - k3s_install
+    - base_common
+    - cis_hardening
+    - bastion_runner
 
-- name: Install K3s agent (Worker)
-  hosts: k3s_agent
+# ==========================================================
+# Hosting / App Node
+# ==========================================================
+- name: Hosting VM — Docker + App + Security Agents
+  hosts: hosting
   become: true
+
   roles:
-    - k3s_install
+    - base_common
+    - cis_hardening
+    - docker_engine
+    - app_hosting
+    - openscap_scan
+    - falco_install
+
+# ==========================================================
+# Database Node
+# ==========================================================
+- name: Database VM — Secure PostgreSQL + Security Agents
+  hosts: db
+  become: true
+
+  roles:
+    - base_common
+    - cis_hardening
+    - docker_engine
+    - postgres_host
+    - openscap_scan
+    - falco_install
+
+# ==========================================================
+# Compliance Report Export (Run from Bastion)
+# ==========================================================
+- name: Collect Compliance Reports to Bastion
+  hosts: hosting,db
+  gather_facts: false
+  become: true
+
+  roles:
+    - compliance_export

@@ -1,0 +1,19 @@
+---
+- name: Create app directory
+  file:
+    path: /opt/vuln-bank-app
+    state: directory
+    owner: hosting
+    group: hosting
+    mode: '0750'
+
+- name: Install docker-compose plugin
+  dnf:
+    name: docker-compose-plugin
+    state: present
+
+- name: Add hosting user to docker group
+  user:
+    name: hosting
+    groups: docker
+    append: true
