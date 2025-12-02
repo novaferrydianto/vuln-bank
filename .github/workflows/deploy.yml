@@ -195,8 +195,6 @@ jobs:
       - name: OWASP ZAP Baseline Scan
         shell: bash
         run: |
-          mkdir -p security-reports/dast
-
           docker exec zap \
             zap-baseline.py \
             -t http://vuln-bank-dast:5000 \
