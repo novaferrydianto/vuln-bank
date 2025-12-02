@@ -970,7 +970,8 @@ def create_admin(current_user):
         # Vulnerability: No password complexity requirements
         # Vulnerability: No account number uniqueness check
         execute_query(
-            f"INSERT INTO users (username, password, account_number, is_admin) VALUES ('{username}', '{password}', '{account_number}', true)",
+            "INSERT INTO users (username, password, account_number, is_admin) VALUES (%s, %s, %s, true)",
+            (username, password, account_number),
             fetch=False
         )
         
