@@ -184,11 +184,11 @@ def init_auth_routes(app):
         if balance >= amount:
             # Vulnerability: SQL injection possible in to_account
             c.execute(f"UPDATE users SET balance = balance - {amount} WHERE id={current_user['user_id']}")
-            c.execute(f"UPDATE users SET balance = balance + {amount} WHERE account_number='{to_account}'")
+            c.execute("UPDATE users SET balance = balance + ? WHERE account_number = ?", (amount, to_account))
             conn.commit()
             
             # Vulnerability: Information disclosure
-            c.execute(f"SELECT username, balance FROM users WHERE account_number='{to_account}'")
+            c.execute("SELECT username, balance FROM users WHERE account_number = ?", (to_account,))
             recipient = c.fetchone()
             
             conn.close()
