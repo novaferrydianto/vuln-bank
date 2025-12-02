@@ -1,43 +1,30 @@
-version: "3.8"
-
 services:
-  web:
-    build: .
+  vuln-bank-dast:
+    image: vuln-bank:${IMAGE_TAG}
+    container_name: vuln-bank-dast
+    networks:
+      - zap-net
     ports:
       - "5000:5000"
     environment:
-      DB_NAME: vulnerable_bank
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_HOST: db
-      DB_PORT: 5432
+      DB_HOST: 127.0.0.1
+      DB_PORT: 9999
+      DB_NAME: dummy
+      DB_USER: dummy
+      DB_PASSWORD: dummy
+    command: python app.py
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    container_name: zap
     depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./static/uploads:/app/static/uploads
+      - vuln-bank-dast
     networks:
-      - vuln_network
-
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: vulnerable_bank
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      - zap-net
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - vuln_network
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-volumes:
-  postgres_data:
+      - ./security-reports/dast:/zap/wrk
+    command: ["zap.sh", "-daemon", "-host", "0.0.0.0", "-port", "8080"]
 
 networks:
-  vuln_network:
+  zap-net:
     driver: bridge

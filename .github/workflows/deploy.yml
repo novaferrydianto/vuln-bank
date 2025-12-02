@@ -24,7 +24,7 @@ env:
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
-  DAST_TARGET_URL: http://vuln-bank:5000
+  DAST_TARGET_URL: http://vuln-bank-dast:5000
   PYTHON_BIN: python3.11
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
@@ -171,31 +171,28 @@ jobs:
           IMAGE_TAG=${{ github.sha }} docker compose \
             -f docker-compose.dast.yml up -d
 
-      - name: Wait for app to be ready (DAST)
+      - name: ✅ Wait for app port (DAST-safe)
         run: |
           for i in {1..30}; do
-            status=$(docker inspect -f '{{.State.Health.Status}}' vuln-bank-dast 2>/dev/null || echo starting)
-            echo "Health: $status"
-
-            [ "$status" = "healthy" ] && exit 0
-            sleep 5
+            if docker exec vuln-bank-dast curl -sf http://localhost:5000 >/dev/null 2>&1; then
+              echo "✅ App port open"
+              exit 0
+          fi
+          echo "⏳ waiting for app port..."
+          sleep 3
           done
 
-          echo "❌ App not healthy"
-          docker inspect vuln-bank-dast || true
+          echo "❌ App never exposed port"
+          docker ps -a
+          docker logs vuln-bank-dast || true
           exit 1
-
-      - name: ❗ DAST Failure Diagnostics (GET LOGS)
-        if: always()
-        run: |
-          docker logs vuln-bank-dast
 
       - name: OWASP ZAP Baseline
         run: |
           mkdir -p security-reports/dast
 
           docker exec zap zap-baseline.py \
-            -t http://vuln-bank:5000 \
+            -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
             -m 2 || true
@@ -206,7 +203,7 @@ jobs:
           ZAP_LOGIN_PASS: ${{ secrets.DAST_PASS }}
         run: |
           token=$(docker exec zap curl -s -X POST \
-            http://vuln-bank:5000/auth/login \
+            http://vuln-bank-dast:5000/auth/login \
             -H "Content-Type: application/json" \
             -d "{\"username\":\"$ZAP_LOGIN_USER\",\"password\":\"$ZAP_LOGIN_PASS\"}" \
             | jq -r '.token')
@@ -217,7 +214,7 @@ jobs:
       - name: OWASP ZAP Active Scan (Authenticated)
         run: |
           docker exec zap zap-full-scan.py \
-            -t http://vuln-bank:5000 \
+            -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-active.json \
             -r /zap/wrk/zap-active.html \
             -m 10 \
@@ -243,10 +240,13 @@ jobs:
           high=$(jq '[.site[].alerts[]? | select(.riskcode=="3")] | length' "$FILE")
           echo "ZAP HIGH findings: $high"
 
-          [ "$high" -gt 0 ] && exit 1 || true
+          if [ "$high" -gt 0 ]; then
+            echo "❌ ZAP HIGH findings detected"
+            exit 1
+          fi
 
       - name: Cleanup DAST container
-        if: always()
+        if: success()
         run: |
           docker compose -f docker-compose.dast.yml down -v
 
