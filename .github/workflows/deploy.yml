@@ -201,7 +201,6 @@ jobs:
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
             -m 2
-            -d \
             || true
 
       - name: Verify ZAP outputs
