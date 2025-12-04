@@ -65,9 +65,14 @@ jobs:
           source .venv/bin/activate
 
           pip install --upgrade pip
-          pip install pip-audit semgrep
+          pip install pip-audit
 
           command -v jq >/dev/null || sudo dnf install -y jq || sudo yum install -y jq
+
+      - name: Install Semgrep (official binary)
+        run: |
+          curl -sSL https://semgrep.dev/install.sh | sudo bash
+          semgrep --version
 
       - name: Export venv to PATH
         shell: bash
