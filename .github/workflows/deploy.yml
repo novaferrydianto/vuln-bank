@@ -21,12 +21,14 @@ concurrency:
 
 env:
   APP_NAME: vuln-bank
+  DOCKER_CONFIG: /opt/github-runner/.docker
   IMAGE_NAME: vuln-bank
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   REPORT_DIR: security-reports
   DAST_TARGET_URL: http://vuln-bank-dast:5000
   PYTHON_BIN: python3.11
+  PIP_NO_CACHE_DIR: "1"
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
 
@@ -58,9 +60,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          $PYTHON_BIN -m pip install --upgrade pip
-          $PYTHON_BIN -m pip install pip-audit semgrep
+
+          $PYTHON_BIN -m venv .venv
+          source .venv/bin/activate
+
+          pip install --upgrade pip
+          pip install pip-audit semgrep
+
           command -v jq >/dev/null || sudo dnf install -y jq || sudo yum install -y jq
+
+      - name: Export venv to PATH
+        shell: bash
+        run: |
+          echo "PATH=$(pwd)/.venv/bin:$PATH" >> $GITHUB_ENV
 
       - name: Install Trivy
         run: |
@@ -104,7 +116,8 @@ jobs:
       - name: pip-audit
         run: |
           if [ -f requirements.txt ]; then
-            pip-audit -r requirements.txt -f json \
+            .venv/bin/pip-audit -r requirements.txt \
+              -f json \
               -o ${REPORT_DIR}/sca/pip-audit.json || true
           fi
 
@@ -145,7 +158,7 @@ jobs:
       # ---------------- SAST (Semgrep) ----------------
       - name: Semgrep
         run: |
-          semgrep ci --config p/ci --json \
+          .venv/bin/semgrep ci --config p/ci --json \
             --output ${REPORT_DIR}/sast/semgrep.json || true
 
           jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
