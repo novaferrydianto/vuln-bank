@@ -73,10 +73,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p $HOME/bin
-          curl -sSL https://semgrep.dev/install.sh | bash -s -- --prefix=$HOME
+          TOOLS_DIR="$GITHUB_WORKSPACE/.tools"
+          mkdir -p "$TOOLS_DIR"
 
-          echo "$HOME/bin" >> $GITHUB_PATH
+          curl -sSL https://semgrep.dev/install.sh \
+          | bash -s -- --prefix="$TOOLS_DIR"
+
+          echo "$TOOLS_DIR/bin" >> "$GITHUB_PATH"
+
           semgrep --version
 
       - name: Export venv to PATH
@@ -168,7 +172,7 @@ jobs:
       # ---------------- SAST (Semgrep) ----------------
       - name: Semgrep
         run: |
-          .venv/bin/semgrep ci --config p/ci --json \
+          semgrep ci --config p/ci --json \
             --output ${REPORT_DIR}/sast/semgrep.json || true
 
           jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
