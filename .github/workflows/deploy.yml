@@ -71,7 +71,12 @@ jobs:
 
       - name: Install Semgrep (official binary)
         run: |
-          curl -sSL https://semgrep.dev/install.sh | sudo bash
+          set -euo pipefail
+
+          mkdir -p $HOME/bin
+          curl -sSL https://semgrep.dev/install.sh | bash -s -- --prefix=$HOME
+
+          echo "$HOME/bin" >> $GITHUB_PATH
           semgrep --version
 
       - name: Export venv to PATH
