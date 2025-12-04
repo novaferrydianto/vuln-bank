@@ -73,11 +73,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          SEMGREP_VERSION="1.144.0"
           TOOLS_DIR="$GITHUB_WORKSPACE/.tools/bin"
+          
           mkdir -p "$TOOLS_DIR"
 
           curl -fL \
-            https://github.com/returntocorp/semgrep/releases/latest/download/semgrep_linux_amd64 \
+            "https://github.com/returntocorp/semgrep/releases/download/v${SEMGREP_VERSION}/semgrep_linux_x86_64" \
             -o "$TOOLS_DIR/semgrep"
 
           chmod +x "$TOOLS_DIR/semgrep"
