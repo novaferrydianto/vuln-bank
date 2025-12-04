@@ -73,14 +73,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          SEMGREP_VERSION="1.144.0"
           TOOLS_DIR="$GITHUB_WORKSPACE/.tools"
           BIN_DIR="$TOOLS_DIR/bin"
-          
           mkdir -p "$BIN_DIR"
 
+          SEMGREP_VERSION=$(curl -s https://api.github.com/repos/returntocorp/semgrep/releases/latest | jq -r .tag_name)
+
+          echo "Installing Semgrep $SEMGREP_VERSION"
+
           curl -fL \
-            "https://github.com/returntocorp/semgrep/releases/download/v${SEMGREP_VERSION}/semgrep_linux_x86_64.tar.gz" \
+            "https://github.com/returntocorp/semgrep/releases/download/${SEMGREP_VERSION}/semgrep_linux_amd64.tar.gz" \
             -o /tmp/semgrep.tar.gz
 
           tar -xzf /tmp/semgrep.tar.gz -C /tmp
