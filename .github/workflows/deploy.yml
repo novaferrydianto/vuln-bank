@@ -616,13 +616,13 @@ jobs:
           path: security-reports
 
       - name: Upload Semgrep SARIF
-        if: exists('security-reports/sast/semgrep.sarif')
+        if: ${{ hashFiles('security-reports/sast/semgrep.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: security-reports/sast/semgrep.sarif
 
       - name: Upload Trivy Config SARIF
-        if: exists('security-reports/misconfig/trivy-config.sarif')
+        if: ${{ hashFiles('security-reports/misconfig/trivy-config.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: security-reports/misconfig/trivy-config.sarif
@@ -720,7 +720,7 @@ jobs:
     name: AI Remediation Suggestions (OpenAI)
     runs-on: self-hosted
     needs: security_scans
-    if: needs.security_scans.outputs.critical_found == 'true' && secrets.OPENAI_API_KEY != ''
+    if: ${{ needs.security_scans.outputs.critical_found == 'true' && secrets.OPENAI_API_KEY != '' }}
     permissions:
       contents: read
       issues: write
