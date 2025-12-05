@@ -201,10 +201,22 @@ jobs:
         shell: bash
         run: |
           BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN_DIR"
+
           if ! command -v conftest >/dev/null 2>&1; then
-            curl -sL https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz \
-              | tar -xz -C "$BIN_DIR"
+            echo "🔽 Downloading Conftest (ZIP)…"
+
+            VER=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest \
+              | jq -r .tag_name)
+
+            curl -sL \
+              https://github.com/open-policy-agent/conftest/releases/download/${VER}/conftest_${VER#v}_Linux_x86_64.zip \
+              -o conftest.zip
+
+            unzip -o conftest.zip -d "$BIN_DIR"
             chmod +x "$BIN_DIR/conftest"
+
+            echo "✅ Conftest installed"
           else
             echo "Conftest already installed, skipping."
           fi
