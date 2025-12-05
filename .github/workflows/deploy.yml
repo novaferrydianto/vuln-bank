@@ -61,8 +61,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p $HOME/bin
-          echo "$HOME/bin" >> $GITHUB_PATH
+          BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN_DIR"
+
+          export PATH="$BIN_DIR:$PATH"
+
+          echo "$BIN_DIR" >> $GITHUB_PATH
 
           $PYTHON_BIN -m venv .venv
           source .venv/bin/activate
@@ -71,19 +75,19 @@ jobs:
           pip install pip-audit==2.7.2
 
           if ! command -v jq >/dev/null; then
-            echo "Downloading jq"
-            curl -L -o $HOME/bin/jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
-            chmod +x $HOME/bin/jq
+            echo "Downloading jq..."
+            curl -L -o "$BIN_DIR/jq" \
+              https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+            chmod +x "$BIN_DIR/jq"
           fi
 
-      - name: Semgrep SAST (Docker)
+      - name: Semgrep SAST
         run: |
           mkdir -p ${REPORT_DIR}/sast
 
-          echo "Marking /src as git-safe directory"
           git config --global --add safe.directory /src
 
-          echo "🐳 Running Semgrep via Docker…"
+          echo "Running Semgrep via Docker…"
 
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src \
@@ -108,26 +112,34 @@ jobs:
 
       - name: Install Trivy
         run: |
+          BIN_DIR="$RUNNER_TEMP/bin"
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b $HOME/bin
+            | sh -s -- -b "$BIN_DIR"
 
       - name: Install Gitleaks
         run: |
           set -e
-          VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          BIN_DIR="$RUNNER_TEMP/bin"
+          VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | jq -r .tag_name)
+
           curl -sL https://github.com/gitleaks/gitleaks/releases/download/$VER/gitleaks_${VER#v}_linux_x64.tar.gz \
-          | tar -xz -C $HOME/bin gitleaks
+            | tar -xz -C "$BIN_DIR"
+
+          chmod +x "$BIN_DIR/gitleaks"
 
       - name: Install Snyk CLI
         run: |
+          BIN_DIR="$RUNNER_TEMP/bin"
           curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
-            -o $HOME/bin/snyk
-          chmod +x $HOME/bin/snyk
+            -o "$BIN_DIR/snyk"
+          chmod +x "$BIN_DIR/snyk"
 
       - name: Install Syft (SBOM)
         run: |
+          BIN_DIR="$RUNNER_TEMP/bin"
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b $HOME/bin
+            | sh -s -- -b "$BIN_DIR"
 
       - name: Init critical flag
         run: echo "false" > critical_flag.txt
@@ -205,6 +217,10 @@ jobs:
         run: |
           docker build -t vuln-bank:${{ github.sha }} .
 
+      - name: Prepare DAST directories
+        run: |
+          mkdir -p security-reports/dast
+
       - name: Start DAST environment (Docker Compose)
         run: |
           IMAGE_TAG=${{ github.sha }} docker compose \
@@ -231,8 +247,8 @@ jobs:
       - name: OWASP ZAP Baseline Scan
         shell: bash
         run: |
-          docker exec vuln-bank-dast-zap-1 \
-            zap-full-scan.py \
+          docker exec zap \
+            zap-baseline.py \
             -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-baseline.json \
             -r /zap/wrk/zap-baseline.html \
