@@ -77,16 +77,17 @@ jobs:
           BIN_DIR="$TOOLS_DIR/bin"
           mkdir -p "$BIN_DIR"
 
-          SEMGREP_VERSION="v1.145.0"
+          echo "🔍 Fetching latest Semgrep release…"
 
-          echo "🔍 Fetching Semgrep assets for $SEMGREP_VERSION…"
+          # Get latest release tag (example: v1.146.0)
+          SEMGREP_VERSION=$(curl -s https://api.github.com/repos/semgrep/semgrep/releases/latest | jq -r .tag_name)
+          echo "✅ Latest Semgrep version: $SEMGREP_VERSION"
 
-          # Get list of assets from GitHub Release API
-          ASSET_URL=$(
-            curl -s "https://api.github.com/repos/semgrep/semgrep/releases/tags/${SEMGREP_VERSION}" \
-            | jq -r '.assets[].browser_download_url' \
-            | grep "linux-amd64\.tar\.gz$"
-          )
+          # Find Linux AMD64 asset (.zip OR .tar.gz)
+          ASSET_URL=$(curl -s "https://api.github.com/repos/semgrep/semgrep/releases/tags/${SEMGREP_VERSION}" \
+          | jq -r '.assets[].browser_download_url' \
+          | grep -E "linux-amd64\.(zip|tar\.gz)$" \
+          | head -1)
           
           if [[ -z "$ASSET_URL" ]]; then
             echo "❌ No valid semgrep Linux release found for $SEMGREP_VERSION"
@@ -94,10 +95,19 @@ jobs:
           fi
 
           echo "📦 Downloading: $ASSET_URL"
+          curl -fL "$ASSET_URL" -o /tmp/semgrep.pkg
 
-          curl -fL "$ASSET_URL" -o /tmp/semgrep.tar.gz
-
-          tar -xzf /tmp/semgrep.tar.gz -C /tmp
+          # Extract depending on package type
+          if [[ "$ASSET_URL" == *.zip ]]; then
+            echo "📦 Extracting ZIP package"
+            unzip -o /tmp/semgrep.pkg -d /tmp
+          elif [[ "$ASSET_URL" == *.tar.gz ]]; then
+            echo "📦 Extracting TAR.GZ package"
+            tar -xzf /tmp/semgrep.pkg -C /tmp
+          else
+            echo "❌ Unsupported Semgrep package format"
+            exit 1
+          fi
 
           mv /tmp/semgrep "$BIN_DIR/semgrep"
           chmod +x "$BIN_DIR/semgrep"
