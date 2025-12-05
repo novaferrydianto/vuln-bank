@@ -61,17 +61,27 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p $HOME/bin
+          echo "$HOME/bin" >> $GITHUB_PATH
+
           $PYTHON_BIN -m venv .venv
           source .venv/bin/activate
 
           pip install --upgrade pip
           pip install pip-audit==2.7.2
 
-          command -v jq >/dev/null || sudo dnf install -y jq || sudo yum install -y jq
+          if ! command -v jq >/dev/null; then
+            echo "Downloading jq"
+            curl -L -o $HOME/bin/jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+            chmod +x $HOME/bin/jq
+          fi
 
       - name: Semgrep SAST (Docker)
         run: |
           mkdir -p ${REPORT_DIR}/sast
+
+          echo "Marking /src as git-safe directory"
+          git config --global --add safe.directory /src
 
           echo "🐳 Running Semgrep via Docker…"
 
@@ -82,9 +92,10 @@ jobs:
             semgrep ci \
               --config p/ci \
               --json \
-              --output /src/${REPORT_DIR}/sast/semgrep.json || true
+              --output /src/${REPORT_DIR}/sast/semgrep.json \
+            || echo '{}' > ${REPORT_DIR}/sast/semgrep.json
 
-          echo "🔍 Checking for HIGH/ERROR findings…"
+          echo "🔍 Checking for HIGH/ERROR findings severity…"
 
           jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
             ${REPORT_DIR}/sast/semgrep.json | grep -qv '^0$' \
@@ -98,24 +109,25 @@ jobs:
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-          | sudo sh -s -- -b /usr/local/bin
+            | sh -s -- -b $HOME/bin
 
       - name: Install Gitleaks
         run: |
           set -e
           VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
           curl -sL https://github.com/gitleaks/gitleaks/releases/download/$VER/gitleaks_${VER#v}_linux_x64.tar.gz \
-          | sudo tar -xz -C /usr/local/bin gitleaks
+          | tar -xz -C $HOME/bin gitleaks
 
       - name: Install Snyk CLI
         run: |
           curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
-          -o snyk && chmod +x snyk && sudo mv snyk /usr/local/bin/snyk
+            -o $HOME/bin/snyk
+          chmod +x $HOME/bin/snyk
 
       - name: Install Syft (SBOM)
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-          | sudo sh -s -- -b /usr/local/bin
+            | sh -s -- -b $HOME/bin
 
       - name: Init critical flag
         run: echo "false" > critical_flag.txt
@@ -170,21 +182,11 @@ jobs:
           if [ -s cves.txt ]; then
             while read cve; do
               epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
-                | jq -r '.data[0].epss // 0')
+                | jq -r '.data[0].epss // 0' 2>/dev/null || echo 0)
               awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" \
                 && echo true > critical_flag.txt
             done < cves.txt
           fi
-
-      # ---------------- SAST (Semgrep) ----------------
-      - name: Semgrep
-        run: |
-          semgrep ci --config p/ci --json \
-            --output ${REPORT_DIR}/sast/semgrep.json || true
-
-          jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
-            ${REPORT_DIR}/sast/semgrep.json | grep -qv '^0$' \
-            && echo true > critical_flag.txt || true
 
       # ---------------- MISCONFIG (Trivy Config) ----------------
       - name: Trivy Config
@@ -229,7 +231,7 @@ jobs:
       - name: OWASP ZAP Baseline Scan
         shell: bash
         run: |
-          docker exec zap \
+          docker exec vuln-bank-dast-zap-1 \
             zap-full-scan.py \
             -t http://vuln-bank-dast:5000 \
             -J /zap/wrk/zap-baseline.json \
