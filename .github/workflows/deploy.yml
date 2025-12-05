@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline (v7.2.3 UltraStable)
+name: Vuln Bank DevSecOps Pipeline (v7.3 UltraStable Auto-Detect)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *"
+    - cron: "0 18 * * *" # 01:00 WIB daily
   workflow_dispatch:
 
 permissions:
@@ -29,10 +29,11 @@ env:
   IMAGE_TAG: ${{ github.sha }}
   KYVERNO_ENABLED: "false"
 
-# =====================================================================
-# 0) Determine scan mode
-# =====================================================================
 jobs:
+
+# =====================================================================
+# 0) DETERMINE SCAN MODE
+# =====================================================================
   prep:
     runs-on: self-hosted
     outputs:
@@ -53,7 +54,6 @@ jobs:
     runs-on: self-hosted
     needs: prep
     continue-on-error: ${{ github.event_name == 'pull_request' }}
-
     outputs:
       critical_found: ${{ steps.flag.outputs.critical_found }}
       scan_mode: ${{ steps.scanmode.outputs.mode }}
@@ -61,14 +61,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Scan mode
+      # --------------------------------------------
+      # Set Scan Mode
+      # --------------------------------------------
       - id: scanmode
         run: |
           M="${{ needs.prep.outputs.scan_mode }}"
           echo "mode=$M" >> $GITHUB_OUTPUT
           echo "SCAN_MODE=$M" >> $GITHUB_ENV
 
-      # Cache
+      # --------------------------------------------
+      # Cache JIT Tools
+      # --------------------------------------------
       - uses: actions/cache@v4
         with:
           path: |
@@ -78,8 +82,10 @@ jobs:
             ~/.cache/snyk
           key: ${{ runner.os }}-security-v7-${{ hashFiles('requirements.txt') }}
 
-      # Install Python + jq
-      - name: Setup Python & jq
+      # =====================================================================
+      # INSTALL BASE TOOLS
+      # =====================================================================
+      - name: Setup Python + pip-audit + jq
         run: |
           $PYTHON_BIN -m venv .venv
           source .venv/bin/activate
@@ -94,77 +100,126 @@ jobs:
             chmod +x "$BIN/jq"
           fi
 
-      # Install Trivy
-      - name: Install Trivy
+      # =====================================================================
+      # INSTALL SECURITY TOOLS (AUTO-DETECT OS/ARCH v7.3)
+      # =====================================================================
+      - name: Install Tools (Auto-Detect OS & ARCH)
+        id: tools
         run: |
-          if ! command -v trivy >/dev/null; then
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-              | sh -s -- -b "$RUNNER_TEMP/bin"
-          fi
+          set -euo pipefail
 
-      # Install Gitleaks
-      - name: Install Gitleaks
-        run: |
-          if ! command -v gitleaks >/dev/null; then
-            VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-            curl -sL https://github.com/gitleaks/gitleaks/releases/download/${VER}/gitleaks_${VER#v}_linux_x64.tar.gz \
-              | tar -xz -C "$RUNNER_TEMP/bin"
-          fi
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m)
 
-      # Install Snyk
-      - name: Install Snyk
-        run: |
-          if ! command -v snyk >/dev/null; then
-            curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
-              -o "$RUNNER_TEMP/bin/snyk"
-            chmod +x "$RUNNER_TEMP/bin/snyk"
-          fi
+          case "$ARCH" in
+            x86_64) ARCH="amd64" ;;
+            aarch64) ARCH="arm64" ;;
+          esac
 
-      # Install Syft
-      - name: Install Syft
-        run: |
-          if ! command -v syft >/dev/null; then
-            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-              | sh -s -- -b "$RUNNER_TEMP/bin"
-          fi
+          echo "Detected OS=$OS ARCH=$ARCH"
 
-      # UltraStable Conftest installation
-      - name: Install Conftest (v7.2.3 Fixed)
-        run: |
+          BIN="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+          safe_download() {
+            url="$1"
+            outfile="$2"
+            echo "⬇️ Downloading: $url"
+            for i in {1..5}; do
+              curl -sSL "$url" -o "$outfile" && break
+              echo "Retry $i..."
+              sleep 2
+            done
+            if [ ! -s "$outfile" ]; then
+              echo "❌ Download failed: $url"
+              exit 1
+            fi
+          }
+
+          # -------------------------
+          # Conftest Auto-Detect
+          # -------------------------
           if ! command -v conftest >/dev/null; then
+            echo "Installing Conftest..."
+
             VER=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
-            FILE="conftest_${VER#v}_linux_amd64.tar.gz"
-            URL="https://github.com/open-policy-agent/conftest/releases/download/${VER}/${FILE}"
 
-            echo "Downloading Conftest: $URL"
-            curl -sSL -o conftest.tar.gz "$URL"
+            ASSET=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest \
+                    | jq -r ".assets[] | select(.name | test(\"${OS}_${ARCH}\")) | .browser_download_url" \
+                    | head -n1)
 
-            # Validate gzip
+            safe_download "$ASSET" conftest.tar.gz
+
             if ! file conftest.tar.gz | grep -q gzip; then
-              echo "❌ Conftest download invalid (not gzip)"
+              echo "❌ Invalid Conftest file (not gzip)"
               exit 1
             fi
 
-            tar -xzf conftest.tar.gz -C "$RUNNER_TEMP/bin"
-            chmod +x "$RUNNER_TEMP/bin/conftest"
+            tar -xzf conftest.tar.gz -C "$BIN"
+            chmod +x "$BIN/conftest"
           fi
 
-      # Prepare report dirs
+          # -------------------------
+          # Trivy
+          # -------------------------
+          if ! command -v trivy >/dev/null; then
+            safe_download https://github.com/aquasecurity/trivy/releases/latest/download/trivy_${OS}_${ARCH}.tar.gz trivy.tar.gz
+            tar -xzf trivy.tar.gz -C "$BIN" trivy
+            chmod +x "$BIN/trivy"
+          fi
+
+          # -------------------------
+          # Syft
+          # -------------------------
+          if ! command -v syft >/dev/null; then
+            safe_download https://github.com/anchore/syft/releases/latest/download/syft_${OS}_${ARCH}.tar.gz syft.tar.gz
+            tar -xzf syft.tar.gz -C "$BIN" syft
+            chmod +x "$BIN/syft"
+          fi
+
+          # -------------------------
+          # Gitleaks
+          # -------------------------
+          if ! command -v gitleaks >/dev/null; then
+            VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+            safe_download https://github.com/gitleaks/gitleaks/releases/download/${VER}/gitleaks_${VER#v}_${OS}_${ARCH}.tar.gz gitleaks.tar.gz
+            tar -xzf gitleaks.tar.gz -C "$BIN"
+            chmod +x "$BIN/gitleaks"
+          fi
+
+          # -------------------------
+          # Snyk
+          # -------------------------
+          if ! command -v snyk >/dev/null; then
+            safe_download https://github.com/snyk/cli/releases/latest/download/snyk-${OS}-${ARCH} snyk
+            mv snyk "$BIN/snyk"
+            chmod +x "$BIN/snyk"
+          fi
+
+      # =====================================================================
+      # PREPARE REPORT DIRS
+      # =====================================================================
       - run: |
           mkdir -p ${REPORT_DIR}/{secrets,sca,sast,misconfig,dast,sbom}
           printf "false" > critical_flag.txt
 
-      # ===============================================
-      # SAST — SEMGREP
-      # ===============================================
-      - name: Semgrep JSON
+      # =====================================================================
+      # SAST — SEMGREP ULTRASTABLE
+      # =====================================================================
+      - name: Semgrep JSON (UltraStable)
         run: |
           TEMP=$(mktemp -d)
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src \
             -v "$TEMP":/out \
             returntocorp/semgrep:latest \
-              semgrep ci --config p/ci --json --output /out/semgrep.json || true
+            semgrep ci \
+              --config p/ci \
+              --json \
+              --no-error \
+              --force-run \
+              --output /out/semgrep.json || true
 
           [[ ! -f "$TEMP/semgrep.json" ]] && echo "{}" > "$TEMP/semgrep.json"
           cp "$TEMP/semgrep.json" "${REPORT_DIR}/sast/semgrep.json"
@@ -179,12 +234,12 @@ jobs:
             -v "$GITHUB_WORKSPACE":/src \
             -v "$GITHUB_WORKSPACE/${REPORT_DIR}/sast":/out \
             returntocorp/semgrep:latest \
-              semgrep ci --config p/ci --sarif --output /out/semgrep.sarif || true
+            semgrep ci --config p/ci --sarif --output /out/semgrep.sarif || true
 
-      # ===============================================
-      # Secrets — Gitleaks
-      # ===============================================
-      - name: Gitleaks
+      # =====================================================================
+      # SECRET SCAN — GITLEAKS
+      # =====================================================================
+      - name: Secret Scan (Gitleaks)
         run: |
           gitleaks detect --source . \
             --report-format json \
@@ -193,10 +248,10 @@ jobs:
           jq -e 'length>0' "${REPORT_DIR}/secrets/gitleaks.json" \
             && printf "true" > critical_flag.txt || true
 
-      # ===============================================
-      # SCA — pip-audit, Trivy, Snyk
-      # ===============================================
-      - name: pip-audit
+      # =====================================================================
+      # SCA — pip-audit, Trivy FS, Snyk
+      # =====================================================================
+      - name: pip-audit (FULL only)
         if: env.SCAN_MODE == 'full'
         run: |
           [ -f requirements.txt ] && .venv/bin/pip-audit -r requirements.txt \
@@ -221,26 +276,25 @@ jobs:
           grep -qi '"critical"\|"high"' "${REPORT_DIR}/sca/snyk.json" \
             && printf "true" > critical_flag.txt || true
 
-      # ===============================================
-      # EPSS Threat Intelligence
-      # ===============================================
-      - name: EPSS
+      # =====================================================================
+      # EPSS FILTERING
+      # =====================================================================
+      - name: EPSS Filtering
         run: |
           jq -r '.. | .VulnerabilityID? // empty' "${REPORT_DIR}/sca/trivy-fs.json" > cves.txt || true
           jq -r '.. | .identifiers?.CVE[]? // empty' "${REPORT_DIR}/sca/snyk.json" >> cves.txt || true
-
           sort -u cves.txt -o cves.txt
 
           if [ -s cves.txt ]; then
             cat cves.txt | xargs -I {} -P 12 sh -c '
-              epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$1" | jq -r .data[0].epss)
+              epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$1" | jq -r ".data[0].epss // 0")
               awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}"
             ' _ {} && printf "true" > critical_flag.txt || true
           fi
 
-      # ===============================================
-      # Misconfig — Trivy Config
-      # ===============================================
+      # =====================================================================
+      # TRIVY CONFIG (MISCONFIG)
+      # =====================================================================
       - name: Trivy Config JSON
         run: |
           trivy config --severity HIGH,CRITICAL \
@@ -257,24 +311,28 @@ jobs:
             --format sarif \
             --output "${REPORT_DIR}/misconfig/trivy-config.sarif" .
 
-      # ===============================================
-      # Policy-as-Code — Conftest
-      # ===============================================
-      - name: Conftest
+      # =====================================================================
+      # POLICY-AS-CODE — OPA CONTFEST
+      # =====================================================================
+      - name: Conftest Policy Check
         run: |
           FAILED=0
-          [ -f Dockerfile ] && conftest test Dockerfile --policy "$POLICY_DIR" || FAILED=1
-          ls docker-compose*.yml >/dev/null 2>&1 && conftest test docker-compose*.yml --policy "$POLICY_DIR" || true
-          [ -d k8s ] && conftest test k8s --policy "$POLICY_DIR" || true
+          for target in Dockerfile k8s docker-compose*.yml; do
+            if [ -e "$target" ]; then
+              conftest test "$target" --policy "$POLICY_DIR" || FAILED=1
+            fi
+          done
+          [[ $FAILED -eq 1 ]] && printf "true" > critical_flag.txt
 
-          [[ $FAILED -ne 0 ]] && printf "true" > critical_flag.txt
-
-      # ===============================================
-      # SBOM
-      # ===============================================
+      # =====================================================================
+      # GENERATE SBOM
+      # =====================================================================
       - name: SBOM
         run: syft . -o json > "${REPORT_DIR}/sbom/sbom.json"
 
+      # =====================================================================
+      # UPLOAD REPORT ARTIFACT
+      # =====================================================================
       - uses: actions/upload-artifact@v5
         with:
           name: security-reports
@@ -284,23 +342,19 @@ jobs:
         run: echo "critical_found=$(cat critical_flag.txt)" >> $GITHUB_OUTPUT
 
 # =====================================================================
-# 2) UPLOAD SARIF (with Artifact FIX)
+# 2) UPLOAD SARIF
 # =====================================================================
   upload_sarif:
     runs-on: self-hosted
     needs: security_scans
     if: always()
     steps:
-      - name: Cleanup old artifact
-        run: |
-          echo "Cleaning security-reports folder..."
-          rm -rf security-reports || true
-
-      - name: Download security-reports artifact (UltraStable)
-        uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v5
         with:
           name: security-reports
           path: security-reports
+          merge-multiple: false
+          retries: 8
 
       - name: Upload Semgrep SARIF
         if: hashFiles('security-reports/sast/semgrep.sarif') != ''
@@ -321,16 +375,18 @@ jobs:
     runs-on: self-hosted
     needs: security_scans
     if: needs.security_scans.outputs.critical_found == 'true' && github.ref == 'refs/heads/main'
+    permissions:
+      issues: write
 
     steps:
       - run: |
           cat <<EOF > issue.md
-          🚨 High/Critical Vulnerabilities Detected
+          🚨 High/Critical Security Vulnerabilities Detected
 
           Mode: ${{ needs.security_scans.outputs.scan_mode }}
           Commit: ${{ github.sha }}
 
-          Please check security-reports artifact.
+          Please review artifact: security-reports
           EOF
 
       - uses: actions/github-script@v8
@@ -343,8 +399,8 @@ jobs:
               repo: context.repo.repo,
               title: "🚨 Security Findings Detected",
               body,
-              labels: ["security","critical"]
-            });
+              labels: ["security", "critical"]
+            })
 
 # =====================================================================
 # 4) AI REMEDIATION
@@ -353,7 +409,6 @@ jobs:
     runs-on: self-hosted
     needs: security_scans
     if: needs.security_scans.outputs.critical_found == 'true'
-
     env:
       HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
 
@@ -362,18 +417,15 @@ jobs:
         if: env.HAS_OPENAI == 'false'
         run: echo "No OPENAI_API_KEY, skipping AI remediation."
 
-      - name: Cleanup old artifact
-        run: rm -rf security-reports || true
-
-      - name: Download reports
-        uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v5
         with:
           name: security-reports
           path: security-reports
 
       - run: |
           echo "## Security Summary" > summary.md
-          jq 'length' security-reports/secrets/gitleaks.json >> summary.md || echo 0
+          echo "### Gitleaks" >> summary.md
+          jq 'length' security-reports/secrets/gitleaks.json >> summary.md || echo 0 >> summary.md
 
       - name: Call OpenAI
         if: env.HAS_OPENAI == 'true'
@@ -385,12 +437,13 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -d "{
-              \"model\": \"gpt-4.1-mini\",
-              \"messages\": [
-                {\"role\": \"system\", \"content\": \"You are a senior DevSecOps engineer.\"},
-                {\"role\": \"user\", \"content\": $BODY}
-              ]
-            }" | jq -r '.choices[0].message.content' > remediation.md
+                  \"model\": \"gpt-4.1-mini\",
+                  \"messages\": [
+                    {\"role\": \"system\", \"content\": \"You are a senior DevSecOps engineer. Provide remediation steps.\"},
+                    {\"role\": \"user\", \"content\": $BODY}
+                  ]
+                }" \
+            | jq -r '.choices[0].message.content' > remediation.md
 
       - uses: actions/github-script@v8
         if: env.HAS_OPENAI == 'true'
@@ -404,7 +457,7 @@ jobs:
               title: "🤖 AI Remediation Suggestions",
               body,
               labels: ["security","ai"]
-            });
+            })
 
 # =====================================================================
 # 5) SECURITY GATE
@@ -416,7 +469,7 @@ jobs:
     steps:
       - run: |
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
-            echo "❌ SECURITY GATE BLOCKED DEPLOY"
+            echo "❌ Security Gate Failed"
             exit 1
           else
             echo "✅ Security Gate Passed"
@@ -429,31 +482,32 @@ jobs:
     runs-on: self-hosted
     needs: security_gate
     if: needs.security_gate.result == 'success'
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Docker Login
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
-          -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+              -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - run: docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
       - run: docker push "$IMAGE_REPO:$IMAGE_TAG"
 
       - uses: sigstore/cosign-installer@v3
+
       - env:
           COSIGN_EXPERIMENTAL: "true"
-        run: cosign sign --yes "$IMAGE_REPO:$IMAGE_TAG"
+        run: |
+          cosign sign --yes "$IMAGE_REPO:$IMAGE_TAG"
 
 # =====================================================================
-# 7) DEPLOY
+# 7) DEPLOY APP
 # =====================================================================
   deploy:
     runs-on: self-hosted
     needs: build_and_push
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Deploy App
+      - name: Deploy to VM
         env:
           REMOTE_HOST: hosting@192.168.107.135
         run: |
@@ -472,13 +526,12 @@ jobs:
     needs: security_scans
     if: always()
     steps:
-      - name: Slack Notification
-        run: |
+      - run: |
           [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ] && exit 0
 
           STATUS="✔ Pipeline success"
           [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ] && STATUS="🚨 Security issues detected"
 
-          jq -n --arg t "$STATUS" '{text:$t}' \
+          jq -n --arg text "$STATUS" '{text:$text}' \
             | curl -X POST -H "Content-type: application/json" \
               --data @- "${{ secrets.SLACK_WEBHOOK_URL }}"
