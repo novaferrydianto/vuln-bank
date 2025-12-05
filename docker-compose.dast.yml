@@ -2,6 +2,7 @@ version: "3.8"
 
 services:
   db:
+    container_name: vuln-bank-db-dast
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: vulnerable_bank
@@ -11,34 +12,37 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
       timeout: 2s
-      retries: 15
+      retries: 20
     networks: [zap-net]
 
-  app:
+  vuln-bank-dast:
+    container_name: vuln-bank-dast
     image: vuln-bank:${IMAGE_TAG}
     command: python app.py
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "5000:5000"
     environment:
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: vulnerable_bank
       DB_USER: postgres
       DB_PASSWORD: postgres
+    ports:
+      - "5000:5000"
     networks: [zap-net]
 
   zap:
+    container_name: zap
     image: ghcr.io/zaproxy/zaproxy:stable
-    depends_on: [app]
+    depends_on:
+      - vuln-bank-dast
     networks: [zap-net]
     volumes:
       - ./security-reports/dast:/zap/wrk
     command: >
       zap-baseline.py
-      -t http://app:5000
+      -t http://vuln-bank-dast:5000
       -J /zap/wrk/zap-baseline.json
       -r /zap/wrk/zap-baseline.html
       -m 2

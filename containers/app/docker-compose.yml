@@ -1,6 +1,6 @@
 services:
   vuln-bank:
-    image: IMAGE_PLACEHOLDER
+    image: ${IMAGE_WITH_TAG}
     container_name: vuln-bank-app
     restart: unless-stopped
 
@@ -11,7 +11,7 @@ services:
       DB_NAME: vulnerable_bank
       DB_USER: postgres
       DB_PASSWORD: ${DB_PASSWORD}
-      DB_HOST: 192.168.107.130
+      DB_HOST: 192.168.107.129
       DB_PORT: 5432
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
 
