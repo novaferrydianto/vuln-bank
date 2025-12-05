@@ -79,11 +79,23 @@ jobs:
 
           SEMGREP_VERSION="v1.145.0"
 
-          echo "Installing Semgrep $SEMGREP_VERSION"
+          echo "🔍 Fetching Semgrep assets for $SEMGREP_VERSION…"
 
-          curl -fL \
-            "https://github.com/semgrep/semgrep/releases/download/${SEMGREP_VERSION}/semgrep-linux-amd64.tar.gz" \
-            -o /tmp/semgrep.tar.gz
+          # Get list of assets from GitHub Release API
+          ASSET_URL=$(
+            curl -s "https://api.github.com/repos/semgrep/semgrep/releases/tags/${SEMGREP_VERSION}" \
+            | jq -r '.assets[].browser_download_url' \
+            | grep "linux-amd64\.tar\.gz$"
+          )
+          
+          if [[ -z "$ASSET_URL" ]]; then
+            echo "❌ No valid semgrep Linux release found for $SEMGREP_VERSION"
+            exit 1
+          fi
+
+          echo "📦 Downloading: $ASSET_URL"
+
+          curl -fL "$ASSET_URL" -o /tmp/semgrep.tar.gz
 
           tar -xzf /tmp/semgrep.tar.gz -C /tmp
 
@@ -92,6 +104,7 @@ jobs:
 
           echo "$BIN_DIR" >> "$GITHUB_PATH"
 
+          echo "✅ Semgrep installed successfully:"
           semgrep --version
 
       - name: Export venv to PATH
