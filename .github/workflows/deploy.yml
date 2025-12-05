@@ -29,16 +29,16 @@ env:
   REPORT_DIR: security-reports
   DAST_TARGET_URL: http://vuln-bank-dast:5000
   PYTHON_BIN: python3.11
-  PIP_NO_CACHE_DIR: "1"
   DOCKER_BUILDKIT: 1
   EPSS_THRESHOLD: "0.5"
 
 jobs:
   # ==========================================================
   # 1) SECURITY SCANS (SECRETS, SCA, SAST, MISCONFIG, DAST, SBOM)
+  #    v2: optimized with caching + scan mode (light/full)
   # ==========================================================
   security_scans:
-    name: DevSecOps Continuous Assurance
+    name: DevSecOps Continuous Assurance (v2)
     runs-on: self-hosted
     continue-on-error: ${{ github.event_name == 'pull_request' }}
 
@@ -57,6 +57,34 @@ jobs:
           $PYTHON_BIN --version
           docker --version || true
 
+      # ---------------- Scan mode: light (PR) vs full (main/schedule) ----------------
+      - name: Set scan mode (light vs full)
+        id: scanmode
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            echo "SCAN_MODE=full" >> "$GITHUB_ENV"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "Scan mode: FULL (main/schedule)"
+          else
+            echo "SCAN_MODE=light" >> "$GITHUB_ENV"
+            echo "mode=light" >> "$GITHUB_OUTPUT"
+            echo "Scan mode: LIGHT (PR / others)"
+          fi
+
+      # ---------------- Caching untuk tooling & deps ----------------
+      - name: Cache security tooling & deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            ~/.cache/trivy
+            ~/.cache/pip
+            ~/.cache/snyk
+          key: ${{ runner.os }}-security-v2-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-security-v2-
+
       - name: Install base tools
         shell: bash
         run: |
@@ -65,15 +93,21 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/bin"
           mkdir -p "$BIN_DIR"
 
-          # Pasang ke PATH untuk step berikutnya
+          # Masukkan BIN_DIR ke PATH untuk step berikutnya
           export PATH="$BIN_DIR:$PATH"
           echo "$BIN_DIR" >> "$GITHUB_PATH"
 
-          # Virtualenv hanya untuk pip-audit
-          $PYTHON_BIN -m venv .venv
+          # Virtualenv untuk pip-audit & tooling Python
+          if [ ! -d ".venv" ]; then
+            echo "Creating virtualenv..."
+            $PYTHON_BIN -m venv .venv
+          fi
+
           source .venv/bin/activate
 
           pip install --upgrade pip
+
+          # pip-audit hanya akan dipakai di mode FULL (step terpisah)
           pip install pip-audit==2.7.2
 
           if ! command -v jq >/dev/null 2>&1; then
@@ -83,6 +117,11 @@ jobs:
             chmod +x "$BIN_DIR/jq"
           fi
 
+      - name: Export venv to PATH
+        shell: bash
+        run: |
+          echo "PATH=$(pwd)/.venv/bin:$PATH" >> "$GITHUB_ENV"
+
       - name: Init critical flag
         shell: bash
         run: echo "false" > critical_flag.txt
@@ -91,20 +130,70 @@ jobs:
         shell: bash
         run: mkdir -p "${REPORT_DIR}"/{secrets,sca,sast,misconfig,dast,sbom}
 
+      # ---------------- Install security tools (Trivy, Gitleaks, Snyk, Syft) ----------------
+      - name: Install Trivy
+        shell: bash
+        run: |
+          BIN_DIR="$RUNNER_TEMP/bin"
+          if ! command -v trivy >/dev/null 2>&1; then
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+              | sh -s -- -b "$BIN_DIR"
+          else
+            echo "Trivy already installed, skipping."
+          fi
+
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -e
+          BIN_DIR="$RUNNER_TEMP/bin"
+          if ! command -v gitleaks >/dev/null 2>&1; then
+            VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+              | jq -r .tag_name)
+
+            curl -sL https://github.com/gitleaks/gitleaks/releases/download/"$VER"/gitleaks_${VER#v}_linux_x64.tar.gz \
+              | tar -xz -C "$BIN_DIR"
+
+            chmod +x "$BIN_DIR/gitleaks"
+          else
+            echo "Gitleaks already installed, skipping."
+          fi
+
+      - name: Install Snyk CLI
+        shell: bash
+        run: |
+          BIN_DIR="$RUNNER_TEMP/bin"
+          if ! command -v snyk >/dev/null 2>&1; then
+            curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
+              -o "$BIN_DIR/snyk"
+            chmod +x "$BIN_DIR/snyk"
+          else
+            echo "Snyk already installed, skipping."
+          fi
+
+      - name: Install Syft (SBOM)
+        shell: bash
+        run: |
+          BIN_DIR="$RUNNER_TEMP/bin"
+          if ! command -v syft >/dev/null 2>&1; then
+            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+              | sh -s -- -b "$BIN_DIR"
+          else
+            echo "Syft already installed, skipping."
+          fi
+
       # ---------------- SAST (Semgrep via Docker, temp dir) ----------------
       - name: Semgrep SAST
         shell: bash
         run: |
           set -e
 
-          # Temp directory for Semgrep output (safe for container writes)
           TEMP_DIR="$(mktemp -d /tmp/semgrep-XXXXXX)"
 
-          # Prepare workspace report directory
           mkdir -p "${REPORT_DIR}/sast"
           chmod -R 777 "${REPORT_DIR}/sast"
 
-          echo "Running Semgrep via Docker (safe mode)…"
+          echo "Running Semgrep via Docker (scan mode: ${SCAN_MODE})…"
 
           if ! docker run --rm \
             -v "$GITHUB_WORKSPACE":/src:ro \
@@ -118,12 +207,10 @@ jobs:
             echo "Semgrep exited non-zero (likely blocking findings). Continuing pipeline."
           fi
 
-          # Pastikan file selalu ada
           if [ ! -f "$TEMP_DIR/semgrep.json" ]; then
             echo '{}' > "$TEMP_DIR/semgrep.json"
           fi
 
-          echo "Copy Semgrep result back to workspace…"
           cp "$TEMP_DIR/semgrep.json" "${REPORT_DIR}/sast/semgrep.json"
 
           echo "Evaluating HIGH/ERROR findings…"
@@ -132,46 +219,6 @@ jobs:
             && echo true > critical_flag.txt || true
 
           rm -rf "$TEMP_DIR" || true
-
-      - name: Export venv to PATH
-        shell: bash
-        run: |
-          echo "PATH=$(pwd)/.venv/bin:$PATH" >> "$GITHUB_ENV"
-
-      - name: Install Trivy
-        shell: bash
-        run: |
-          BIN_DIR="$RUNNER_TEMP/bin"
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b "$BIN_DIR"
-
-      - name: Install Gitleaks
-        shell: bash
-        run: |
-          set -e
-          BIN_DIR="$RUNNER_TEMP/bin"
-          VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-            | jq -r .tag_name)
-
-          curl -sL https://github.com/gitleaks/gitleaks/releases/download/"$VER"/gitleaks_${VER#v}_linux_x64.tar.gz \
-            | tar -xz -C "$BIN_DIR"
-
-          chmod +x "$BIN_DIR/gitleaks"
-
-      - name: Install Snyk CLI
-        shell: bash
-        run: |
-          BIN_DIR="$RUNNER_TEMP/bin"
-          curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
-            -o "$BIN_DIR/snyk"
-          chmod +x "$BIN_DIR/snyk"
-
-      - name: Install Syft (SBOM)
-        shell: bash
-        run: |
-          BIN_DIR="$RUNNER_TEMP/bin"
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b "$BIN_DIR"
 
       # ---------------- SECRET SCANNING (Gitleaks) ----------------
       - name: Gitleaks
@@ -184,17 +231,20 @@ jobs:
           jq -e 'length>0' "${REPORT_DIR}/secrets/gitleaks.json" \
             && echo true > critical_flag.txt || true
 
-      # ---------------- SCA (pip-audit + Trivy FS + Snyk) ----------------
-      - name: pip-audit
+      # ---------------- SCA (pip-audit only FULL, Trivy FS, Snyk) ----------------
+      - name: pip-audit (FULL scan only)
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           if [ -f requirements.txt ]; then
             .venv/bin/pip-audit -r requirements.txt \
               -f json \
               -o "${REPORT_DIR}/sca/pip-audit.json" || true
+          else
+            echo "requirements.txt not found, skipping pip-audit."
           fi
 
-      - name: Trivy FS
+      - name: Trivy FS (SCA)
         shell: bash
         run: |
           trivy fs --scanners vuln \
@@ -207,7 +257,7 @@ jobs:
             "${REPORT_DIR}/sca/trivy-fs.json" | grep -qv '^0$' \
             && echo true > critical_flag.txt || true
 
-      - name: Snyk
+      - name: Snyk (SCA)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         shell: bash
@@ -229,10 +279,12 @@ jobs:
               awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" \
                 && echo true > critical_flag.txt || true
             done < cves.txt
+          else
+            echo "No CVE IDs from Snyk for EPSS evaluation."
           fi
 
       # ---------------- MISCONFIG (Trivy Config) ----------------
-      - name: Trivy Config
+      - name: Trivy Config (IaC / Docker / Compose)
         shell: bash
         run: |
           trivy config --severity HIGH,CRITICAL \
@@ -244,25 +296,29 @@ jobs:
             "${REPORT_DIR}/misconfig/trivy-config.json" | grep -qv '^0$' \
             && echo true > critical_flag.txt || true
 
-      # ================= DAST (ZAP) =================
+      # ================= DAST (ZAP) – FULL MODE ONLY (main/schedule) =================
       - name: Build local image for DAST
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           docker build -t vuln-bank:${{ github.sha }} .
 
       - name: Prepare DAST directories
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           mkdir -p "${REPORT_DIR}/dast"
           chmod -R 777 "${REPORT_DIR}/dast"
 
       - name: Start DAST environment (Docker Compose)
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           IMAGE_TAG=${{ github.sha }} docker compose \
             -f docker-compose.dast.yml up -d
 
       - name: ✅ Wait for app port (DAST-safe)
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           for i in {1..30}; do
@@ -282,6 +338,7 @@ jobs:
           exit 1
 
       - name: OWASP ZAP Baseline Scan
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           docker exec zap \
@@ -294,6 +351,7 @@ jobs:
             || true
 
       - name: Verify ZAP outputs (tolerant)
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           ls -lah "${REPORT_DIR}/dast" || true
@@ -306,6 +364,7 @@ jobs:
           fi
 
       - name: Convert ZAP Report to SARIF
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           cat > zap-to-sarif.py << 'EOF'
@@ -366,6 +425,7 @@ jobs:
           python3 zap-to-sarif.py
 
       - name: Validate ZAP SARIF
+        if: env.SCAN_MODE == 'full'
         shell: bash
         run: |
           test -f security-reports/dast/zap.sarif \
@@ -377,12 +437,13 @@ jobs:
           echo "✅ SARIF valid"
 
       - name: Upload ZAP SARIF to GitHub Security
+        if: env.SCAN_MODE == 'full'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: security-reports/dast/zap.sarif
 
-      - name: ZAP Security Gate (HIGH only)
-        if: github.ref == 'refs/heads/main'
+      - name: ZAP Security Gate (HIGH only, main only)
+        if: env.SCAN_MODE == 'full' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           FILE="security-reports/dast/zap-baseline.json"
@@ -401,7 +462,7 @@ jobs:
           fi
 
       - name: Cleanup DAST container
-        if: always()
+        if: always() && env.SCAN_MODE == 'full'
         shell: bash
         run: |
           docker compose -f docker-compose.dast.yml down -v || true
@@ -454,7 +515,7 @@ jobs:
           - ✅ Snyk / Trivy / pip-audit (SCA + EPSS)
           - ✅ Semgrep (SAST)
           - ✅ Trivy Config (IaC Misconfiguration)
-          - ✅ OWASP ZAP (DAST – Baseline / Active)
+          - ✅ OWASP ZAP (DAST – Baseline / Active, FULL mode only)
 
           ### 📁 Full Reports
           Download here:
@@ -472,7 +533,7 @@ jobs:
           - Re-run pipeline
 
           ---
-          _This issue was automatically created by the Vuln Bank DevSecOps Pipeline._
+          _This issue was automatically created by the Vuln Bank DevSecOps Pipeline v2._
           EOF
 
       - name: Create GitHub Issue
@@ -531,7 +592,7 @@ jobs:
   build_and_push:
     runs-on: self-hosted
     needs: security_gate
-    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.critical_found == 'false'
+    if: github.ref == 'refs/heads/main' && needs.security_gate.result == 'success' && needs.security_scans.outputs.critical_found == 'false'
 
     steps:
       - uses: actions/checkout@v4
