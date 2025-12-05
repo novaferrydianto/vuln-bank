@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline
+name: Vuln Bank DevSecOps Pipeline v3 – Optimized
 
 on:
   push:
@@ -34,16 +34,16 @@ env:
 
 jobs:
   # ==========================================================
-  # 1) SECURITY SCANS (SECRETS, SCA, SAST, MISCONFIG, DAST, SBOM)
-  #    v2: optimized with caching + scan mode (light/full)
+  # 1) SECURITY SCANS (LIGHT vs FULL) + CACHING
   # ==========================================================
   security_scans:
-    name: DevSecOps Continuous Assurance (v2)
+    name: DevSecOps Continuous Assurance (v3)
     runs-on: self-hosted
     continue-on-error: ${{ github.event_name == 'pull_request' }}
 
     outputs:
       critical_found: ${{ steps.setflag.outputs.critical_found }}
+      scan_mode: ${{ steps.scanmode.outputs.mode }}
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
           $PYTHON_BIN --version
           docker --version || true
 
-      # ---------------- Scan mode: light (PR) vs full (main/schedule) ----------------
+      # -------- Scan mode: light (PR) vs full (main/schedule) ----------
       - name: Set scan mode (light vs full)
         id: scanmode
         shell: bash
@@ -72,7 +72,7 @@ jobs:
             echo "Scan mode: LIGHT (PR / others)"
           fi
 
-      # ---------------- Caching untuk tooling & deps ----------------
+      # ---------------- Caching tools & deps ----------------
       - name: Cache security tooling & deps
         uses: actions/cache@v4
         with:
@@ -81,33 +81,28 @@ jobs:
             ~/.cache/trivy
             ~/.cache/pip
             ~/.cache/snyk
-          key: ${{ runner.os }}-security-v2-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-security-v3-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-security-v2-
+            ${{ runner.os }}-security-v3-
 
-      - name: Install base tools
+      - name: Install base tools (venv + jq)
         shell: bash
         run: |
           set -euo pipefail
 
           BIN_DIR="$RUNNER_TEMP/bin"
           mkdir -p "$BIN_DIR"
-
-          # Masukkan BIN_DIR ke PATH untuk step berikutnya
-          export PATH="$BIN_DIR:$PATH"
           echo "$BIN_DIR" >> "$GITHUB_PATH"
 
-          # Virtualenv untuk pip-audit & tooling Python
           if [ ! -d ".venv" ]; then
             echo "Creating virtualenv..."
             $PYTHON_BIN -m venv .venv
           fi
 
           source .venv/bin/activate
-
           pip install --upgrade pip
 
-          # pip-audit hanya akan dipakai di mode FULL (step terpisah)
+          # pip-audit akan dipakai hanya di FULL mode (step terpisah), tapi kita install di sini supaya cached
           pip install pip-audit==2.7.2
 
           if ! command -v jq >/dev/null 2>&1; then
@@ -124,7 +119,7 @@ jobs:
 
       - name: Init critical flag
         shell: bash
-        run: echo "false" > critical_flag.txt
+        run: printf "false" > critical_flag.txt
 
       - name: Prepare report dirs
         shell: bash
@@ -182,7 +177,18 @@ jobs:
             echo "Syft already installed, skipping."
           fi
 
-      # ---------------- SAST (Semgrep via Docker, temp dir) ----------------
+      # ---------------- (NEW) Install project deps for Snyk/pip-audit (FULL only) ----------------
+      - name: Install project dependencies (FULL only)
+        if: env.SCAN_MODE == 'full'
+        shell: bash
+        run: |
+          if [ -f requirements.txt ]; then
+            .venv/bin/pip install -r requirements.txt || true
+          else
+            echo "requirements.txt not found, skipping deps install."
+          fi
+
+      # ---------------- SAST (Semgrep) ----------------
       - name: Semgrep SAST
         shell: bash
         run: |
@@ -204,23 +210,20 @@ jobs:
               --config p/ci \
               --json \
               --output /out/semgrep.json; then
-            echo "Semgrep exited non-zero (likely blocking findings). Continuing pipeline."
+            echo "Semgrep exited non-zero (likely SAST findings). Continuing pipeline."
           fi
 
-          if [ ! -f "$TEMP_DIR/semgrep.json" ]; then
-            echo '{}' > "$TEMP_DIR/semgrep.json"
-          fi
+          [ -f "$TEMP_DIR/semgrep.json" ] || echo '{}' > "$TEMP_DIR/semgrep.json"
 
           cp "$TEMP_DIR/semgrep.json" "${REPORT_DIR}/sast/semgrep.json"
 
-          echo "Evaluating HIGH/ERROR findings…"
           jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
             "${REPORT_DIR}/sast/semgrep.json" | grep -qv '^0$' \
-            && echo true > critical_flag.txt || true
+            && printf "true" > critical_flag.txt || true
 
           rm -rf "$TEMP_DIR" || true
 
-      # ---------------- SECRET SCANNING (Gitleaks) ----------------
+      # ---------------- SECRET SCAN (Gitleaks) ----------------
       - name: Gitleaks
         shell: bash
         run: |
@@ -229,9 +232,9 @@ jobs:
             --report-path "${REPORT_DIR}/secrets/gitleaks.json" || true
 
           jq -e 'length>0' "${REPORT_DIR}/secrets/gitleaks.json" \
-            && echo true > critical_flag.txt || true
+            && printf "true" > critical_flag.txt || true
 
-      # ---------------- SCA (pip-audit only FULL, Trivy FS, Snyk) ----------------
+      # ---------------- SCA (pip-audit FULL only, Trivy FS, Snyk) ----------------
       - name: pip-audit (FULL scan only)
         if: env.SCAN_MODE == 'full'
         shell: bash
@@ -255,7 +258,7 @@ jobs:
           jq '[.Results[].Vulnerabilities[]? |
               select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
             "${REPORT_DIR}/sca/trivy-fs.json" | grep -qv '^0$' \
-            && echo true > critical_flag.txt || true
+            && printf "true" > critical_flag.txt || true
 
       - name: Snyk (SCA)
         env:
@@ -264,7 +267,7 @@ jobs:
         run: |
           snyk test --all-projects --json > "${REPORT_DIR}/sca/snyk.json" || true
           grep -qi '"severity":"high"\|"severity":"critical"' \
-            "${REPORT_DIR}/sca/snyk.json" && echo true > critical_flag.txt || true
+            "${REPORT_DIR}/sca/snyk.json" && printf "true" > critical_flag.txt || true
 
       # ================= EPSS SMART FILTER =================
       - name: EPSS Score Check (Smart SCA)
@@ -277,7 +280,7 @@ jobs:
               epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
                 | jq -r '.data[0].epss // 0' 2>/dev/null || echo 0)
               awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" \
-                && echo true > critical_flag.txt || true
+                && printf "true" > critical_flag.txt || true
             done < cves.txt
           else
             echo "No CVE IDs from Snyk for EPSS evaluation."
@@ -294,9 +297,9 @@ jobs:
           jq '[.Results[].Misconfigurations[]? |
               select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
             "${REPORT_DIR}/misconfig/trivy-config.json" | grep -qv '^0$' \
-            && echo true > critical_flag.txt || true
+            && printf "true" > critical_flag.txt || true
 
-      # ================= DAST (ZAP) – FULL MODE ONLY (main/schedule) =================
+      # ================= DAST (ZAP) – FULL MODE ONLY =================
       - name: Build local image for DAST
         if: env.SCAN_MODE == 'full'
         shell: bash
@@ -355,13 +358,8 @@ jobs:
         shell: bash
         run: |
           ls -lah "${REPORT_DIR}/dast" || true
-
           FILE="${REPORT_DIR}/dast/zap-baseline.json"
-
-          if [ ! -f "$FILE" ]; then
-            echo "⚠️ ZAP JSON missing, creating empty placeholder to keep SARIF happy"
-            echo '{"site":[]}' > "$FILE"
-          fi
+          [ -f "$FILE" ] || echo '{"site":[]}' > "$FILE"
 
       - name: Convert ZAP Report to SARIF
         if: env.SCAN_MODE == 'full'
@@ -447,7 +445,6 @@ jobs:
         shell: bash
         run: |
           FILE="security-reports/dast/zap-baseline.json"
-
           if [ ! -f "$FILE" ]; then
             echo "⚠️ ZAP report not found, skipping ZAP gate"
             exit 0
@@ -455,7 +452,6 @@ jobs:
 
           high=$(jq '[.site[].alerts[]? | select(.riskcode=="3")] | length' "$FILE")
           echo "ZAP HIGH findings: $high"
-
           if [ "$high" -gt 0 ]; then
             echo "❌ ZAP HIGH findings detected"
             exit 1
@@ -483,13 +479,13 @@ jobs:
         run: echo "critical_found=$(cat critical_flag.txt)" >> "$GITHUB_OUTPUT"
 
   # ==========================================================
-  # 2) AUTO GITHUB ISSUE (ON HIGH / CRITICAL)
+  # 2) AUTO GITHUB ISSUE – HANYA MAIN
   # ==========================================================
   create_security_issue:
     name: Create Security GitHub Issue
     runs-on: self-hosted
     needs: security_scans
-    if: needs.security_scans.outputs.critical_found == 'true'
+    if: needs.security_scans.outputs.critical_found == 'true' && github.ref == 'refs/heads/main'
     permissions:
       issues: write
       contents: read
@@ -510,12 +506,12 @@ jobs:
           **Commit:** ${GITHUB_SHA}  
           **Workflow Run:** https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          ### 🔍 Security Scans Triggered
+          ### 🔍 Security Scans Triggered (Mode: ${SCAN_MODE})
           - ✅ Gitleaks (Secrets)
           - ✅ Snyk / Trivy / pip-audit (SCA + EPSS)
           - ✅ Semgrep (SAST)
           - ✅ Trivy Config (IaC Misconfiguration)
-          - ✅ OWASP ZAP (DAST – Baseline / Active, FULL mode only)
+          - ✅ OWASP ZAP (DAST – FULL mode only)
 
           ### 📁 Full Reports
           Download here:
@@ -533,7 +529,7 @@ jobs:
           - Re-run pipeline
 
           ---
-          _This issue was automatically created by the Vuln Bank DevSecOps Pipeline v2._
+          _This issue was automatically created by the Vuln Bank DevSecOps Pipeline v3._
           EOF
 
       - name: Create GitHub Issue
@@ -567,7 +563,7 @@ jobs:
             console.log("🚀 New security issue created.");
 
   # ==========================================================
-  # 3) SECURITY GATE (BLOCK BUILD/DEPLOY IF RISKY)
+  # 3) SECURITY GATE
   # ==========================================================
   security_gate:
     runs-on: self-hosted
@@ -578,12 +574,10 @@ jobs:
         shell: bash
         run: |
           echo "Critical found: ${{ needs.security_scans.outputs.critical_found }}"
-
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
             echo "❌ HIGH/CRITICAL vulnerabilities detected"
             exit 1
           fi
-
           echo "✅ Security Gate Passed"
 
   # ==========================================================
@@ -729,12 +723,12 @@ jobs:
         run: |
           [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ] && exit 0
 
-          STATUS="✅ Pipeline Succeeded"
+          STATUS="✅ Pipeline Succeeded (mode: ${{ needs.security_scans.outputs.scan_mode }})"
 
           if [ "${{ needs.security_scans.outputs.critical_found }}" = "true" ]; then
-            STATUS="🚨 HIGH/CRITICAL vulnerabilities detected"
+            STATUS="🚨 HIGH/CRITICAL vulnerabilities detected (mode: ${{ needs.security_scans.outputs.scan_mode }})"
           elif [ "${{ job.status }}" != "success" ]; then
-            STATUS="⚠️ Pipeline failed (non-security reason)"
+            STATUS="⚠️ Pipeline failed (non-security reason, mode: ${{ needs.security_scans.outputs.scan_mode }})"
           fi
 
           jq -n \
