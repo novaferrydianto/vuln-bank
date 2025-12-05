@@ -69,53 +69,26 @@ jobs:
 
           command -v jq >/dev/null || sudo dnf install -y jq || sudo yum install -y jq
 
-      - name: Install Semgrep (official binary)
+      - name: Semgrep SAST (Docker)
         run: |
-          set -euo pipefail
+          mkdir -p ${REPORT_DIR}/sast
 
-          TOOLS_DIR="$GITHUB_WORKSPACE/.tools"
-          BIN_DIR="$TOOLS_DIR/bin"
-          mkdir -p "$BIN_DIR"
+          echo "🐳 Running Semgrep via Docker…"
 
-          echo "🔍 Fetching latest Semgrep release…"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            --workdir /src \
+            returntocorp/semgrep:latest \
+            semgrep ci \
+              --config p/ci \
+              --json \
+              --output /src/${REPORT_DIR}/sast/semgrep.json || true
 
-          # Get latest release tag (example: v1.146.0)
-          SEMGREP_VERSION=$(curl -s https://api.github.com/repos/semgrep/semgrep/releases/latest | jq -r .tag_name)
-          echo "✅ Latest Semgrep version: $SEMGREP_VERSION"
+          echo "🔍 Checking for HIGH/ERROR findings…"
 
-          # Find Linux AMD64 asset (.zip OR .tar.gz)
-          ASSET_URL=$(curl -s "https://api.github.com/repos/semgrep/semgrep/releases/tags/${SEMGREP_VERSION}" \
-          | jq -r '.assets[].browser_download_url' \
-          | grep -E "linux-amd64\.(zip|tar\.gz)$" \
-          | head -1)
-          
-          if [[ -z "$ASSET_URL" ]]; then
-            echo "❌ No valid semgrep Linux release found for $SEMGREP_VERSION"
-            exit 1
-          fi
-
-          echo "📦 Downloading: $ASSET_URL"
-          curl -fL "$ASSET_URL" -o /tmp/semgrep.pkg
-
-          # Extract depending on package type
-          if [[ "$ASSET_URL" == *.zip ]]; then
-            echo "📦 Extracting ZIP package"
-            unzip -o /tmp/semgrep.pkg -d /tmp
-          elif [[ "$ASSET_URL" == *.tar.gz ]]; then
-            echo "📦 Extracting TAR.GZ package"
-            tar -xzf /tmp/semgrep.pkg -C /tmp
-          else
-            echo "❌ Unsupported Semgrep package format"
-            exit 1
-          fi
-
-          mv /tmp/semgrep "$BIN_DIR/semgrep"
-          chmod +x "$BIN_DIR/semgrep"
-
-          echo "$BIN_DIR" >> "$GITHUB_PATH"
-
-          echo "✅ Semgrep installed successfully:"
-          semgrep --version
+          jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
+            ${REPORT_DIR}/sast/semgrep.json | grep -qv '^0$' \
+            && echo true > critical_flag.txt || true
 
       - name: Export venv to PATH
         shell: bash
