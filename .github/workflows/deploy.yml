@@ -82,7 +82,7 @@ jobs:
           echo "Installing Semgrep $SEMGREP_VERSION"
 
           curl -fL \
-            "https://github.com/returntocorp/semgrep/releases/download/${SEMGREP_VERSION}/semgrep_linux_amd64.tar.gz" \
+            "https://github.com/semgrep/semgrep/releases/download/${SEMGREP_VERSION}/semgrep-linux-amd64.tar.gz" \
             -o /tmp/semgrep.tar.gz
 
           tar -xzf /tmp/semgrep.tar.gz -C /tmp
