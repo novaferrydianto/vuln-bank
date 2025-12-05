@@ -81,21 +81,32 @@ jobs:
             chmod +x "$BIN_DIR/jq"
           fi
 
-      # ================= SEMGREP SAST (PATCHED) =================
+      - name: Init critical flag
+        shell: bash
+        run: echo "false" > critical_flag.txt
+
+      - name: Prepare report dirs
+        shell: bash
+        run: mkdir -p ${REPORT_DIR}/{secrets,sca,sast,misconfig,dast,sbom}
+
+      # ---------------- SAST (Semgrep via Docker, safe) ----------------
       - name: Semgrep SAST
+        shell: bash
         run: |
           set -e
 
-          # Temp directory for Semgrep output (safe for container writes)
+          echo "📦 Preparing Semgrep directories…"
+
+          # Temp directory for container-safe writes
           TEMP_DIR="/tmp/semgrep-$RANDOM"
           mkdir -p "$TEMP_DIR"
           chmod 777 "$TEMP_DIR"
 
-          # Prepare workspace report directory
-          mkdir -p ${REPORT_DIR}/sast
-          chmod -R 777 ${REPORT_DIR}/sast
+          # Workspace report dir
+          mkdir -p "${REPORT_DIR}/sast"
+          chmod -R 777 "${REPORT_DIR}/sast"
 
-          echo "Running Semgrep via Docker (safe mode)…"
+          echo "🚀 Running Semgrep via Docker (safe mode)…"
 
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src:ro \
@@ -105,17 +116,22 @@ jobs:
             semgrep ci \
               --config p/ci \
               --json \
-              --output /out/semgrep.json \
-            || echo '{}' > /out/semgrep.json
+              --output /out/semgrep.json || true
 
-          echo "Copy Semgrep result back to workspace…"
+          echo "🔍 Ensuring Semgrep output exists…"
+          if [ ! -f "$TEMP_DIR/semgrep.json" ]; then
+            echo "{}" > "$TEMP_DIR/semgrep.json"
+          fi
+
+          echo "📁 Copy Semgrep result into workspace…"
           cp "$TEMP_DIR/semgrep.json" "${REPORT_DIR}/sast/semgrep.json"
 
-          echo "Evaluating HIGH/ERROR findings…"
-
+          echo "🧪 Evaluate HIGH/ERROR findings…"
           jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
-            ${REPORT_DIR}/sast/semgrep.json | grep -qv '^0$' \
+            "${REPORT_DIR}/sast/semgrep.json" | grep -qv '^0$' \
             && echo true > critical_flag.txt || true
+
+          echo "✅ Semgrep SAST step completed"
 
       - name: Export venv to PATH
         shell: bash
@@ -123,24 +139,27 @@ jobs:
           echo "PATH=$(pwd)/.venv/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Install Trivy
+        shell: bash
         run: |
           BIN_DIR="$RUNNER_TEMP/bin"
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b "$BIN_DIR"
 
       - name: Install Gitleaks
+        shell: bash
         run: |
           set -e
           BIN_DIR="$RUNNER_TEMP/bin"
           VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
             | jq -r .tag_name)
 
-          curl -sL https://github.com/gitleaks/gitleaks/releases/download/$VER/gitleaks_${VER#v}_linux_x64.tar.gz \
+          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${VER}/gitleaks_${VER#v}_linux_x64.tar.gz" \
             | tar -xz -C "$BIN_DIR"
 
           chmod +x "$BIN_DIR/gitleaks"
 
       - name: Install Snyk CLI
+        shell: bash
         run: |
           BIN_DIR="$RUNNER_TEMP/bin"
           curl -sL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
@@ -148,98 +167,103 @@ jobs:
           chmod +x "$BIN_DIR/snyk"
 
       - name: Install Syft (SBOM)
+        shell: bash
         run: |
           BIN_DIR="$RUNNER_TEMP/bin"
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b "$BIN_DIR"
 
-      - name: Init critical flag
-        run: echo "false" > critical_flag.txt
-
-      - name: Prepare report dirs
-        run: mkdir -p ${REPORT_DIR}/{secrets,sca,sast,misconfig,dast,sbom}
-
       # ---------------- SECRET SCANNING (Gitleaks) ----------------
       - name: Gitleaks
+        shell: bash
         run: |
           gitleaks detect --source . \
             --report-format json \
-            --report-path ${REPORT_DIR}/secrets/gitleaks.json || true
+            --report-path "${REPORT_DIR}/secrets/gitleaks.json" || true
 
-          jq -e 'length>0' ${REPORT_DIR}/secrets/gitleaks.json \
+          jq -e 'length>0' "${REPORT_DIR}/secrets/gitleaks.json" \
             && echo true > critical_flag.txt || true
 
-      # ---------------- SCA (pip-audit + Trivy FS + Snyk) ----------------
+      # ---------------- SCA (pip-audit + Trivy FS + Snyk + EPSS) ----------------
       - name: pip-audit
+        shell: bash
         run: |
           if [ -f requirements.txt ]; then
             .venv/bin/pip-audit -r requirements.txt \
               -f json \
-              -o ${REPORT_DIR}/sca/pip-audit.json || true
+              -o "${REPORT_DIR}/sca/pip-audit.json" || true
           fi
 
       - name: Trivy FS
+        shell: bash
         run: |
           trivy fs --scanners vuln \
             --severity HIGH,CRITICAL \
             --format json \
-            --output ${REPORT_DIR}/sca/trivy-fs.json .
+            --output "${REPORT_DIR}/sca/trivy-fs.json" . || true
 
           jq '[.Results[].Vulnerabilities[]? |
               select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
-            ${REPORT_DIR}/sca/trivy-fs.json | grep -qv '^0$' \
+            "${REPORT_DIR}/sca/trivy-fs.json" | grep -qv '^0$' \
             && echo true > critical_flag.txt || true
 
       - name: Snyk
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        shell: bash
         run: |
-          snyk test --all-projects --json > ${REPORT_DIR}/sca/snyk.json || true
+          snyk test --all-projects --json > "${REPORT_DIR}/sca/snyk.json" || true
           grep -qi '"severity":"high"\|"severity":"critical"' \
-            ${REPORT_DIR}/sca/snyk.json && echo true > critical_flag.txt || true
+            "${REPORT_DIR}/sca/snyk.json" && echo true > critical_flag.txt || true
 
-      # ================= EPSS SMART FILTER =================
       - name: EPSS Score Check (Smart SCA)
+        shell: bash
         run: |
-          jq -r '.. | .id? // empty' ${REPORT_DIR}/sca/snyk.json | sort -u > cves.txt || true
+          jq -r '.. | .id? // empty' "${REPORT_DIR}/sca/snyk.json" | sort -u > cves.txt || true
 
           if [ -s cves.txt ]; then
-            while read cve; do
+            while read -r cve; do
               epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
                 | jq -r '.data[0].epss // 0' 2>/dev/null || echo 0)
+
               awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" \
-                && echo true > critical_flag.txt
+                && echo true > critical_flag.txt || true
             done < cves.txt
           fi
 
       # ---------------- MISCONFIG (Trivy Config) ----------------
       - name: Trivy Config
+        shell: bash
         run: |
           trivy config --severity HIGH,CRITICAL \
             --format json \
-            --output ${REPORT_DIR}/misconfig/trivy-config.json .
+            --output "${REPORT_DIR}/misconfig/trivy-config.json" . || true
 
           jq '[.Results[].Misconfigurations[]? |
               select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
-            ${REPORT_DIR}/misconfig/trivy-config.json | grep -qv '^0$' \
+            "${REPORT_DIR}/misconfig/trivy-config.json" | grep -qv '^0$' \
             && echo true > critical_flag.txt || true
 
       # ================= DAST (ZAP) =================
       - name: Build local image for DAST
+        shell: bash
         run: |
           docker build -t vuln-bank:${{ github.sha }} .
 
       - name: Prepare DAST directories
+        shell: bash
         run: |
           mkdir -p security-reports/dast
           chmod -R 777 security-reports/dast
 
       - name: Start DAST environment (Docker Compose)
+        shell: bash
         run: |
           IMAGE_TAG=${{ github.sha }} docker compose \
             -f docker-compose.dast.yml up -d
 
       - name: ✅ Wait for app port (DAST-safe)
+        shell: bash
         run: |
           for i in {1..30}; do
             if docker run --rm --network container:vuln-bank-dast \
@@ -262,14 +286,15 @@ jobs:
         run: |
           docker exec zap \
             zap-baseline.py \
-            -t http://vuln-bank-dast:5000 \
-            -J /zap/wrk/zap-baseline.json \
-            -r /zap/wrk/zap-baseline.html \
-            -m 2 \
-            -I \
+              -t http://vuln-bank-dast:5000 \
+              -J /zap/wrk/zap-baseline.json \
+              -r /zap/wrk/zap-baseline.html \
+              -m 2 \
+              -I \
             || true
 
       - name: Verify ZAP outputs
+        shell: bash
         run: |
           ls -lah security-reports/dast
 
@@ -277,6 +302,7 @@ jobs:
             || (echo "❌ ZAP JSON missing" && exit 1)
 
       - name: Convert ZAP Report to SARIF
+        shell: bash
         run: |
           cat > zap-to-sarif.py << 'EOF'
           import json
@@ -336,6 +362,7 @@ jobs:
           python3 zap-to-sarif.py
 
       - name: Validate ZAP SARIF
+        shell: bash
         run: |
           test -f security-reports/dast/zap.sarif \
             || (echo "❌ SARIF not found" && exit 1)
@@ -352,6 +379,7 @@ jobs:
 
       - name: ZAP Security Gate (HIGH only)
         if: github.ref == 'refs/heads/main'
+        shell: bash
         run: |
           FILE="security-reports/dast/zap-baseline.json"
           
@@ -370,13 +398,15 @@ jobs:
 
       - name: Cleanup DAST container
         if: success()
+        shell: bash
         run: |
           docker compose -f docker-compose.dast.yml down -v
 
       # ================= SBOM =================
       - name: Generate SBOM
+        shell: bash
         run: |
-          syft . -o json > ${REPORT_DIR}/sbom/sbom.json
+          syft . -o json > "${REPORT_DIR}/sbom/sbom.json"
 
       - uses: actions/upload-artifact@v5
         with:
@@ -384,6 +414,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
       - id: setflag
+        shell: bash
         run: echo "critical_found=$(cat critical_flag.txt)" >> "$GITHUB_OUTPUT"
 
   # ==========================================================
@@ -504,27 +535,31 @@ jobs:
           fetch-depth: 0
 
       - name: Docker Login
+        shell: bash
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
             -u "${{ secrets.DOCKERHUB_USERNAME }}" \
             --password-stdin
 
       - name: Cleanup before build
+        shell: bash
         run: |
           docker image prune -af || true
           docker builder prune -af || true
 
       - name: Build Image
+        shell: bash
         run: |
           docker build \
             --provenance=true \
             --sbom=true \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -t $IMAGE_REPO:$IMAGE_TAG .
+            -t "$IMAGE_REPO:$IMAGE_TAG" .
 
       - name: Push Image
+        shell: bash
         run: |
-          docker push $IMAGE_REPO:$IMAGE_TAG
+          docker push "$IMAGE_REPO:$IMAGE_TAG"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
@@ -532,36 +567,40 @@ jobs:
       - name: Cosign Sign Image
         env:
           COSIGN_EXPERIMENTAL: "true"
+        shell: bash
         run: |
-          cosign sign --yes $IMAGE_REPO:$IMAGE_TAG
+          cosign sign --yes "$IMAGE_REPO:$IMAGE_TAG"
 
       - name: Cosign Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "true"
+        shell: bash
         run: |
           cosign attest \
             --yes \
-            --predicate ${REPORT_DIR}/sbom/sbom.json \
+            --predicate "${REPORT_DIR}/sbom/sbom.json" \
             --type spdxjson \
-            $IMAGE_REPO:$IMAGE_TAG
+            "$IMAGE_REPO:$IMAGE_TAG"
 
       - name: Verify SBOM Attestation
         env:
           COSIGN_EXPERIMENTAL: "true"
+        shell: bash
         run: |
           cosign verify-attestation \
             --type spdxjson \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            $IMAGE_REPO:$IMAGE_TAG
+            "$IMAGE_REPO:$IMAGE_TAG"
 
       - name: Cosign Verify Image
         env:
           COSIGN_EXPERIMENTAL: "true"
+        shell: bash
         run: |
           cosign verify \
             --certificate-identity-regexp "https://github.com/.+/.+/.github/workflows/.+.yml@refs/heads/main" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            $IMAGE_REPO:$IMAGE_TAG
+            "$IMAGE_REPO:$IMAGE_TAG"
 
   # ==========================================================
   # 5) DEPLOY (DOCKER COMPOSE KE VM2)
@@ -594,8 +633,8 @@ jobs:
             echo "⏳ Wait for app health"
             for i in {1..30}; do
               status=$(docker inspect -f '{{.State.Health.Status}}' vuln-bank-app || true)
-              echo "Health: \$status"
-              [ "\$status" = "healthy" ] && exit 0
+              echo "Health: $status"
+              [ "$status" = "healthy" ] && exit 0
               sleep 3
             done
 
