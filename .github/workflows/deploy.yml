@@ -21,8 +21,8 @@ concurrency:
 
 env:
   APP_NAME: vuln-bank
-  DOCKER_CONFIG: /opt/github-runner/.docker
-  HOME: /opt/github-runner
+  DOCKER_CONFIG: /home/github-runner/.docker
+  HOME: /home/github-runner
   IMAGE_NAME: vuln-bank
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
