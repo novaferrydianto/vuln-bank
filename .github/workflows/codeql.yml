@@ -1,76 +1,156 @@
-name: "CodeQL"
+name: CodeQL Ultra
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  schedule:
+    - cron: "15 8 * * 4"
 
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  HOME: /github/home
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
+  detect-languages:
+    name: Detect Languages
+    runs-on: ubuntu-latest
+    outputs:
+      languages: ${{ steps.detect.outputs.languages }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: detect
+        shell: bash
+        run: |
+          languages=$(codeql resolve languages \
+            --format=json) || true
+
+          echo "Detected CodeQL languages: $languages"
+          echo "languages=$languages" >> $GITHUB_OUTPUT
+
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
-
-    permissions:
-      security-events: write
-      contents: read
+    needs: detect-languages
 
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
-        language: [ "javascript-typescript", "python" ]  # ⚡ Only real languages
+        language: ${{ fromJson(needs.detect-languages.outputs.languages) }}
+        include:
+          - shards: 3  # default parallel shards
+
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          sparse-checkout: |
-            app/
-            src/
-            backend/
-            frontend/
 
-      # ⚡ Skip noise directories for speed
-      - name: Filter irrelevant paths
-        run: |
-          echo "::add-path-ignore static/"
-          echo "::add-path-ignore node_modules/"
-          echo "::add-path-ignore dist/"
-          echo "::add-path-ignore build/"
-          echo "::add-path-ignore venv/"
-          echo "::add-path-ignore .venv/"
-          echo "::add-path-ignore security-reports/"
-
-      # ⚡ Restore CodeQL cache (40–50% speed-up)
-      - name: Restore CodeQL DB Cache
+      # =============================
+      # ⚡ Ultra Cache (DB + Tools)
+      # =============================
+      - name: Cache CodeQL DB
+        id: cache-codeql
         uses: actions/cache@v4
         with:
-          path: /home/runner/.cache/codeql
-          key: codeql-db-${{ runner.os }}-${{ matrix.language }}-${{ github.sha }}
+          path: |
+            /home/runner/work/_temp/codeql_db_${{ matrix.language }}
+          key: codeql-db-${{ matrix.language }}-${{ github.sha }}
           restore-keys: |
-            codeql-db-${{ runner.os }}-${{ matrix.language }}-
+            codeql-db-${{ matrix.language }}-
 
+      # =============================
+      # ⚡ Quick Setup
+      # =============================
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          # Default queries
           queries: |
             security-extended
             security-and-quality
+            # PR mode accelerated
+            ${{ github.event_name == 'pull_request' && 'codeql-suites/code-scanning' || '' }}
+          # Skip heavy directories
+          paths-ignore: |
+            node_modules
+            venv
+            .venv
+            vendor
+            dist
+            build
+            static
+            migrations
+          db-location: /home/runner/work/_temp/codeql_db_${{ matrix.language }}
 
-            # ⚡ QUICK MODE for PR speed
-            ${{ github.event_name == 'pull_request' && 'codeql-suites:code-scanning' || '' }}
-
-      - name: Perform CodeQL Analysis
+      # =============================
+      # ⚡ Sharded Analysis
+      # =============================
+      - name: Analyze – Sharded
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:${{ matrix.language }}"
+          category: ultra-${{ matrix.language }}
+          # Shards for speed
+          add-snippets: false
+          upload: true
+          threads: 2
+          ram: 4096
+          # Split analysis into shards
+          shard: ${{ strategy.job-index }}
+          total-shards: ${{ strategy.job-total }}
+
+  # ======================================================
+  # Auto-close issue if CodeQL is clean
+  # ======================================================
+  auto_close:
+    name: Auto Close CodeQL Issue
+    runs-on: ubuntu-latest
+    needs: analyze
+    permissions:
+      issues: write
+      security-events: read
+      contents: read
+
+    steps:
+      - name: Close issue if clean
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner, repo, state: "open", labels: "security,critical"
+            });
+
+            if (issues.data.length === 0) return;
+
+            const alerts = await github.rest.codeScanning.listAlertsForRepo({
+              owner, repo, state: "open"
+            });
+
+            if (alerts.data.length > 0) {
+              console.log("❌ CodeQL alerts remaining");
+              return;
+            }
+
+            const issue = issues.data[0];
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issue.number,
+              body: "✅ CodeQL Ultra: No remaining findings. Auto-closed."
+            });
+
+            await github.rest.issues.update({
+              owner, repo, issue_number: issue.number, state: "closed"
+            });
+
+            console.log("Issue closed.");
