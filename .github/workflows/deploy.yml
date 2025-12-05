@@ -83,9 +83,9 @@ jobs:
 
       - name: Semgrep SAST
         run: |
-          mkdir -p ${REPORT_DIR}/sast
+          set -euo pipefail
 
-          git config --global --add safe.directory /src
+          mkdir -p ${REPORT_DIR}/sast
 
           echo "Running Semgrep via Docker…"
 
