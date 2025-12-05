@@ -65,7 +65,7 @@ jobs:
           source .venv/bin/activate
 
           pip install --upgrade pip
-          pip install pip-audit
+          pip install pip-audit==2.7.2
 
           command -v jq >/dev/null || sudo dnf install -y jq || sudo yum install -y jq
 
