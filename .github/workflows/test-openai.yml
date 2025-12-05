@@ -20,6 +20,11 @@ jobs:
           fi
           echo "✅ OPENAI_API_KEY is present."
 
+      - name: Install jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
       - name: Test OpenAI request
         id: test_openai
         shell: bash

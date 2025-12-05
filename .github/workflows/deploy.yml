@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline v5 HyperSecure
+name: Vuln Bank DevSecOps Pipeline
 
 on:
   push:
@@ -720,59 +720,70 @@ jobs:
     name: AI Remediation Suggestions (OpenAI)
     runs-on: self-hosted
     needs: security_scans
-    if: ${{ needs.security_scans.outputs.critical_found == 'true' && secrets.OPENAI_API_KEY != '' }}
+    if: needs.security_scans.outputs.critical_found == 'true'
+
     permissions:
       contents: read
       issues: write
 
+    env:
+      HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
+
     steps:
+
+      - name: Skip if NO OpenAI key
+        if: env.HAS_OPENAI == 'false'
+        run: |
+          echo "❌ No OPENAI_API_KEY → skipping AI remediation."
+          exit 0
+
+      - name: Install jq
+        run: |
+          sudo dnf install -y jq || sudo apt-get install -y jq
+
       - uses: actions/download-artifact@v5
         with:
           name: security-reports
           path: security-reports
 
-      - name: Build minimal finding summary
+      - name: Build minimal summary
         shell: bash
         run: |
           echo "## Vuln Bank – Security Findings Summary" > summary.md
-
           echo "### Gitleaks" >> summary.md
-          jq 'length' security-reports/secrets/gitleaks.json 2>/dev/null || echo 0 >> summary.md
-
-          echo "### Trivy FS (SCA)" >> summary.md
+          jq 'length' security-reports/secrets/gitleaks.json >> summary.md || echo 0 >> summary.md
+          echo "### Trivy FS" >> summary.md
           jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
-            security-reports/sca/trivy-fs.json 2>/dev/null || echo 0 >> summary.md
-
-          echo "### Trivy Config (Misconfig)" >> summary.md
+            security-reports/sca/trivy-fs.json >> summary.md
+          echo "### Trivy Config" >> summary.md
           jq '[.Results[].Misconfigurations[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' \
-            security-reports/misconfig/trivy-config.json 2>/dev/null || echo 0 >> summary.md
-
-          echo "### Semgrep SAST findings" >> summary.md
+            security-reports/misconfig/trivy-config.json >> summary.md
+          echo "### Semgrep SAST" >> summary.md
           jq '[.results[]?|select(.extra.severity=="ERROR" or .extra.severity=="HIGH")] | length' \
-            security-reports/sast/semgrep.json 2>/dev/null || echo 0 >> summary.md
+            security-reports/sast/semgrep.json >> summary.md
 
-      - name: Call OpenAI for remediation suggestions
+      - name: Call OpenAI for remediation
         id: openai
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           BODY=$(jq -Rs '.' summary.md)
-          RESP=$(cat <<EOF
+
+          cat > payload.json <<EOF
           {
             "model": "gpt-4.1-mini",
             "messages": [
-              {"role": "system", "content": "You are a senior DevSecOps engineer. Produce concrete remediation steps for vulnerabilities in a Python/Flask banking app, focusing on prioritization and secure coding."},
+              {"role": "system", "content": "You are a senior DevSecOps engineer. Produce prioritized remediation steps."},
               {"role": "user", "content": $BODY}
             ]
           }
           EOF
-          )
 
           curl -s https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-            -d "$RESP" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d @payload.json \
             | jq -r '.choices[0].message.content' > remediation.md
 
       - name: Create AI remediation issue
@@ -786,8 +797,8 @@ jobs:
               repo: context.repo.repo,
               title: "🤖 AI Remediation Suggestions – " + process.env.GITHUB_SHA.slice(0,7),
               body: body,
-              labels: ["security", "ai-remediation", "devsecops"]
-            });
+              labels: ["security", "ai-remediation"]
+            })
 
   # ==========================================================
   # 5) SECURITY GATE (BLOCK BUILD)
