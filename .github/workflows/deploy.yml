@@ -36,6 +36,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify Python version
         run: |
@@ -62,7 +64,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: detect \
+          args: 
+            detect \
             --source . \
             --no-git \
             --report-format json \
@@ -107,7 +110,7 @@ jobs:
       # =========================
       - name: Deploy app to Hosting VM
         run: |
-          ssh -o StrictHostKeyChecking=no \
+          ssh -p $SSH_PORT -o StrictHostKeyChecking=no \
           $SSH_USER@$APP_HOST << 'EOF'
             cd /opt/vuln-bank
             docker compose pull
