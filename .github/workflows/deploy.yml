@@ -290,7 +290,7 @@ jobs:
           cmd_options: "-a -T 120"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: ""   # ✅ disables ZAP auto-artifact
+          artifact_name: zapscan   # ✅ VALID (no underscore)
 
       - name: Upload ZAP reports
         if: always()
