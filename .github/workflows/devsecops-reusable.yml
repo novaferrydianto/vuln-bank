@@ -178,7 +178,7 @@ jobs:
           echo "high_risk=$HIGH" >> "$GITHUB_OUTPUT"
           echo "epss_max=$MAX"   >> "$GITHUB_OUTPUT"
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ env.REPORT_DIR }}/sca/trivy.sarif
           category: trivy
