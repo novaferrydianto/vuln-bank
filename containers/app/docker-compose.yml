@@ -23,7 +23,6 @@ services:
 
     cap_drop:
       - ALL
-    cap_add: []
 
     read_only: true
 
@@ -32,19 +31,11 @@ services:
       - /var/run
       - /var/tmp
 
-    pids_limit: 100
-    mem_limit: 512m
-    cpus: 0.5
-    stop_grace_period: 30s
-
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import requests; requests.get('http://127.0.0.1:5000', timeout=2)"
-        ]
+      test: ["CMD","python","-c","import requests; requests.get('http://127.0.0.1:5000',timeout=2)"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  uploads:
