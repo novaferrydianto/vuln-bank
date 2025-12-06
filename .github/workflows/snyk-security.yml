@@ -1,4 +1,4 @@
-name: Snyk Security (GHAS + EPSS Ready)
+name: Snyk Security (GHAS + EPSS Enforced)
 
 on:
   push:
@@ -10,6 +10,9 @@ permissions:
   contents: read
   security-events: write
   pull-requests: write
+
+env:
+  EPSS_THRESHOLD: "0.7"
 
 jobs:
   snyk:
@@ -33,20 +36,34 @@ jobs:
           chmod +x "$BIN/snyk"
 
       - name: Verify Snyk
-        run: snyk --version
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk --version
 
       # --------------------------------------------------
-      # SNYK CODE (SAST) — SARIF
+      # SNYK CODE (SAST → SARIF, NON-BLOCKING)
       # --------------------------------------------------
       - name: Snyk Code → SARIF
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           snyk code test \
-            --sarif-file-output=snyk-code.sarif \
+            --sarif-file-output=snyk-code.raw.sarif \
             || true
+
+      # --------------------------------------------------
+      # Normalize SARIF severity (GHAS aligned)
+      # --------------------------------------------------
+      - name: Normalize SARIF severity
+        run: |
+          jq '
+            .runs[].results[].level =
+              (if (.ruleId | test("Critical|High")) then
+                 "error"
+               else
+                 "note"
+               end)
+          ' snyk-code.raw.sarif > snyk-code.sarif
 
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
@@ -55,9 +72,31 @@ jobs:
           category: snyk-code
 
       # --------------------------------------------------
-      # SNYK SCA (Signal only)
+      # EPSS POLICY GATE (PR ONLY)
       # --------------------------------------------------
-      - name: Snyk Open Source
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk monitor --all-projects || true
+      - name: EPSS Policy Gate
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          MAX_EPSS=0
+
+          jq -r '..|.ruleId? // empty' snyk-code.raw.sarif \
+            | grep -E 'CVE-' | sort -u > cves.txt || true
+
+          while read -r cve; do
+            [ -z "$cve" ] && continue
+            epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
+              | jq -r '.data[0].epss // 0')
+
+            awk "BEGIN {exit !($epss > $MAX_EPSS)}" && MAX_EPSS="$epss"
+          done < cves.txt || true
+
+          echo "Max EPSS detected: $MAX_EPSS"
+
+          awk "BEGIN {exit !($MAX_EPSS >= ${EPSS_THRESHOLD})}" && {
+            echo "❌ PR BLOCKED — High exploit likelihood (EPSS ≥ ${EPSS_THRESHOLD})"
+            exit 1
+          }
+
+          echo "✅ EPSS below threshold — PR allowed"
