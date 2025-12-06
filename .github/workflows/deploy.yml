@@ -300,6 +300,9 @@ jobs:
         run: |
           set +e
 
+          mkdir -p "$REPORT_DIR/zap"
+          chmod -R 777 "$REPORT_DIR"
+
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
