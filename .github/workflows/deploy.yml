@@ -14,10 +14,9 @@ env:
   REPORT_DIR: security-reports
   PYTHON_BIN: python3.11
 
-  # Docker image registry
   IMAGE_REPO: xbash81/vuln-bank
 
-  # === Architecture aware (Bastion → VM2 App Host) ===
+  # === Bastion → VM2 (App Host) ===
   APP_HOST: "192.168.107.135"
   SSH_USER: "hosting"
   SSH_PORT: "22"
@@ -26,16 +25,14 @@ env:
 jobs:
   security_build_deploy_dast:
     name: Security Scan → Build → Deploy → DAST
-    runs-on:
-      - self-hosted
-      - linux
+    runs-on: [self-hosted, linux]
 
     outputs:
       critical_found: ${{ steps.evaluate.outputs.critical_found }}
 
     steps:
       # ==================================================
-      # 0) CHECKOUT & PREPARE
+      # 0) CHECKOUT
       # ==================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -46,18 +43,15 @@ jobs:
         run: mkdir -p "$REPORT_DIR"
 
       # ==================================================
-      # 1) PYTHON SETUP & TEST
+      # 1) PYTHON & TEST
       # ==================================================
       - name: Show Python version
-        run: |
-          $PYTHON_BIN --version || true
+        run: $PYTHON_BIN --version || true
 
       - name: Install Python dependencies
         run: |
           $PYTHON_BIN -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            $PYTHON_BIN -m pip install -r requirements.txt
-          fi
+          [ -f requirements.txt ] && $PYTHON_BIN -m pip install -r requirements.txt
 
       - name: Run unit tests (optional)
         continue-on-error: true
@@ -66,7 +60,7 @@ jobs:
           pytest || true
 
       # ==================================================
-      # 2) SECRET SCANNING (GITLEAKS)
+      # 2) SECRET SCANNING
       # ==================================================
       - name: Gitleaks scan
         uses: gitleaks/gitleaks-action@v2
@@ -83,33 +77,27 @@ jobs:
             --report-path ${{ env.REPORT_DIR }}/gitleaks.json
 
       # ==================================================
-      # 3) SCA (pip-audit)
+      # 3) SCA
       # ==================================================
       - name: SCA with pip-audit
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install pip-audit
-          if [ -f requirements.txt ]; then
-            pip-audit -r requirements.txt \
-              -f json \
-              -o "$REPORT_DIR/pip-audit.json" || true
-          else
-            echo "requirements.txt not found, skipping pip-audit"
-          fi
+          [ -f requirements.txt ] && \
+            pip-audit -r requirements.txt -f json \
+            -o "$REPORT_DIR/pip-audit.json" || true
 
       # ==================================================
-      # 4) SAST (Bandit)
+      # 4) SAST
       # ==================================================
       - name: SAST with Bandit
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install bandit
-          bandit -r . \
-            -f json \
-            -o "$REPORT_DIR/bandit.json" || true
+          bandit -r . -f json -o "$REPORT_DIR/bandit.json" || true
 
       # ==================================================
-      # 5) MISCONFIG & FS SCAN (Trivy)
+      # 5) MISCONFIG & FS SCAN
       # ==================================================
       - name: Trivy FS scan
         uses: aquasecurity/trivy-action@0.28.0
@@ -132,12 +120,11 @@ jobs:
           severity: HIGH,CRITICAL
 
       # ==================================================
-      # 6) BUILD IMAGE → IMAGE SCAN → PUSH
+      # 6) BUILD → IMAGE SCAN → PUSH
       # ==================================================
       - name: Docker Hub login
-        run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
-          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+             docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build image
         run: |
@@ -156,17 +143,15 @@ jobs:
           output: ${{ env.REPORT_DIR }}/trivy-image.json
           severity: HIGH,CRITICAL
 
-      - name: Push image to Docker Hub
+      - name: Push image
         run: |
           docker push "$IMAGE_REPO:${{ github.sha }}"
           docker push "$IMAGE_REPO:latest"
 
       # ==================================================
-      # 7) REMOTE DEPLOY TO VM2 (RUNTIME SECRETS)
+      # 7) DEPLOY TO VM2
       # ==================================================
-      - name: Deploy app to VM2 (Hosting)
-        env:
-          GITHUB_SHA: ${{ github.sha }}
+      - name: Deploy app to VM2
         run: |
           ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
             "$SSH_USER@$APP_HOST" << EOF
@@ -184,25 +169,19 @@ jobs:
               docker compose up -d
           EOF
 
-      - name: Wait for application to be ready
+      - name: Wait for application
         run: |
           for i in {1..30}; do
-            if curl -sf "$DAST_TARGET_URL" > /dev/null; then
-              echo "✅ App is reachable at $DAST_TARGET_URL"
-              exit 0
-            fi
-            echo "Waiting for app at $DAST_TARGET_URL... ($i/30)"
+            curl -sf "$DAST_TARGET_URL" && exit 0
             sleep 5
           done
-          echo "❌ App did not become ready in time"
           exit 1
 
       # ==================================================
       # 8) DAST – OWASP ZAP (Baseline)
       # ==================================================
-      - name: Prepare ZAP workspace permissions
-        run: |
-          chmod -R a+w .
+      - name: Prepare ZAP workspace
+        run: chmod -R a+w "$GITHUB_WORKSPACE"
 
       - name: OWASP ZAP baseline scan
         uses: zaproxy/action-baseline@v0.12.0
@@ -212,26 +191,17 @@ jobs:
           cmd_options: "-a -T 120"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: zap_scan
+          artifact_name: zap-baseline-report
 
       # ==================================================
-      # 9) AGGREGATE RESULTS
+      # 9) RESULT AGGREGATION
       # ==================================================
       - name: Evaluate findings
         id: evaluate
         run: |
           critical=false
-
-          if [ -d "$REPORT_DIR" ]; then
-            # Cari indikasi HIGH/CRITICAL di semua report JSON
-            if grep -RqiE "CRITICAL|HIGH" "$REPORT_DIR"; then
-              critical=true
-            fi
-          else
-            echo "Report directory not found: $REPORT_DIR"
-          fi
-
-          echo "critical_found=$critical" | tee -a "$GITHUB_OUTPUT"
+          grep -RqiE "CRITICAL|HIGH" "$REPORT_DIR" && critical=true || true
+          echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
 
       # ==================================================
       # 10) UPLOAD ARTIFACTS
@@ -246,9 +216,7 @@ jobs:
   notify:
     name: Notify on Critical Findings
     needs: security_build_deploy_dast
-    runs-on:
-      - self-hosted
-      - linux
+    runs-on: [self-hosted, linux]
     if: needs.security_build_deploy_dast.outputs.critical_found == 'true'
 
     steps:
@@ -256,16 +224,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-            echo "SLACK_WEBHOOK_URL not set, skipping notification."
-            exit 0
-          fi
-
+          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
           curl -X POST -H "Content-type: application/json" \
-            --data "$(cat << 'JSON'
-          {
-            "text": ":rotating_light: *Vuln Bank – High/Critical vulnerabilities detected*\n\nPlease review the latest DevSecOps pipeline run and security reports artifact."
-          }
-          JSON
-            )" \
+            --data '{"text":":rotating_light: Vuln Bank – High/Critical vulnerabilities detected"}' \
             "$SLACK_WEBHOOK_URL"
