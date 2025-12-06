@@ -1,0 +1,166 @@
+name: Vuln Bank DevSecOps Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *" # ~01:00 WIB
+  workflow_dispatch:
+
+env:
+  APP_NAME: vuln-bank
+  REPORT_DIR: security-reports
+  PYTHON_VERSION: "3.11"
+
+  # === ARCHITECTURE AWARE ===
+  APP_HOST: "192.168.107.135"
+  SSH_USER: "hosting"
+  SSH_PORT: "22"
+  DAST_TARGET_URL: "http://192.168.107.135:5000"
+
+  CRITICAL_SEVERITY: "CRITICAL"
+  HIGH_SEVERITY: "HIGH"
+
+jobs:
+  security_scans:
+    name: Security Scans & Remote DAST
+    runs-on:
+      - self-hosted
+      - linux
+
+    outputs:
+      critical_found: ${{ steps.set_flags.outputs.critical_found }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          [ -f requirements.txt ] && pip install -r requirements.txt || true
+
+      - name: Run unit tests (optional)
+        continue-on-error: true
+        run: |
+          pip install pytest
+          pytest || true
+
+      # =========================
+      # 1) SECRET SCANNING
+      # =========================
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
+        with:
+          args: detect --source . --no-git \
+            --report-format json \
+            --report-path ${{ env.REPORT_DIR }}/gitleaks.json
+
+      # =========================
+      # 2) SCA
+      # =========================
+      - name: pip-audit
+        continue-on-error: true
+        run: |
+          mkdir -p $REPORT_DIR
+          pip install pip-audit
+          [ -f requirements.txt ] && \
+          pip-audit -r requirements.txt -f json \
+          -o $REPORT_DIR/pip-audit.json || true
+
+      # =========================
+      # 3) SAST
+      # =========================
+      - name: Bandit
+        continue-on-error: true
+        run: |
+          mkdir -p $REPORT_DIR
+          pip install bandit
+          bandit -r . -f json -o $REPORT_DIR/bandit.json || true
+
+      # =========================
+      # 4) MISCONFIG
+      # =========================
+      - name: Trivy FS & Config
+        continue-on-error: true
+        run: |
+          mkdir -p $REPORT_DIR
+          trivy fs . --severity HIGH,CRITICAL \
+            --format json -o $REPORT_DIR/trivy-fs.json || true
+          trivy config . --severity HIGH,CRITICAL \
+            --format json -o $REPORT_DIR/trivy-config.json || true
+
+      # =========================
+      # 5) DEPLOY → VM2
+      # =========================
+      - name: Deploy app to Hosting VM
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+          $SSH_USER@$APP_HOST << 'EOF'
+            cd /opt/vuln-bank
+            docker compose pull
+            docker compose down
+            docker compose up -d
+          EOF
+
+      - name: Wait app ready (remote)
+        run: |
+          for i in {1..30}; do
+            if curl -sSf $DAST_TARGET_URL > /dev/null; then
+              echo "✅ App ready on VM2"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      # =========================
+      # 6) DAST (REAL)
+      # =========================
+      - name: OWASP ZAP Baseline
+        uses: zaproxy/action-baseline@v0.12.0
+        continue-on-error: true
+        with:
+          target: ${{ env.DAST_TARGET_URL }}
+          cmd_options: "-a -T 120"
+
+      # =========================
+      # 7) AGGREGATE RESULT
+      # =========================
+      - name: Evaluate findings
+        id: set_flags
+        run: |
+          critical=false
+          grep -Rqi "CRITICAL\|HIGH" $REPORT_DIR && critical=true || true
+          echo "critical_found=$critical" >> $GITHUB_OUTPUT
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vuln-bank-security-reports
+          path: ${{ env.REPORT_DIR }}
+
+  notify:
+    name: Slack & Issue
+    needs: security_scans
+    runs-on:
+      - self-hosted
+      - linux
+    if: needs.security_scans.outputs.critical_found == 'true'
+
+    steps:
+      - name: Slack notify
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":":rotating_light: Vuln Bank – High/Critical vulnerabilities detected"}' \
+          $SLACK_WEBHOOK_URL
