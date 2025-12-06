@@ -306,7 +306,7 @@ jobs:
 
           # Fail pipeline ONLY if ZAP detects FAIL (exit code 1)
           if [ "$ZAP_EXIT" -eq 1 ]; then
-            echo "❌ ZAP detected HIGH / FAIL findings"
+            echo "❌ ZAP FAIL (HIGH risk)"
             exit 1
           fi
 
