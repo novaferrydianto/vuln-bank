@@ -283,7 +283,7 @@ jobs:
         run: chmod -R u+rwX "$GITHUB_WORKSPACE"
 
       - name: OWASP ZAP baseline scan
-        uses: actions/upload-artifact@v4
+        uses: zaproxy/action-baseline@v0.12.0
         continue-on-error: true
         with:
           target: ${{ env.DAST_TARGET_URL }}
