@@ -32,17 +32,14 @@ env:
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: ${{ inputs.epss_threshold }}
 
-# ======================================================
-# COMMON TOOL SETUP (reused everywhere)
-# ======================================================
 defaults:
   run:
     shell: bash
 
-# ======================================================
-# 1) SAST – Semgrep
-# ======================================================
 jobs:
+  # ======================================================
+  # 1) SAST – Semgrep (PR diff-only)
+  # ======================================================
   sast_scan:
     runs-on: self-hosted
     continue-on-error: true
@@ -51,38 +48,58 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for baseline / diff
 
-      - name: Install tools
+      - name: Install jq
         run: |
           set -euo pipefail
           BIN="$RUNNER_TEMP/bin"
           mkdir -p "$BIN"
           echo "$BIN" >> "$GITHUB_PATH"
 
-          command -v jq >/dev/null || \
-            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 -o "$BIN/jq" && chmod +x "$BIN/jq"
+          if ! command -v jq >/dev/null; then
+            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 \
+              -o "$BIN/jq"
+            chmod +x "$BIN/jq"
+          fi
 
-      - run: mkdir -p "$REPORT_DIR/sast"
+      - name: Prepare SAST report dir
+        run: mkdir -p "$REPORT_DIR/sast"
 
-      - run: |
+      - name: Semgrep (PR diff-only when pull_request)
+        run: |
+          set -euo pipefail
+
+          EXTRA=""
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin main --depth=1 || true
+            EXTRA="--baseline-ref origin/main"
+          fi
+
+          # JSON untuk gating / summary
           docker run --rm -v "$PWD:/src" returntocorp/semgrep \
-            semgrep ci --config p/ci --json > "$REPORT_DIR/sast/semgrep.json" || true
+            semgrep ci --config p/ci $EXTRA --json \
+            > "$REPORT_DIR/sast/semgrep.json" || true
 
       - id: flag
         run: |
-          jq '[.results[] | select(.extra.severity=="ERROR")] | length' \
-            "$REPORT_DIR/sast/semgrep.json" | grep -qv 0 \
-            && echo "critical=true" >> "$GITHUB_OUTPUT" \
-            || echo "critical=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if jq '[.results[]|select(.extra.severity=="ERROR")] | length' \
+              "$REPORT_DIR/sast/semgrep.json" | grep -qv 0; then
+            echo "critical=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "critical=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/upload-artifact@v5
         with:
           name: sast-report
           path: ${{ env.REPORT_DIR }}/sast
 
-# ======================================================
-# 2) SCA + EPSS
-# ======================================================
+  # ======================================================
+  # 2) SCA + EPSS + Trivy SARIF
+  # ======================================================
   sca_scan:
     runs-on: self-hosted
     continue-on-error: true
@@ -94,59 +111,86 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install jq + Trivy
         run: |
           set -euo pipefail
           BIN="$RUNNER_TEMP/bin"
           mkdir -p "$BIN"
           echo "$BIN" >> "$GITHUB_PATH"
 
-          command -v jq >/dev/null || \
-            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 -o "$BIN/jq" && chmod +x "$BIN/jq"
-
-          command -v trivy >/dev/null || \
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$BIN"
-
-          if [[ "${{ inputs.scan_mode }}" == "full" ]]; then
-            $PYTHON_BIN -m venv .venv
-            .venv/bin/pip install pip-audit
+          if ! command -v jq >/dev/null; then
+            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 \
+              -o "$BIN/jq"
+            chmod +x "$BIN/jq"
           fi
 
-      - run: mkdir -p "$REPORT_DIR/sca"
+          if ! command -v trivy >/dev/null; then
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+              | sh -s -- -b "$BIN"
+          fi
 
-      - run: |
+          if [[ "${{ inputs.scan_mode }}" == "full" ]]; then
+            "${PYTHON_BIN}" -m venv .venv
+            . .venv/bin/activate
+            pip install --upgrade pip pip-audit
+          fi
+
+      - name: Prepare SCA report dir
+        run: mkdir -p "$REPORT_DIR/sca"
+
+      - name: Trivy FS (JSON for EPSS)
+        run: |
+          set -euo pipefail
           trivy fs --severity HIGH,CRITICAL --format json \
             -o "$REPORT_DIR/sca/trivy.json" .
 
+      - name: Trivy FS (SARIF for Code Scanning)
+        run: |
+          set -euo pipefail
+          trivy fs --severity HIGH,CRITICAL --format sarif \
+            -o "$REPORT_DIR/sca/trivy.sarif" .
+
       - id: out
         run: |
+          set -euo pipefail
           CRIT=false
           HIGH=false
           MAX=0
 
-          jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")] | length' \
-            "$REPORT_DIR/sca/trivy.json" | grep -qv 0 && CRIT=true
+          if jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")] | length' \
+               "$REPORT_DIR/sca/trivy.json" | grep -qv 0; then
+            CRIT=true
+          fi
 
-          jq -r '..|.VulnerabilityID?//empty' "$REPORT_DIR/sca/trivy.json" | sort -u > cves.txt || true
+          jq -r '..|.VulnerabilityID?//empty' \
+            "$REPORT_DIR/sca/trivy.json" | sort -u > cves.txt || true
 
           while read -r cve; do
-            e=$(curl -s https://api.first.org/data/v1/epss?cve=$cve | jq -r '.data[0].epss // 0')
-            awk "BEGIN{exit !($e>$MAX)}" && MAX="$e"
-            awk "BEGIN{exit !($e>=${EPSS_THRESHOLD})}" && HIGH=true
+            [ -z "$cve" ] && continue
+            e=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
+                | jq -r '.data[0].epss // 0')
+
+            awk "BEGIN{exit !($e>$MAX)}" && MAX="$e" || true
+            awk "BEGIN{exit !($e>=${EPSS_THRESHOLD})}" && HIGH=true || true
           done < cves.txt || true
 
           echo "critical=$CRIT"  >> "$GITHUB_OUTPUT"
           echo "high_risk=$HIGH" >> "$GITHUB_OUTPUT"
           echo "epss_max=$MAX"   >> "$GITHUB_OUTPUT"
 
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.REPORT_DIR }}/sca/trivy.sarif
+          category: trivy
+
       - uses: actions/upload-artifact@v5
         with:
           name: sca-report
           path: ${{ env.REPORT_DIR }}/sca
 
-# ======================================================
-# 3) MISCONFIG
-# ======================================================
+  # ======================================================
+  # 3) MISCONFIG – Trivy Config
+  # ======================================================
   misconfig_scan:
     runs-on: self-hosted
     continue-on-error: true
@@ -156,35 +200,51 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Trivy
+      - name: Install jq + Trivy
         run: |
+          set -euo pipefail
           BIN="$RUNNER_TEMP/bin"
           mkdir -p "$BIN"
           echo "$BIN" >> "$GITHUB_PATH"
-          command -v trivy >/dev/null || \
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$BIN"
 
-      - run: mkdir -p "$REPORT_DIR/misconfig"
+          if ! command -v jq >/dev/null; then
+            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 \
+              -o "$BIN/jq"
+            chmod +x "$BIN/jq"
+          fi
 
-      - run: |
+          if ! command -v trivy >/dev/null; then
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+              | sh -s -- -b "$BIN"
+          fi
+
+      - name: Prepare Misconfig report dir
+        run: mkdir -p "$REPORT_DIR/misconfig"
+
+      - name: Trivy Config (JSON)
+        run: |
+          set -euo pipefail
           trivy config --severity HIGH,CRITICAL --format json \
             -o "$REPORT_DIR/misconfig/config.json" .
 
       - id: flag
         run: |
-          jq '[.Results[].Misconfigurations[]?|select(.Severity=="CRITICAL")] | length' \
-            "$REPORT_DIR/misconfig/config.json" | grep -qv 0 \
-            && echo "critical=true" >> "$GITHUB_OUTPUT" \
-            || echo "critical=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if jq '[.Results[].Misconfigurations[]?|select(.Severity=="CRITICAL")] | length' \
+               "$REPORT_DIR/misconfig/config.json" | grep -qv 0; then
+            echo "critical=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "critical=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/upload-artifact@v5
         with:
           name: misconfig-report
           path: ${{ env.REPORT_DIR }}/misconfig
 
-# ======================================================
-# 4) AGGREGATE – SINGLE SOURCE OF TRUTH
-# ======================================================
+  # ======================================================
+  # 4) AGGREGATE – single source of truth
+  # ======================================================
   aggregate:
     runs-on: self-hosted
     needs: [sast_scan, sca_scan, misconfig_scan]
@@ -196,12 +256,12 @@ jobs:
     steps:
       - id: final
         run: |
+          set -euo pipefail
           CRIT=false
           for v in \
             "${{ needs.sast_scan.outputs.critical }}" \
             "${{ needs.sca_scan.outputs.critical }}" \
-            "${{ needs.misconfig_scan.outputs.critical }}"
-          do
+            "${{ needs.misconfig_scan.outputs.critical }}"; do
             [ "$v" == "true" ] && CRIT=true
           done
 
