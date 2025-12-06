@@ -56,11 +56,15 @@ jobs:
       # =========================
       # 1) SECRET SCANNING
       # =========================
-      - name: Gitleaks
+      - name: Secret scan with Gitleaks
         uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: detect --source . --no-git \
+          args: detect \
+            --source . \
+            --no-git \
             --report-format json \
             --report-path ${{ env.REPORT_DIR }}/gitleaks.json
 
