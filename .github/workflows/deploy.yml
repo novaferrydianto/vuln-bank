@@ -285,12 +285,19 @@ jobs:
       - name: OWASP ZAP baseline scan
         uses: zaproxy/action-baseline@v0.12.0
         continue-on-error: true
-        with:
-          target: ${{ env.DAST_TARGET_URL }}
-          cmd_options: "-a -T 120"
-          fail_action: false
-          allow_issue_writing: false
-          artifact_name: zapscan   # ✅ VALID (no underscore)
+        run: |
+          docker pull ghcr.io/zaproxy/zaproxy:stable
+
+          docker run --rm \
+            --network=host \
+            -v "$PWD:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t $DAST_TARGET_URL \
+              -J zap-report.json \
+              -w zap-report.md \
+              -r zap-report.html \
+              -a -T 120
 
       - name: Upload ZAP reports
         if: always()
@@ -301,7 +308,6 @@ jobs:
             report_json.json
             report_md.md
             report_html.html
-          if-no-files-found: warn
 
       # ==================================================
       # 12) RESULT AGGREGATION
