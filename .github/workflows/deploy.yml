@@ -85,18 +85,24 @@ jobs:
       # 3) SECRET SCANNING – GITLEAKS
       # ==================================================
       - name: Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: |
-            detect
-            --source .
-            --no-git
-            --redact
-            --report-format json
-            --report-path ${{ env.REPORT_DIR }}/gitleaks.json
+        shell: bash
+        run: |
+          set -e
+
+          if ! command -v gitleaks >/dev/null 2>&1; then
+           echo "Installing gitleaks..."
+           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            | tar -xz
+           sudo mv gitleaks /usr/local/bin/
+          fi
+
+          gitleaks detect \
+            --source . \
+            --no-git \
+            --redact \
+            --report-format json \
+            --report-path "$REPORT_DIR/gitleaks.json" || true
 
       # ==================================================
       # 4) SCA – pip-audit
