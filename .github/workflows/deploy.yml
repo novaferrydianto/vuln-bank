@@ -47,7 +47,7 @@ jobs:
         run: mkdir -p "$REPORT_DIR"
 
       # ==================================================
-      # TOOLING SANITY (SELF-HOSTED SAFETY)
+      # 1) TOOLING SANITY (SELF-HOSTED SAFETY)
       # ==================================================
       - name: Ensure required CLI tools exist
         run: |
@@ -59,7 +59,7 @@ jobs:
           done
 
       # ==================================================
-      # 1) PYTHON & TEST
+      # 2) PYTHON & TEST
       # ==================================================
       - name: Show Python version
         run: $PYTHON_BIN --version || true
@@ -80,7 +80,7 @@ jobs:
           pytest || true
 
       # ==================================================
-      # 2) SECRET SCANNING – GITLEAKS
+      # 3) SECRET SCANNING – GITLEAKS
       # ==================================================
       - name: Gitleaks scan
         uses: gitleaks/gitleaks-action@v2
@@ -97,7 +97,7 @@ jobs:
             --report-path ${{ env.REPORT_DIR }}/gitleaks.json
 
       # ==================================================
-      # 3) SCA – pip-audit
+      # 4) SCA – pip-audit
       # ==================================================
       - name: SCA with pip-audit
         continue-on-error: true
@@ -112,7 +112,7 @@ jobs:
           fi
 
       # ==================================================
-      # 4) SAST – Bandit
+      # 5) SAST – Bandit
       # ==================================================
       - name: SAST with Bandit
         continue-on-error: true
@@ -123,7 +123,7 @@ jobs:
             -o "$REPORT_DIR/bandit.json" || true
 
       # ==================================================
-      # 5) MISCONFIG & FS SCAN – Trivy
+      # 6) MISCONFIG & FS SCAN – Trivy
       # ==================================================
       - name: Trivy FS scan
         uses: aquasecurity/trivy-action@0.28.0
@@ -146,7 +146,7 @@ jobs:
           severity: HIGH,CRITICAL
 
       # ==================================================
-      # 6) BUILD → IMAGE SCAN → PUSH
+      # 7) BUILD → IMAGE SCAN → PUSH
       # ==================================================
       - name: Docker Hub login
         run: |
@@ -176,7 +176,7 @@ jobs:
           severity: HIGH,CRITICAL
 
       # ==================================================
-      # EPSS RISK SCORING
+      # 8) EPSS RISK SCORING
       # ==================================================
       - name: EPSS risk evaluation
         id: epss
@@ -206,6 +206,8 @@ jobs:
             if (( $(echo "$score >= $threshold" | bc -l) )); then
               epss_hit=true
             fi
+
+            sleep 0.3
           done
 
           echo "epss_hit=$epss_hit" >> "$GITHUB_OUTPUT"
@@ -216,7 +218,28 @@ jobs:
           docker push "$IMAGE_REPO:latest"
 
       # ==================================================
-      # 7) DEPLOY TO VM2 (APP HOST)
+      # 9) SAFE DOCKER CLEANUP (AGE-BASED)
+      # ==================================================
+      - name: Docker cleanup (safe prune)
+        if: always()
+        run: |
+          echo "🧹 Cleaning up old Docker artifacts..."
+
+          if ! docker info > /dev/null 2>&1; then
+            echo "Docker not available, skipping cleanup."
+            exit 0
+          fi
+
+          # Remove unused images older than 7 days
+          docker image prune -a -f --filter "until=168h" || true
+
+          # Remove old build cache
+          docker builder prune -f --filter "until=168h" || true
+
+          echo "✅ Docker cleanup completed"
+
+      # ==================================================
+      # 10) DEPLOY TO VM2 (APP HOST)
       # ==================================================
       - name: Deploy app to VM2
         env:
@@ -254,7 +277,7 @@ jobs:
           exit 1
 
       # ==================================================
-      # 8) DAST – OWASP ZAP (Baseline)
+      # 11) DAST – OWASP ZAP (Baseline)
       # ==================================================
       - name: Prepare ZAP workspace
         run: chmod -R u+rwX "$GITHUB_WORKSPACE"
@@ -270,7 +293,7 @@ jobs:
           artifact_name: zap-baseline-report
 
       # ==================================================
-      # 9) RESULT AGGREGATION
+      # 12) RESULT AGGREGATION
       # ==================================================
       - name: Evaluate findings
         id: evaluate
@@ -285,7 +308,7 @@ jobs:
           echo "critical_found=$critical"
 
       # ==================================================
-      # AUTO GITHUB ISSUE (RISK-BASED)
+      # 13) AUTO GITHUB ISSUE (RISK-BASED)
       # ==================================================
       - name: Create GitHub Issue for exploitable vulnerabilities
         if: steps.evaluate.outputs.critical_found == 'true' && steps.epss.outputs.epss_hit == 'true'
@@ -319,7 +342,7 @@ jobs:
             });
     
       # ==================================================
-      # 9.5) DEVSECOPS PIPELINE SUMMARY
+      # 14) DEVSECOPS PIPELINE SUMMARY
       # ==================================================
       - name: DevSecOps Pipeline Summary
         if: always()
@@ -354,7 +377,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ==================================================
-      # 10) UPLOAD ARTIFACTS
+      # 15) UPLOAD ARTIFACTS
       # ==================================================
       - name: Upload security reports
         uses: actions/upload-artifact@v4
@@ -362,27 +385,6 @@ jobs:
           name: vuln-bank-security-reports
           path: ${{ env.REPORT_DIR }}
           if-no-files-found: warn
-
-      # ==================================================
-      # 11) SAFE DOCKER CLEANUP (AGE-BASED)
-      # ==================================================
-      - name: Docker cleanup (safe prune)
-        if: always()
-        run: |
-          echo "🧹 Cleaning up old Docker artifacts..."
-
-          if ! docker info > /dev/null 2>&1; then
-            echo "Docker not available, skipping cleanup."
-            exit 0
-          fi
-
-          # Remove unused images older than 7 days
-          docker image prune -a -f --filter "until=168h" || true
-
-          # Remove old build cache
-          docker builder prune -f --filter "until=168h" || true
-
-          echo "✅ Docker cleanup completed"
 
   notify:
     name: Notify on Critical Findings
