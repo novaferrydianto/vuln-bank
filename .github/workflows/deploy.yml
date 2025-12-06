@@ -156,11 +156,16 @@ jobs:
       # 7) REMOTE DEPLOY TO VM2 (RUNTIME SECRETS)
       # ==================================================
       - name: Deploy app to VM2
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           ssh -p $SSH_PORT -o StrictHostKeyChecking=no \
           $SSH_USER@$APP_HOST << EOF
             set -e
             cd /opt/vuln-bank/containers/app
+
+            echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
+              docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
 
             export IMAGE_WITH_TAG=$IMAGE_REPO:${{ github.sha }}
             export DB_PASSWORD='${{ secrets.DB_PASSWORD }}'
