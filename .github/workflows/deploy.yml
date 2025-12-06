@@ -17,7 +17,7 @@ env:
   # Docker image registry
   IMAGE_REPO: xbash81/vuln-bank
 
-  # === Architecture aware (Bastion → VM2) ===
+  # === Architecture aware (Bastion → VM2 App Host) ===
   APP_HOST: "192.168.107.135"
   SSH_USER: "hosting"
   SSH_PORT: "22"
@@ -55,7 +55,9 @@ jobs:
       - name: Install Python dependencies
         run: |
           $PYTHON_BIN -m pip install --upgrade pip
-          [ -f requirements.txt ] && $PYTHON_BIN -m pip install -r requirements.txt || true
+          if [ -f requirements.txt ]; then
+            $PYTHON_BIN -m pip install -r requirements.txt
+          fi
 
       - name: Run unit tests (optional)
         continue-on-error: true
@@ -87,9 +89,13 @@ jobs:
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install pip-audit
-          [ -f requirements.txt ] && \
-          pip-audit -r requirements.txt -f json \
-          -o $REPORT_DIR/pip-audit.json || true
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt \
+              -f json \
+              -o "$REPORT_DIR/pip-audit.json" || true
+          else
+            echo "requirements.txt not found, skipping pip-audit"
+          fi
 
       # ==================================================
       # 4) SAST (Bandit)
@@ -98,7 +104,9 @@ jobs:
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install bandit
-          bandit -r . -f json -o $REPORT_DIR/bandit.json || true
+          bandit -r . \
+            -f json \
+            -o "$REPORT_DIR/bandit.json" || true
 
       # ==================================================
       # 5) MISCONFIG & FS SCAN (Trivy)
@@ -135,8 +143,8 @@ jobs:
         run: |
           docker build \
             -f containers/app/Dockerfile \
-            -t $IMAGE_REPO:${{ github.sha }} \
-            -t $IMAGE_REPO:latest \
+            -t "$IMAGE_REPO:${{ github.sha }}" \
+            -t "$IMAGE_REPO:latest" \
             .
 
       - name: Trivy image scan
@@ -150,38 +158,43 @@ jobs:
 
       - name: Push image to Docker Hub
         run: |
-          docker push $IMAGE_REPO:${{ github.sha }}
-          docker push $IMAGE_REPO:latest
+          docker push "$IMAGE_REPO:${{ github.sha }}"
+          docker push "$IMAGE_REPO:latest"
 
       # ==================================================
       # 7) REMOTE DEPLOY TO VM2 (RUNTIME SECRETS)
       # ==================================================
-      - name: Deploy app to VM2
+      - name: Deploy app to VM2 (Hosting)
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: |
-          ssh -p $SSH_PORT -o StrictHostKeyChecking=no \
-          $SSH_USER@$APP_HOST << EOF
-            set -e
-            cd /opt/vuln-bank/containers/app
+          ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
+            "$SSH_USER@$APP_HOST" << EOF
+              set -e
+              cd /opt/vuln-bank/containers/app
 
-            echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
-              docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
+              echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
+                docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
 
-            export IMAGE_WITH_TAG=$IMAGE_REPO:${{ github.sha }}
-            export DB_PASSWORD='${{ secrets.DB_PASSWORD }}'
-            export DEEPSEEK_API_KEY='${{ secrets.DEEPSEEK_API_KEY }}'
+              export IMAGE_WITH_TAG=$IMAGE_REPO:${{ github.sha }}
+              export DB_PASSWORD='${{ secrets.DB_PASSWORD }}'
+              export DEEPSEEK_API_KEY='${{ secrets.DEEPSEEK_API_KEY }}'
 
-            docker compose pull
-            docker compose up -d
+              docker compose pull
+              docker compose up -d
           EOF
 
-      - name: Wait for application
+      - name: Wait for application to be ready
         run: |
           for i in {1..30}; do
-            curl -sf $DAST_TARGET_URL && exit 0
+            if curl -sf "$DAST_TARGET_URL" > /dev/null; then
+              echo "✅ App is reachable at $DAST_TARGET_URL"
+              exit 0
+            fi
+            echo "Waiting for app at $DAST_TARGET_URL... ($i/30)"
             sleep 5
           done
+          echo "❌ App did not become ready in time"
           exit 1
 
       # ==================================================
@@ -201,17 +214,27 @@ jobs:
         id: evaluate
         run: |
           critical=false
-          grep -RqiE "CRITICAL|HIGH" "$REPORT_DIR" && critical=true || true
-          echo "critical_found=$critical" >> $GITHUB_OUTPUT
+
+          if [ -d "$REPORT_DIR" ]; then
+            # Cari indikasi HIGH/CRITICAL di semua report JSON
+            if grep -RqiE "CRITICAL|HIGH" "$REPORT_DIR"; then
+              critical=true
+            fi
+          else
+            echo "Report directory not found: $REPORT_DIR"
+          fi
+
+          echo "critical_found=$critical" | tee -a "$GITHUB_OUTPUT"
 
       # ==================================================
       # 10) UPLOAD ARTIFACTS
       # ==================================================
-      - name: Upload reports
+      - name: Upload security reports
         uses: actions/upload-artifact@v4
         with:
           name: vuln-bank-security-reports
           path: ${{ env.REPORT_DIR }}
+          if-no-files-found: warn
 
   notify:
     name: Notify on Critical Findings
@@ -226,6 +249,16 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "SLACK_WEBHOOK_URL not set, skipping notification."
+            exit 0
+          fi
+
           curl -X POST -H "Content-type: application/json" \
-          --data '{"text":":rotating_light: Vuln Bank – High/Critical vulnerabilities detected"}' \
-          $SLACK_WEBHOOK_URL
+            --data "$(cat << 'JSON'
+          {
+            "text": ":rotating_light: *Vuln Bank – High/Critical vulnerabilities detected*\n\nPlease review the latest DevSecOps pipeline run and security reports artifact."
+          }
+          JSON
+            )" \
+            "$SLACK_WEBHOOK_URL"
