@@ -19,10 +19,6 @@ on:
     secrets:
       SLACK_WEBHOOK_URL:
         required: false
-      DOCKERHUB_USERNAME:
-        required: false
-      DOCKERHUB_TOKEN:
-        required: false
 
 permissions:
   contents: read
@@ -35,31 +31,54 @@ env:
   PYTHON_BIN: python3.11
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: ${{ inputs.epss_threshold }}
-  IMAGE_REPO: ${{ inputs.image_repo }}
-  IMAGE_TAG:  ${{ inputs.image_tag }}
-  DOCKER_BUILDKIT: "1"
 
-jobs:
+# ======================================================
+# COMMON TOOL SETUP (reused everywhere)
+# ======================================================
+defaults:
+  run:
+    shell: bash
+
 # ======================================================
 # 1) SAST – Semgrep
 # ======================================================
+jobs:
   sast_scan:
     runs-on: self-hosted
     continue-on-error: true
     outputs:
       critical: ${{ steps.flag.outputs.critical }}
+
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p $REPORT_DIR/sast
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+          command -v jq >/dev/null || \
+            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 -o "$BIN/jq" && chmod +x "$BIN/jq"
+
+      - run: mkdir -p "$REPORT_DIR/sast"
+
       - run: |
           docker run --rm -v "$PWD:/src" returntocorp/semgrep \
-            semgrep ci --config p/ci --json > $REPORT_DIR/sast/semgrep.json || true
+            semgrep ci --config p/ci --json > "$REPORT_DIR/sast/semgrep.json" || true
+
       - id: flag
         run: |
-          jq '[.results[]|select(.extra.severity=="ERROR")] | length' \
-            $REPORT_DIR/sast/semgrep.json | grep -qv 0 \
+          jq '[.results[] | select(.extra.severity=="ERROR")] | length' \
+            "$REPORT_DIR/sast/semgrep.json" | grep -qv 0 \
             && echo "critical=true" >> "$GITHUB_OUTPUT" \
             || echo "critical=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sast-report
+          path: ${{ env.REPORT_DIR }}/sast
 
 # ======================================================
 # 2) SCA + EPSS
@@ -68,16 +87,36 @@ jobs:
     runs-on: self-hosted
     continue-on-error: true
     outputs:
-      critical: ${{ steps.out.outputs.critical }}
+      critical:  ${{ steps.out.outputs.critical }}
       high_risk: ${{ steps.out.outputs.high_risk }}
       epss_max:  ${{ steps.out.outputs.epss_max }}
+
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p $REPORT_DIR/sca
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+          command -v jq >/dev/null || \
+            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 -o "$BIN/jq" && chmod +x "$BIN/jq"
+
+          command -v trivy >/dev/null || \
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$BIN"
+
+          if [[ "${{ inputs.scan_mode }}" == "full" ]]; then
+            $PYTHON_BIN -m venv .venv
+            .venv/bin/pip install pip-audit
+          fi
+
+      - run: mkdir -p "$REPORT_DIR/sca"
 
       - run: |
           trivy fs --severity HIGH,CRITICAL --format json \
-            -o $REPORT_DIR/sca/trivy.json .
+            -o "$REPORT_DIR/sca/trivy.json" .
 
       - id: out
         run: |
@@ -86,10 +125,9 @@ jobs:
           MAX=0
 
           jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")] | length' \
-            $REPORT_DIR/sca/trivy.json | grep -qv 0 && CRIT=true
+            "$REPORT_DIR/sca/trivy.json" | grep -qv 0 && CRIT=true
 
-          jq -r '..|.VulnerabilityID?//empty' \
-            $REPORT_DIR/sca/trivy.json | sort -u > cves.txt || true
+          jq -r '..|.VulnerabilityID?//empty' "$REPORT_DIR/sca/trivy.json" | sort -u > cves.txt || true
 
           while read -r cve; do
             e=$(curl -s https://api.first.org/data/v1/epss?cve=$cve | jq -r '.data[0].epss // 0')
@@ -97,9 +135,14 @@ jobs:
             awk "BEGIN{exit !($e>=${EPSS_THRESHOLD})}" && HIGH=true
           done < cves.txt || true
 
-          echo "critical=$CRIT" >> "$GITHUB_OUTPUT"
+          echo "critical=$CRIT"  >> "$GITHUB_OUTPUT"
           echo "high_risk=$HIGH" >> "$GITHUB_OUTPUT"
-          echo "epss_max=$MAX"  >> "$GITHUB_OUTPUT"
+          echo "epss_max=$MAX"   >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sca-report
+          path: ${{ env.REPORT_DIR }}/sca
 
 # ======================================================
 # 3) MISCONFIG
@@ -109,21 +152,38 @@ jobs:
     continue-on-error: true
     outputs:
       critical: ${{ steps.flag.outputs.critical }}
+
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p $REPORT_DIR/misconfig
+
+      - name: Install Trivy
+        run: |
+          BIN="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+          command -v trivy >/dev/null || \
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$BIN"
+
+      - run: mkdir -p "$REPORT_DIR/misconfig"
+
       - run: |
           trivy config --severity HIGH,CRITICAL --format json \
-            -o $REPORT_DIR/misconfig/config.json .
+            -o "$REPORT_DIR/misconfig/config.json" .
+
       - id: flag
         run: |
           jq '[.Results[].Misconfigurations[]?|select(.Severity=="CRITICAL")] | length' \
-            $REPORT_DIR/misconfig/config.json | grep -qv 0 \
+            "$REPORT_DIR/misconfig/config.json" | grep -qv 0 \
             && echo "critical=true" >> "$GITHUB_OUTPUT" \
             || echo "critical=false" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/upload-artifact@v5
+        with:
+          name: misconfig-report
+          path: ${{ env.REPORT_DIR }}/misconfig
+
 # ======================================================
-# 4) AGGREGATE
+# 4) AGGREGATE – SINGLE SOURCE OF TRUTH
 # ======================================================
   aggregate:
     runs-on: self-hosted
@@ -132,6 +192,7 @@ jobs:
       critical_found: ${{ steps.final.outputs.critical }}
       high_risk:      ${{ steps.final.outputs.high_risk }}
       epss_max:       ${{ steps.final.outputs.epss_max }}
+
     steps:
       - id: final
         run: |
@@ -143,6 +204,7 @@ jobs:
           do
             [ "$v" == "true" ] && CRIT=true
           done
-          echo "critical=$CRIT"           >> "$GITHUB_OUTPUT"
+
+          echo "critical=$CRIT" >> "$GITHUB_OUTPUT"
           echo "high_risk=${{ needs.sca_scan.outputs.high_risk }}" >> "$GITHUB_OUTPUT"
           echo "epss_max=${{ needs.sca_scan.outputs.epss_max }}"   >> "$GITHUB_OUTPUT"

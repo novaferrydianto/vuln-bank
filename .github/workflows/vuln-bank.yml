@@ -1,8 +1,5 @@
 name: Vuln Bank Pipeline
 
-permissions:
-  contents: read
-
 on:
   push:
     branches: ["main"]
@@ -11,17 +8,26 @@ on:
   schedule:
     - cron: "0 18 * * *"
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: write
+  id-token: write
+
 jobs:
   prep:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       mode: ${{ steps.m.outputs.mode }}
     steps:
       - id: m
         run: |
-          [[ "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "schedule" ]] \
-            && echo "mode=full" >> "$GITHUB_OUTPUT" \
-            || echo "mode=light" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=light" >> "$GITHUB_OUTPUT"
+          fi
 
   devsecops:
     needs: prep
