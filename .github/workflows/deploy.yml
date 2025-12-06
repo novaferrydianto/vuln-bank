@@ -283,7 +283,6 @@ jobs:
         run: chmod -R u+rwX "$GITHUB_WORKSPACE"
 
       - name: OWASP ZAP baseline scan
-        uses: zaproxy/action-baseline@v0.12.0
         continue-on-error: true
         run: |
           docker pull ghcr.io/zaproxy/zaproxy:stable
