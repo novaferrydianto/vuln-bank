@@ -307,6 +307,7 @@ jobs:
             report_json.json
             report_md.md
             report_html.html
+          if-no-files-found: warn
 
       # ==================================================
       # 12) RESULT AGGREGATION
