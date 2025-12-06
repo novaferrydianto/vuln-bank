@@ -29,7 +29,10 @@ env:
 jobs:
   security_build_deploy_dast:
     name: Security Scan → Build → Deploy → DAST
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, linux]
+    environment:
+      name: production
 
     outputs:
       critical_found: ${{ steps.evaluate.outputs.critical_found }}
@@ -284,7 +287,10 @@ jobs:
 
       - name: OWASP ZAP baseline scan
         continue-on-error: true
+        shell: bash
         run: |
+          set +e
+
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
@@ -326,11 +332,20 @@ jobs:
       # ==================================================
       - name: Evaluate findings
         id: evaluate
+        shell: bash
         run: |
           critical=false
 
           if grep -RqiE '"severity":\s*"(CRITICAL|HIGH)"' "$REPORT_DIR"; then
             critical=true
+          fi
+
+          # ZAP HIGH risk only (riskcode 3)
+          if [ -f "$REPORT_DIR/zap-report.json" ]; then
+            if jq -e '.site[].alerts[] | select(.riskcode == 3)' \
+              "$REPORT_DIR/zap-report.json" >/dev/null; then
+              critical=true
+            fi
           fi
 
           echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
