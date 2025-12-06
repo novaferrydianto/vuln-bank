@@ -105,14 +105,36 @@ jobs:
               | sh -s -- -b "$BIN"
           fi
 
-          # Gitleaks
+          # -------------------------------
+          # Gitleaks (robust install)
+          # -------------------------------
           if ! command -v gitleaks >/dev/null; then
             OS=$(uname -s | tr '[:upper:]' '[:lower:]')
             ARCH=$(uname -m | sed 's/x86_64/amd64/')
+
             VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-            curl -sSL \
-              "https://github.com/gitleaks/gitleaks/releases/download/${VER}/gitleaks_${VER#v}_${OS}_${ARCH}.tar.gz" \
-              | tar -xz -C "$BIN"
+            ASSET_URL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+              | jq -r ".assets[] | select(.name | test(\"${OS}_${ARCH}\")) | .browser_download_url" | head -n1)
+
+            if [ -z "$ASSET_URL" ]; then
+              echo "❌ Gitleaks binary not found for ${OS}/${ARCH}"
+              exit 1
+            fi
+
+            echo "Downloading Gitleaks from $ASSET_URL"
+            curl -sSL "$ASSET_URL" -o gitleaks.pkg
+
+            FILE_TYPE=$(file gitleaks.pkg)
+
+            if echo "$FILE_TYPE" | grep -qi gzip; then
+              tar -xzf gitleaks.pkg -C "$BIN"
+            elif echo "$FILE_TYPE" | grep -qi zip; then
+              unzip -q gitleaks.pkg -d "$BIN"
+            else
+              echo "❌ Unknown Gitleaks package format: $FILE_TYPE"
+              exit 1
+            fi
+
             chmod +x "$BIN/gitleaks"
           fi
 
