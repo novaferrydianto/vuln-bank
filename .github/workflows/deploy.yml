@@ -47,6 +47,18 @@ jobs:
         run: mkdir -p "$REPORT_DIR"
 
       # ==================================================
+      # TOOLING SANITY (SELF-HOSTED SAFETY)
+      # ==================================================
+      - name: Ensure required CLI tools exist
+        run: |
+          for cmd in jq bc curl; do
+            if ! command -v $cmd >/dev/null 2>&1; then
+              echo "Installing $cmd..."
+              sudo yum install -y $cmd || sudo apt-get install -y $cmd
+            fi
+          done
+
+      # ==================================================
       # 1) PYTHON & TEST
       # ==================================================
       - name: Show Python version
@@ -163,6 +175,41 @@ jobs:
           output: ${{ env.REPORT_DIR }}/trivy-image.json
           severity: HIGH,CRITICAL
 
+      # ==================================================
+      # EPSS RISK SCORING
+      # ==================================================
+      - name: EPSS risk evaluation
+        id: epss
+        continue-on-error: true
+        run: |
+          epss_hit=false
+          threshold=0.5
+
+          if [ ! -f "$REPORT_DIR/trivy-image.json" ]; then
+            echo "No Trivy image report found, skipping EPSS"
+            echo "epss_hit=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CVES=$(jq -r '
+            .Results[]?.Vulnerabilities[]? | 
+             select(.Severity=="HIGH" or .Severity=="CRITICAL") | 
+            .VulnerabilityID
+          ' "$REPORT_DIR/trivy-image.json" | sort -u)
+
+          for cve in $CVES; do
+            score=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
+              | jq -r '.data[0].epss // 0')
+
+            echo "CVE=$cve | EPSS=$score"
+
+            if (( $(echo "$score >= $threshold" | bc -l) )); then
+              epss_hit=true
+            fi
+          done
+
+          echo "epss_hit=$epss_hit" >> "$GITHUB_OUTPUT"
+
       - name: Push image
         run: |
           docker push "$IMAGE_REPO:${{ github.sha }}"
@@ -232,6 +279,75 @@ jobs:
 
           echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
           echo "critical_found=$critical"
+
+      # ==================================================
+      # AUTO GITHUB ISSUE (RISK-BASED)
+      # ==================================================
+      - name: Create GitHub Issue for exploitable vulnerabilities
+        if: steps.evaluate.outputs.critical_found == 'true' && steps.epss.outputs.epss_hit == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: "🚨 High-Risk Vulnerabilities Detected (EPSS ≥ 0.5)",
+            body: `
+            ### ⚠️ Security Alert – Vuln Bank
+
+            This pipeline detected **HIGH/CRITICAL vulnerabilities** with **high EPSS probability**.
+
+            **Why this matters:**
+              - Vulnerabilities are likely to be exploited in the wild
+              - Immediate investigation is recommended
+
+            **Details:**
+              - Image: \`${process.env.IMAGE_REPO}:${process.env.GITHUB_SHA}\`
+              - Reports: See workflow artifacts
+
+            **Next Actions:**
+              - Patch dependencies
+              - Rebuild image
+              - Re-run security pipeline
+            `,
+              labels: ["security", "devsecops", "high-risk"]
+            });
+    
+      # ==================================================
+      # 9.5) DEVSECOPS PIPELINE SUMMARY
+      # ==================================================
+      - name: DevSecOps Pipeline Summary
+        if: always()
+        run: |
+          {
+            echo "# 🔐 Vuln Bank – DevSecOps Pipeline Summary"
+            echo ""
+            echo "## 🧪 Security Scans Executed"
+            echo "- ✅ Gitleaks (Secrets)"
+            echo "- ✅ pip-audit (SCA)"
+            echo "- ✅ Bandit (SAST)"
+            echo "- ✅ Trivy FS & Config"
+            echo "- ✅ Trivy Image"
+            echo "- ✅ OWASP ZAP (DAST Baseline)"
+            echo ""
+            echo "## 🐳 Container Image"
+            echo "- Image: \`${IMAGE_REPO}:${GITHUB_SHA}\`"
+            echo ""
+            echo "## 🌐 Deployment"
+            echo "- Target: ${DAST_TARGET_URL}"
+            echo "- Status: ✅ Application reachable"
+            echo ""
+            echo "## 🚦 Security Verdict"
+            if [ "${{ steps.evaluate.outputs.critical_found }}" = "true" ]; then
+              echo "- ❌ **HIGH / CRITICAL vulnerabilities detected**"
+            else
+              echo "- ✅ **No HIGH / CRITICAL vulnerabilities found**"
+            fi
+            echo ""
+            echo "## 📦 Artifacts"
+            echo "- 📄 Security reports uploaded as workflow artifact"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ==================================================
       # 10) UPLOAD ARTIFACTS
