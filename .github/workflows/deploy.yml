@@ -124,6 +124,11 @@ jobs:
       # ==================================================
       - name: Docker Hub login
         run: | 
+          if ! docker info > /dev/null 2>&1; then
+            echo "Docker not available on runner"
+            exit 1
+          fi
+
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
           docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
@@ -182,7 +187,7 @@ jobs:
       # 8) DAST – OWASP ZAP (Baseline)
       # ==================================================
       - name: Prepare ZAP workspace
-        run: chmod -R a+w "$GITHUB_WORKSPACE"
+        run: chmod -R u+rwX "$GITHUB_WORKSPACE"
 
       - name: OWASP ZAP baseline scan
         uses: zaproxy/action-baseline@v0.12.0
@@ -201,7 +206,11 @@ jobs:
         id: evaluate
         run: |
           critical=false
-          grep -RqiE "CRITICAL|HIGH" "$REPORT_DIR" && critical=true || true
+
+          if grep -RqiE '"severity":\s*"(CRITICAL|HIGH)"' "$REPORT_DIR"; then
+            critical=true
+          fi
+          
           echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
 
       # ==================================================
