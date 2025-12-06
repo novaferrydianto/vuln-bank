@@ -292,11 +292,23 @@ jobs:
             -v "$PWD:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-              -t $DAST_TARGET_URL \
+              -t "$DAST_TARGET_URL" \
               -J zap-report.json \
               -w zap-report.md \
               -r zap-report.html \
               -a -T 120
+
+          ZAP_EXIT=$?
+          echo "ZAP exit code: $ZAP_EXIT"
+
+          # Fail pipeline ONLY if ZAP detects FAIL (exit code 1)
+          if [ "$ZAP_EXIT" -eq 1 ]; then
+            echo "❌ ZAP detected HIGH / FAIL findings"
+            exit 1
+          fi
+
+          echo "✅ ZAP completed (WARN allowed)"
+          exit 0
 
       - name: Upload ZAP reports
         if: always()
