@@ -123,8 +123,9 @@ jobs:
       # 6) BUILD → IMAGE SCAN → PUSH
       # ==================================================
       - name: Docker Hub login
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
-             docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+        run: | 
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build image
         run: |
