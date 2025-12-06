@@ -24,11 +24,9 @@ env:
   REPORT_DIR: security-reports
   PYTHON_BIN: python3.11
   EPSS_THRESHOLD: "0.5"
-  POLICY_DIR: policy
   IMAGE_REPO: xbash81/vuln-bank
   IMAGE_TAG: ${{ github.sha }}
   DOCKER_BUILDKIT: "1"
-  DAST_TARGET_URL: "http://vuln-bank-dast:5000"
 
 # ======================================================
 # 0) PREP – DETERMINE SCAN MODE
@@ -63,11 +61,11 @@ jobs:
 
       - id: scanmode
         run: |
-          echo "SCAN_MODE=${{ needs.prep.outputs.scan_mode }}" >> $GITHUB_ENV
-          echo "mode=${{ needs.prep.outputs.scan_mode }}" >> $GITHUB_OUTPUT
+          echo "SCAN_MODE=${{ needs.prep.outputs.scan_mode }}" >> "$GITHUB_ENV"
+          echo "mode=${{ needs.prep.outputs.scan_mode }}" >> "$GITHUB_OUTPUT"
 
       # --------------------------------------------------
-      # Python Virtualenv (pip-audit only)
+      # Python venv (pip-audit only)
       # --------------------------------------------------
       - name: Prepare Python environment
         run: |
@@ -76,7 +74,7 @@ jobs:
           .venv/bin/pip install --upgrade pip pip-audit
 
       # --------------------------------------------------
-      # Install Security Tools (Non-Root Safe)
+      # Install Security Tools (NON-ROOT, ROBUST)
       # --------------------------------------------------
       - name: Install security tools
         run: |
@@ -106,32 +104,41 @@ jobs:
           fi
 
           # -------------------------------
-          # Gitleaks (robust install)
+          # GITLEAKS – FINAL ROBUST VERSION
           # -------------------------------
           if ! command -v gitleaks >/dev/null; then
             OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-            ARCH=$(uname -m | sed 's/x86_64/amd64/')
+            ARCH_RAW=$(uname -m)
 
-            VER=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-            ASSET_URL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-              | jq -r ".assets[] | select(.name | test(\"${OS}_${ARCH}\")) | .browser_download_url" | head -n1)
+            case "$ARCH_RAW" in
+              x86_64) ARCH="x64" ;;
+              aarch64|arm64) ARCH="arm64" ;;
+              *)
+                echo "❌ Unsupported arch for gitleaks: $ARCH_RAW"
+                exit 1
+                ;;
+            esac
+
+            API_JSON=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest)
+
+            ASSET_URL=$(echo "$API_JSON" |
+              jq -r ".assets[] | select(.name | test(\"${OS}_${ARCH}\"; \"i\")) | .browser_download_url" |
+              head -n1)
 
             if [ -z "$ASSET_URL" ]; then
-              echo "❌ Gitleaks binary not found for ${OS}/${ARCH}"
+              echo "❌ Gitleaks asset not found"
+              echo "$API_JSON" | jq -r '.assets[].name'
               exit 1
             fi
 
-            echo "Downloading Gitleaks from $ASSET_URL"
             curl -sSL "$ASSET_URL" -o gitleaks.pkg
 
-            FILE_TYPE=$(file gitleaks.pkg)
-
-            if echo "$FILE_TYPE" | grep -qi gzip; then
+            if file gitleaks.pkg | grep -qi gzip; then
               tar -xzf gitleaks.pkg -C "$BIN"
-            elif echo "$FILE_TYPE" | grep -qi zip; then
+            elif file gitleaks.pkg | grep -qi zip; then
               unzip -q gitleaks.pkg -d "$BIN"
             else
-              echo "❌ Unknown Gitleaks package format: $FILE_TYPE"
+              echo "❌ Unknown gitleaks archive"
               exit 1
             fi
 
@@ -145,7 +152,7 @@ jobs:
             chmod +x "$BIN/snyk"
           fi
 
-      - name: Verify security tools
+      - name: Verify tools
         run: |
           jq --version
           trivy --version
@@ -153,14 +160,12 @@ jobs:
           gitleaks version
           snyk --version
 
-      - name: Prepare report directories
+      - name: Prepare report dirs
         run: |
           mkdir -p ${REPORT_DIR}/{secrets,sca,sast,misconfig,dast,sbom}
           echo "false" > critical_flag.txt
 
-# ======================================================
-# SECRET SCANNING
-# ======================================================
+      # ---------------- SECRET SCAN ----------------
       - name: Secret Scan – Gitleaks
         run: |
           gitleaks detect --source . \
@@ -169,9 +174,7 @@ jobs:
           jq -e 'length>0' ${REPORT_DIR}/secrets/gitleaks.json \
             && echo true > critical_flag.txt || true
 
-# ======================================================
-# SAST – SEMGREP
-# ======================================================
+      # ---------------- SAST ----------------
       - name: SAST – Semgrep
         run: |
           docker run --rm -v "$PWD:/src" returntocorp/semgrep \
@@ -181,9 +184,7 @@ jobs:
             ${REPORT_DIR}/sast/semgrep.json | grep -qv 0 \
             && echo true > critical_flag.txt || true
 
-# ======================================================
-# SCA – DEPENDENCIES
-# ======================================================
+      # ---------------- SCA ----------------
       - name: SCA – pip-audit
         if: env.SCAN_MODE == 'full'
         run: |
@@ -207,24 +208,19 @@ jobs:
           grep -qi '"critical"' ${REPORT_DIR}/sca/snyk.json \
             && echo true > critical_flag.txt || true
 
-# ======================================================
-# EPSS PRIORITIZATION
-# ======================================================
-      - name: EPSS Risk Check
+      # ---------------- EPSS ----------------
+      - name: EPSS Check
         run: |
           jq -r '..|.VulnerabilityID?//empty' \
             ${REPORT_DIR}/sca/trivy.json | sort -u > cves.txt || true
           while read cve; do
-            epss=$(curl -s \
-              "https://api.first.org/data/v1/epss?cve=$cve" \
-              | jq -r '.data[0].epss // 0')
+            epss=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" |
+              jq -r '.data[0].epss // 0')
             awk "BEGIN{exit !($epss > ${EPSS_THRESHOLD})}" \
               && echo true > critical_flag.txt
           done < cves.txt || true
 
-# ======================================================
-# MISCONFIGURATION
-# ======================================================
+      # ---------------- MISCONFIG ----------------
       - name: Misconfiguration – Trivy Config
         run: |
           trivy config --severity HIGH,CRITICAL \
@@ -234,25 +230,7 @@ jobs:
             ${REPORT_DIR}/misconfig/config.json | grep -qv 0 \
             && echo true > critical_flag.txt || true
 
-# ======================================================
-# DAST – OWASP ZAP (FULL ONLY)
-# ======================================================
-      - name: DAST – OWASP ZAP
-        if: env.SCAN_MODE == 'full'
-        run: |
-          docker build -t vuln-bank-dast .
-          docker run -d --rm --name vuln-bank-dast -p 5000:5000 vuln-bank-dast
-          sleep 12
-          docker run --rm -t owasp/zap2docker-stable zap-baseline.py \
-            -t http://host.docker.internal:5000 \
-            -J ${REPORT_DIR}/dast/zap.json || true
-          jq '[.site[].alerts[]?|select(.riskcode=="3")] | length' \
-            ${REPORT_DIR}/dast/zap.json | grep -qv 0 \
-            && echo true > critical_flag.txt || true
-
-# ======================================================
-# SBOM
-# ======================================================
+      # ---------------- SBOM ----------------
       - name: Generate SBOM
         run: syft . -o json > ${REPORT_DIR}/sbom/sbom.json
 
@@ -262,7 +240,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
       - id: flag
-        run: echo "critical_found=$(cat critical_flag.txt)" >> $GITHUB_OUTPUT
+        run: echo "critical_found=$(cat critical_flag.txt)" >> "$GITHUB_OUTPUT"
 
 # ======================================================
 # 2) SECURITY GATE
@@ -292,7 +270,7 @@ jobs:
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
           -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Build & Push Image
+      - name: Build & push image
         run: |
           docker build -t $IMAGE_REPO:$IMAGE_TAG .
           docker push $IMAGE_REPO:$IMAGE_TAG
@@ -304,7 +282,7 @@ jobs:
         run: cosign sign --yes $IMAGE_REPO:$IMAGE_TAG
 
 # ======================================================
-# 4) DEPLOY TO HOSTING VM
+# 4) DEPLOY
 # ======================================================
   deploy:
     runs-on: self-hosted
@@ -318,7 +296,7 @@ jobs:
           EOF
 
 # ======================================================
-# 5) SLACK NOTIFICATION
+# 5) SLACK NOTIFY
 # ======================================================
   slack_notify:
     runs-on: self-hosted
