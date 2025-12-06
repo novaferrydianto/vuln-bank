@@ -90,11 +90,15 @@ jobs:
         run: |
           set -e
 
+          BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN_DIR"
+          export PATH="$BIN_DIR:$PATH"
+
           if ! command -v gitleaks >/dev/null 2>&1; then
            echo "Installing gitleaks..."
            curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
-            | tar -xz
-           sudo mv gitleaks /usr/local/bin/
+            | tar -xz -C "$BIN_DIR"
+           chmod +x "$BIN_DIR/gitleaks"
           fi
 
           gitleaks detect \
