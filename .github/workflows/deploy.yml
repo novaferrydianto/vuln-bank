@@ -80,8 +80,7 @@ jobs:
 
           # jq
           if ! command -v jq >/dev/null; then
-            curl -sSL \
-              https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 \
+            curl -sSL https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 \
               -o "$BIN/jq"
             chmod +x "$BIN/jq"
           fi
@@ -113,11 +112,14 @@ jobs:
 
             API_JSON="$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest)"
 
-            ASSET_URL="$(echo "$API_JSON" \
-              | jq -r ".assets[] 
-                | select(.name | test(\"gitleaks_.*_${OS}_${ARCH}\\.tar\\.gz$\")) 
-                | .browser_download_url" \
-              | head -n1)"
+            ASSET_URL="$(echo "$API_JSON" | jq -r --arg arch "$ARCH" '
+              .assets[]
+              | select(
+                  (.name | contains("linux_" + $arch))
+                  and (.name | endswith(".tar.gz"))
+                )
+              | .browser_download_url
+            ' | head -n1)"
 
             if [ -z "$ASSET_URL" ]; then
               echo "❌ Gitleaks asset not found for ${OS}_${ARCH}"
@@ -252,14 +254,18 @@ jobs:
     needs: security_gate
     steps:
       - uses: actions/checkout@v4
+
       - name: Docker login
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
           -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
       - name: Build & push image
         run: |
           docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
           docker push "$IMAGE_REPO:$IMAGE_TAG"
+
       - uses: sigstore/cosign-installer@v3
+
       - name: Cosign Sign
         run: cosign sign --yes "$IMAGE_REPO:$IMAGE_TAG"
         env:
@@ -275,6 +281,7 @@ jobs:
       - name: Deploy to hosting VM
         run: |
           ssh hosting@192.168.107.135 <<EOF
+          set -e
           docker pull "$IMAGE_REPO:$IMAGE_TAG"
           cd /opt/vuln-bank-app/containers/app
           IMAGE_WITH_TAG="$IMAGE_REPO:$IMAGE_TAG" docker compose up -d
@@ -294,9 +301,10 @@ jobs:
 
           MODE="${{ needs.prep.outputs.scan_mode }}"
           CRIT="${{ needs.security_scans.outputs.critical_found }}"
+          GATE="${{ needs.security_gate.result }}"
 
-          if [[ "${{ needs.security_gate.result }}" == "failure" ]]; then
-            STATUS="❌ BLOCKED"
+          if [[ "$GATE" == "failure" ]]; then
+            STATUS="❌ BLOCKED (Security Gate)"
             COLOR="#E01E5A"
           elif [[ "$CRIT" == "true" && "$MODE" == "full" ]]; then
             STATUS="⚠️ CRITICAL FOUND"
@@ -313,8 +321,8 @@ jobs:
               "title":"Vuln Bank DevSecOps Pipeline",
               "fields":[
                 {"title":"Mode","value":"$MODE","short":true},
-                {"title":"Critical","value":"$CRIT","short":true},
-                {"title":"Status","value":"$STATUS","short":false}
+                {"title":"Critical Found","value":"$CRIT","short":true},
+                {"title":"Result","value":"$STATUS","short":false}
               ]
             }]
           }
