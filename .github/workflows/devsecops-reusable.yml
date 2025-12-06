@@ -269,37 +269,37 @@ jobs:
           echo "high_risk=${{ needs.sca_scan.outputs.high_risk }}" >> "$GITHUB_OUTPUT"
           echo "epss_max=${{ needs.sca_scan.outputs.epss_max }}"   >> "$GITHUB_OUTPUT"
 
+    # ======================================================
+  # 5) EPSS PR GATE — BLOCK HIGH-RISK PULL REQUESTS
   # ======================================================
-  # 5) EPSS-AWARE SARIF POLICY GATE (Code Scanning)
-  # ======================================================
-  code_scanning_gate:
+  epss_pr_gate:
     runs-on: self-hosted
     needs: aggregate
-    # Only enforce on PRs – pushes to main can use a separate gate if needed
     if: github.event_name == 'pull_request'
 
     steps:
-      - name: EPSS-aware Code Scanning policy gate
+      - name: Evaluate EPSS Risk
         run: |
           set -euo pipefail
 
-          CRIT="${{ needs.aggregate.outputs.critical_found }}"
-          HIGH="${{ needs.aggregate.outputs.high_risk }}"
-          EPSS="${{ needs.aggregate.outputs.epss_max }}"
+          EPSS_MAX="${{ needs.aggregate.outputs.epss_max }}"
+          HIGH_RISK="${{ needs.aggregate.outputs.high_risk }}"
           THRESHOLD="${{ env.EPSS_THRESHOLD }}"
 
-          echo "Critical Found : $CRIT"
-          echo "High Risk      : $HIGH (EPSS max = $EPSS, threshold = $THRESHOLD)"
+          echo "EPSS_MAX=$EPSS_MAX"
+          echo "HIGH_RISK=$HIGH_RISK"
+          echo "THRESHOLD=$THRESHOLD"
 
-          if [[ "$HIGH" == "true" ]]; then
-            echo "❌ BLOCKED: High-risk vulnerabilities (EPSS >= $THRESHOLD)."
+          if [[ "$HIGH_RISK" == "true" ]]; then
+            echo "❌ BLOCKING PR — High exploit probability detected (EPSS ≥ $THRESHOLD)"
+            echo ""
+            echo "Reason:"
+            echo "- EPSS Max: $EPSS_MAX"
+            echo "- Threshold: $THRESHOLD"
+            echo "- Source: Software Composition Analysis (Trivy/Snyk)"
             exit 1
           fi
 
-          if [[ "$CRIT" == "true" ]]; then
-            echo "⚠️ Findings present but EPSS below threshold – allowing PR (review recommended)."
-            exit 0
-          fi
+          echo "✅ EPSS Gate passed — PR safe to merge"
 
-          echo "✅ CLEAN: No critical findings detected."
 
