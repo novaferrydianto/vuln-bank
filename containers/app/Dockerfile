@@ -1,5 +1,5 @@
 # -----------------------------
-# STAGE 1 — BUILDER (install deps safely)
+# STAGE 1 — BUILDER
 # -----------------------------
 FROM python:3.11-slim AS builder
 
@@ -21,11 +21,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 
 # -----------------------------
-# STAGE 2 — RUNTIME (minimal)
+# STAGE 2 — RUNTIME
 # -----------------------------
-FROM python:3.11-slim
+FROM python:3.11-slim AS runtime
 
-# Security: Remove pip, build tools, cache, compilers
+# Slightly hardened OS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     ca-certificates \
@@ -33,20 +33,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /usr/local/lib/python*/distutils \
     && rm -rf /usr/local/bin/pip
 
-# Add non-root user
+# Non-root user
 RUN addgroup --system appgroup \
     && adduser --system --ingroup appgroup appuser
 
 WORKDIR /app
 
-# Copy installed deps only
+# -----------------------------
+# COPY ONLY NECESSARY FILES
+# Full Python deps
+# -----------------------------
 COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
-# Copy app source
+# -----------------------------
+# Copy application source
+# -----------------------------
 COPY . .
 
-# Allow only specific writable dirs
+# Writable uploads directory
 RUN mkdir -p /app/static/uploads \
     && chown -R appuser:appgroup /app/static/uploads \
     && chmod 750 /app/static/uploads
