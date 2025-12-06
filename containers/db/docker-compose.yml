@@ -7,13 +7,29 @@ services:
     environment:
       POSTGRES_DB: vulnerable_bank
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
-    ports:
-      - "5432:5432"
+    # ❌ DO NOT EXPOSE TO PUBLIC NETWORK
+    # ports:
+    #   - "5432:5432"
 
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data:rw
+
+    # -----------------------------
+    # 🛡️ Container Hardening
+    # -----------------------------
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    read_only: false   # postgres requires write access
+
+    pids_limit: 200
+    mem_limit: 1g
+    cpus: 1.0
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -23,3 +39,4 @@ services:
 
 volumes:
   pg_data:
+    driver: local

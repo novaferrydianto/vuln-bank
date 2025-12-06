@@ -6,168 +6,220 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *" # ~01:00 WIB
+    - cron: "0 18 * * *" # ~01:00 WIB Daily Scan
   workflow_dispatch:
 
 env:
   APP_NAME: vuln-bank
   REPORT_DIR: security-reports
-  PYTHON_VERSION: "3.11"
+  PYTHON_BIN: python3.11
 
-  # === ARCHITECTURE AWARE ===
+  # Docker image registry
+  IMAGE_REPO: xbash81/vuln-bank
+
+  # === Architecture aware (Bastion → VM2) ===
   APP_HOST: "192.168.107.135"
   SSH_USER: "hosting"
   SSH_PORT: "22"
   DAST_TARGET_URL: "http://192.168.107.135:5000"
 
-  CRITICAL_SEVERITY: "CRITICAL"
-  HIGH_SEVERITY: "HIGH"
-
 jobs:
-  security_scans:
-    name: Security Scans & Remote DAST
+  security_build_deploy_dast:
+    name: Security Scan → Build → Deploy → DAST
     runs-on:
       - self-hosted
       - linux
 
     outputs:
-      critical_found: ${{ steps.set_flags.outputs.critical_found }}
+      critical_found: ${{ steps.evaluate.outputs.critical_found }}
 
     steps:
-      - name: Checkout code
+      # ==================================================
+      # 0) CHECKOUT & PREPARE
+      # ==================================================
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify Python version
-        run: |
-          python3.11 --version
-          pip3.11 --version
+      - name: Prepare report directory
+        run: mkdir -p "$REPORT_DIR"
 
-      - name: Install Python deps
+      # ==================================================
+      # 1) PYTHON SETUP & TEST
+      # ==================================================
+      - name: Show Python version
         run: |
-          python3.11 -m pip install --upgrade pip
-          [ -f requirements.txt ] && pip3.11 install -r requirements.txt || true
+          $PYTHON_BIN --version || true
+
+      - name: Install Python dependencies
+        run: |
+          $PYTHON_BIN -m pip install --upgrade pip
+          [ -f requirements.txt ] && $PYTHON_BIN -m pip install -r requirements.txt || true
 
       - name: Run unit tests (optional)
         continue-on-error: true
         run: |
-          pip3.11 install pytest
+          $PYTHON_BIN -m pip install pytest
           pytest || true
 
-      # =========================
-      # 1) SECRET SCANNING
-      # =========================
-      - name: Secret scan with Gitleaks
+      # ==================================================
+      # 2) SECRET SCANNING (GITLEAKS)
+      # ==================================================
+      - name: Gitleaks scan
         uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: 
-            detect \
-            --source . \
-            --no-git \
-            --report-format json \
+          args: |
+            detect
+            --source .
+            --no-git
+            --redact
+            --report-format json
             --report-path ${{ env.REPORT_DIR }}/gitleaks.json
 
-      # =========================
-      # 2) SCA
-      # =========================
-      - name: pip-audit
+      # ==================================================
+      # 3) SCA (pip-audit)
+      # ==================================================
+      - name: SCA with pip-audit
         continue-on-error: true
         run: |
-          mkdir -p $REPORT_DIR
-          pip install pip-audit
+          $PYTHON_BIN -m pip install pip-audit
           [ -f requirements.txt ] && \
           pip-audit -r requirements.txt -f json \
           -o $REPORT_DIR/pip-audit.json || true
 
-      # =========================
-      # 3) SAST
-      # =========================
-      - name: Bandit
+      # ==================================================
+      # 4) SAST (Bandit)
+      # ==================================================
+      - name: SAST with Bandit
         continue-on-error: true
         run: |
-          mkdir -p $REPORT_DIR
-          pip install bandit
+          $PYTHON_BIN -m pip install bandit
           bandit -r . -f json -o $REPORT_DIR/bandit.json || true
 
-      # =========================
-      # 4) MISCONFIG
-      # =========================
-      - name: Trivy FS & Config
+      # ==================================================
+      # 5) MISCONFIG & FS SCAN (Trivy)
+      # ==================================================
+      - name: Trivy FS scan
+        uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
-        run: |
-          mkdir -p $REPORT_DIR
-          trivy fs . --severity HIGH,CRITICAL \
-            --format json -o $REPORT_DIR/trivy-fs.json || true
-          trivy config . --severity HIGH,CRITICAL \
-            --format json -o $REPORT_DIR/trivy-config.json || true
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-fs.json
+          severity: HIGH,CRITICAL
 
-      # =========================
-      # 5) DEPLOY → VM2
-      # =========================
-      - name: Deploy app to Hosting VM
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-config.json
+          severity: HIGH,CRITICAL
+
+      # ==================================================
+      # 6) BUILD IMAGE → IMAGE SCAN → PUSH
+      # ==================================================
+      - name: Docker Hub login
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build image
+        run: |
+          docker build \
+            -t $IMAGE_REPO:${{ github.sha }} \
+            -t $IMAGE_REPO:latest \
+            containers/app
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-image.json
+          severity: HIGH,CRITICAL
+
+      - name: Push image to Docker Hub
+        run: |
+          docker push $IMAGE_REPO:${{ github.sha }}
+          docker push $IMAGE_REPO:latest
+
+      # ==================================================
+      # 7) REMOTE DEPLOY TO VM2 (RUNTIME SECRETS)
+      # ==================================================
+      - name: Deploy app to VM2
         run: |
           ssh -p $SSH_PORT -o StrictHostKeyChecking=no \
-          $SSH_USER@$APP_HOST << 'EOF'
-            cd /opt/vuln-bank
+          $SSH_USER@$APP_HOST << EOF
+            set -e
+            cd /opt/vuln-bank/containers/app
+
+            export IMAGE_WITH_TAG=$IMAGE_REPO:${{ github.sha }}
+            export DB_PASSWORD='${{ secrets.DB_PASSWORD }}'
+            export DEEPSEEK_API_KEY='${{ secrets.DEEPSEEK_API_KEY }}'
+
             docker compose pull
-            docker compose down
             docker compose up -d
           EOF
 
-      - name: Wait app ready (remote)
+      - name: Wait for application
         run: |
           for i in {1..30}; do
-            if curl -sSf $DAST_TARGET_URL > /dev/null; then
-              echo "✅ App ready on VM2"
-              exit 0
-            fi
+            curl -sf $DAST_TARGET_URL && exit 0
             sleep 5
           done
           exit 1
 
-      # =========================
-      # 6) DAST (REAL)
-      # =========================
-      - name: OWASP ZAP Baseline
+      # ==================================================
+      # 8) DAST – OWASP ZAP
+      # ==================================================
+      - name: OWASP ZAP baseline scan
         uses: zaproxy/action-baseline@v0.12.0
         continue-on-error: true
         with:
           target: ${{ env.DAST_TARGET_URL }}
           cmd_options: "-a -T 120"
 
-      # =========================
-      # 7) AGGREGATE RESULT
-      # =========================
+      # ==================================================
+      # 9) AGGREGATE RESULTS
+      # ==================================================
       - name: Evaluate findings
-        id: set_flags
+        id: evaluate
         run: |
           critical=false
-          grep -Rqi "CRITICAL\|HIGH" $REPORT_DIR && critical=true || true
+          grep -RqiE "CRITICAL|HIGH" "$REPORT_DIR" && critical=true || true
           echo "critical_found=$critical" >> $GITHUB_OUTPUT
 
-      - name: Upload artifacts
+      # ==================================================
+      # 10) UPLOAD ARTIFACTS
+      # ==================================================
+      - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
           name: vuln-bank-security-reports
           path: ${{ env.REPORT_DIR }}
 
   notify:
-    name: Slack & Issue
-    needs: security_scans
+    name: Notify on Critical Findings
+    needs: security_build_deploy_dast
     runs-on:
       - self-hosted
       - linux
-    if: needs.security_scans.outputs.critical_found == 'true'
+    if: needs.security_build_deploy_dast.outputs.critical_found == 'true'
 
     steps:
-      - name: Slack notify
+      - name: Slack notification
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          curl -X POST -H 'Content-type: application/json' \
+          curl -X POST -H "Content-type: application/json" \
           --data '{"text":":rotating_light: Vuln Bank – High/Critical vulnerabilities detected"}' \
           $SLACK_WEBHOOK_URL
