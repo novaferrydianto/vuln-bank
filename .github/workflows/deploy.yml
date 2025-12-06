@@ -293,9 +293,9 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_TARGET_URL" \
-              -J zap-report.json \
-              -w zap-report.md \
-              -r zap-report.html \
+              -J "$REPORT_DIR/zap-report.json" \
+              -w "$REPORT_DIR/zap-report.md" \
+              -r "$REPORT_DIR/zap-report.html" \
               -a -T 120
 
           ZAP_EXIT=$?
@@ -316,9 +316,9 @@ jobs:
         with:
           name: zap-dast-reports
           path: |
-            report_json.json
-            report_md.md
-            report_html.html
+            security-reports/zap-report.json
+            security-reports/zap-report.md
+            security-reports/zap-report.html
           if-no-files-found: warn
 
       # ==================================================
