@@ -9,6 +9,10 @@ on:
     - cron: "0 18 * * *" # ~01:00 WIB Daily Scan
   workflow_dispatch:
 
+concurrency:
+  group: vuln-bank-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   APP_NAME: vuln-bank
   REPORT_DIR: security-reports
@@ -32,7 +36,7 @@ jobs:
 
     steps:
       # ==================================================
-      # 0) CHECKOUT
+      # 0) CHECKOUT & PREP
       # ==================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -51,7 +55,11 @@ jobs:
       - name: Install Python dependencies
         run: |
           $PYTHON_BIN -m pip install --upgrade pip
-          [ -f requirements.txt ] && $PYTHON_BIN -m pip install -r requirements.txt
+          if [ -f requirements.txt ]; then
+            $PYTHON_BIN -m pip install -r requirements.txt
+          else
+            echo "requirements.txt not found, skipping dependency install"
+          fi
 
       - name: Run unit tests (optional)
         continue-on-error: true
@@ -60,7 +68,7 @@ jobs:
           pytest || true
 
       # ==================================================
-      # 2) SECRET SCANNING
+      # 2) SECRET SCANNING – GITLEAKS
       # ==================================================
       - name: Gitleaks scan
         uses: gitleaks/gitleaks-action@v2
@@ -77,27 +85,33 @@ jobs:
             --report-path ${{ env.REPORT_DIR }}/gitleaks.json
 
       # ==================================================
-      # 3) SCA
+      # 3) SCA – pip-audit
       # ==================================================
       - name: SCA with pip-audit
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install pip-audit
-          [ -f requirements.txt ] && \
-            pip-audit -r requirements.txt -f json \
-            -o "$REPORT_DIR/pip-audit.json" || true
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt \
+              -f json \
+              -o "$REPORT_DIR/pip-audit.json" || true
+          else
+            echo "requirements.txt not found, skipping pip-audit"
+          fi
 
       # ==================================================
-      # 4) SAST
+      # 4) SAST – Bandit
       # ==================================================
       - name: SAST with Bandit
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install bandit
-          bandit -r . -f json -o "$REPORT_DIR/bandit.json" || true
+          bandit -r . \
+            -f json \
+            -o "$REPORT_DIR/bandit.json" || true
 
       # ==================================================
-      # 5) MISCONFIG & FS SCAN
+      # 5) MISCONFIG & FS SCAN – Trivy
       # ==================================================
       - name: Trivy FS scan
         uses: aquasecurity/trivy-action@0.28.0
@@ -123,14 +137,14 @@ jobs:
       # 6) BUILD → IMAGE SCAN → PUSH
       # ==================================================
       - name: Docker Hub login
-        run: | 
+        run: |
           if ! docker info > /dev/null 2>&1; then
-            echo "Docker not available on runner"
+            echo "❌ Docker not available on runner"
             exit 1
           fi
 
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
-          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build image
         run: |
@@ -155,19 +169,19 @@ jobs:
           docker push "$IMAGE_REPO:latest"
 
       # ==================================================
-      # 7) DEPLOY TO VM2
+      # 7) DEPLOY TO VM2 (APP HOST)
       # ==================================================
       - name: Deploy app to VM2
         run: |
           ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
-            "$SSH_USER@$APP_HOST" << EOF
+            "$SSH_USER@$APP_HOST" << 'EOF'
               set -e
               cd /opt/vuln-bank/containers/app
 
               echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
                 docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
 
-              export IMAGE_WITH_TAG=$IMAGE_REPO:${{ github.sha }}
+              export IMAGE_WITH_TAG=${IMAGE_REPO}:${GITHUB_SHA}
               export DB_PASSWORD='${{ secrets.DB_PASSWORD }}'
               export DEEPSEEK_API_KEY='${{ secrets.DEEPSEEK_API_KEY }}'
 
@@ -178,9 +192,14 @@ jobs:
       - name: Wait for application
         run: |
           for i in {1..30}; do
-            curl -sf "$DAST_TARGET_URL" && exit 0
+            if curl -sf "$DAST_TARGET_URL" > /dev/null; then
+              echo "✅ App is reachable at $DAST_TARGET_URL"
+              exit 0
+            fi
+            echo "Waiting for app at $DAST_TARGET_URL... ($i/30)"
             sleep 5
           done
+          echo "❌ App did not become ready in time"
           exit 1
 
       # ==================================================
@@ -210,8 +229,9 @@ jobs:
           if grep -RqiE '"severity":\s*"(CRITICAL|HIGH)"' "$REPORT_DIR"; then
             critical=true
           fi
-          
+
           echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
+          echo "critical_found=$critical"
 
       # ==================================================
       # 10) UPLOAD ARTIFACTS
@@ -222,6 +242,27 @@ jobs:
           name: vuln-bank-security-reports
           path: ${{ env.REPORT_DIR }}
           if-no-files-found: warn
+
+      # ==================================================
+      # 11) SAFE DOCKER CLEANUP (AGE-BASED)
+      # ==================================================
+      - name: Docker cleanup (safe prune)
+        if: always()
+        run: |
+          echo "🧹 Cleaning up old Docker artifacts..."
+
+          if ! docker info > /dev/null 2>&1; then
+            echo "Docker not available, skipping cleanup."
+            exit 0
+          fi
+
+          # Remove unused images older than 7 days
+          docker image prune -a -f --filter "until=168h" || true
+
+          # Remove old build cache
+          docker builder prune -f --filter "until=168h" || true
+
+          echo "✅ Docker cleanup completed"
 
   notify:
     name: Notify on Critical Findings
@@ -234,7 +275,11 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "SLACK_WEBHOOK_URL not set, skipping notification."
+            exit 0
+          fi
+
           curl -X POST -H "Content-type: application/json" \
             --data '{"text":":rotating_light: Vuln Bank – High/Critical vulnerabilities detected"}' \
             "$SLACK_WEBHOOK_URL"
