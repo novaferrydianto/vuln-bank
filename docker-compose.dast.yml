@@ -1,59 +1,42 @@
-version: "3.9"
+version: "3.8"
 
 services:
-
-  # ============================================================
-  # 1) TARGET APPLICATION (LOCAL BUILD IMAGE)
-  # ============================================================
   vuln-bank-dast:
-    image: vuln-bank:${IMAGE_TAG}
+    image: ${IMAGE_TAG}
     container_name: vuln-bank-dast
-    restart: unless-stopped
-
-    # Penting untuk pengujian DAST
-    network_mode: "bridge"
-    expose:
-      - "5000"
-
     environment:
-      FLASK_ENV: production
-      PYTHONUNBUFFERED: 1
-
+      - FLASK_ENV=production
+      - FLASK_RUN_HOST=0.0.0.0
+    command: python app.py --host=0.0.0.0
+    ports:
+      - "5000:5000"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:5000/"]
-      interval: 5s
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5000"]
+      interval: 10s
       timeout: 3s
-      retries: 10
-
-  # ============================================================
-  # 2) OWASP ZAP (BASELINE + SPIDER + ACTIVE SCAN)
-  # ============================================================
-  zap:
-    image: owasp/zap2docker-stable
-    container_name: zap
+      retries: 6
     restart: unless-stopped
+    networks:
+      - dastnet
 
-    command: >
-      bash -c "
-        mkdir -p /zap/wrk &&
-        chmod -R 777 /zap/wrk &&
-        tail -f /dev/null
-      "
-
-    # Agar ZAP + App bisa saling komunikasi
-    network_mode: "service:vuln-bank-dast"
-
-    volumes:
-      # tempat report baseline, active scan, html
-      - ./security-reports/dast:/zap/wrk
-      # untuk disable Automation Framework
-      - ./zap-scripts:/zap/scripts:rw
-
-    environment:
-      ZAP_PORT: 8090
-      ZAP_API_KEY: ""
-      JAVA_OPTS: "-Xmx2G"
-
+  zap:
+    image: owasp/zap2docker-live
+    # If you want fixed version:
+    # image: owasp/zap2docker-weekly:2024-11-25
+    container_name: zap
     depends_on:
-      vuln-bank-dast:
-        condition: service_healthy
+      - vuln-bank-dast
+    command: >
+      zap.sh -daemon -host 0.0.0.0 -port 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./security-reports/dast:/zap/wrk
+    restart: unless-stopped
+    mem_limit: 2g
+    networks:
+      - dastnet
+
+networks:
+  dastnet:
+    driver: bridge
