@@ -1,0 +1,148 @@
+name: DevSecOps Reusable Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      scan_mode:
+        required: true
+        type: string
+      epss_threshold:
+        required: false
+        default: "0.5"
+        type: string
+      image_repo:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: write
+  id-token: write
+
+env:
+  PYTHON_BIN: python3.11
+  REPORT_DIR: security-reports
+  EPSS_THRESHOLD: ${{ inputs.epss_threshold }}
+  IMAGE_REPO: ${{ inputs.image_repo }}
+  IMAGE_TAG:  ${{ inputs.image_tag }}
+  DOCKER_BUILDKIT: "1"
+
+jobs:
+# ======================================================
+# 1) SAST – Semgrep
+# ======================================================
+  sast_scan:
+    runs-on: self-hosted
+    continue-on-error: true
+    outputs:
+      critical: ${{ steps.flag.outputs.critical }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORT_DIR/sast
+      - run: |
+          docker run --rm -v "$PWD:/src" returntocorp/semgrep \
+            semgrep ci --config p/ci --json > $REPORT_DIR/sast/semgrep.json || true
+      - id: flag
+        run: |
+          jq '[.results[]|select(.extra.severity=="ERROR")] | length' \
+            $REPORT_DIR/sast/semgrep.json | grep -qv 0 \
+            && echo "critical=true" >> "$GITHUB_OUTPUT" \
+            || echo "critical=false" >> "$GITHUB_OUTPUT"
+
+# ======================================================
+# 2) SCA + EPSS
+# ======================================================
+  sca_scan:
+    runs-on: self-hosted
+    continue-on-error: true
+    outputs:
+      critical: ${{ steps.out.outputs.critical }}
+      high_risk: ${{ steps.out.outputs.high_risk }}
+      epss_max:  ${{ steps.out.outputs.epss_max }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORT_DIR/sca
+
+      - run: |
+          trivy fs --severity HIGH,CRITICAL --format json \
+            -o $REPORT_DIR/sca/trivy.json .
+
+      - id: out
+        run: |
+          CRIT=false
+          HIGH=false
+          MAX=0
+
+          jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")] | length' \
+            $REPORT_DIR/sca/trivy.json | grep -qv 0 && CRIT=true
+
+          jq -r '..|.VulnerabilityID?//empty' \
+            $REPORT_DIR/sca/trivy.json | sort -u > cves.txt || true
+
+          while read -r cve; do
+            e=$(curl -s https://api.first.org/data/v1/epss?cve=$cve | jq -r '.data[0].epss // 0')
+            awk "BEGIN{exit !($e>$MAX)}" && MAX="$e"
+            awk "BEGIN{exit !($e>=${EPSS_THRESHOLD})}" && HIGH=true
+          done < cves.txt || true
+
+          echo "critical=$CRIT" >> "$GITHUB_OUTPUT"
+          echo "high_risk=$HIGH" >> "$GITHUB_OUTPUT"
+          echo "epss_max=$MAX"  >> "$GITHUB_OUTPUT"
+
+# ======================================================
+# 3) MISCONFIG
+# ======================================================
+  misconfig_scan:
+    runs-on: self-hosted
+    continue-on-error: true
+    outputs:
+      critical: ${{ steps.flag.outputs.critical }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORT_DIR/misconfig
+      - run: |
+          trivy config --severity HIGH,CRITICAL --format json \
+            -o $REPORT_DIR/misconfig/config.json .
+      - id: flag
+        run: |
+          jq '[.Results[].Misconfigurations[]?|select(.Severity=="CRITICAL")] | length' \
+            $REPORT_DIR/misconfig/config.json | grep -qv 0 \
+            && echo "critical=true" >> "$GITHUB_OUTPUT" \
+            || echo "critical=false" >> "$GITHUB_OUTPUT"
+
+# ======================================================
+# 4) AGGREGATE
+# ======================================================
+  aggregate:
+    runs-on: self-hosted
+    needs: [sast_scan, sca_scan, misconfig_scan]
+    outputs:
+      critical_found: ${{ steps.final.outputs.critical }}
+      high_risk:      ${{ steps.final.outputs.high_risk }}
+      epss_max:       ${{ steps.final.outputs.epss_max }}
+    steps:
+      - id: final
+        run: |
+          CRIT=false
+          for v in \
+            "${{ needs.sast_scan.outputs.critical }}" \
+            "${{ needs.sca_scan.outputs.critical }}" \
+            "${{ needs.misconfig_scan.outputs.critical }}"
+          do
+            [ "$v" == "true" ] && CRIT=true
+          done
+          echo "critical=$CRIT"           >> "$GITHUB_OUTPUT"
+          echo "high_risk=${{ needs.sca_scan.outputs.high_risk }}" >> "$GITHUB_OUTPUT"
+          echo "epss_max=${{ needs.sca_scan.outputs.epss_max }}"   >> "$GITHUB_OUTPUT"

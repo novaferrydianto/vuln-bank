@@ -1,0 +1,32 @@
+name: Vuln Bank Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *"
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.m.outputs.mode }}
+    steps:
+      - id: m
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_EVENT_NAME" == "schedule" ]] \
+            && echo "mode=full" >> "$GITHUB_OUTPUT" \
+            || echo "mode=light" >> "$GITHUB_OUTPUT"
+
+  devsecops:
+    needs: prep
+    uses: ./.github/workflows/devsecops-reusable.yml
+    with:
+      scan_mode: ${{ needs.prep.outputs.mode }}
+      epss_threshold: "0.5"
+      image_repo: xbash81/vuln-bank
+      image_tag:  ${{ github.sha }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
