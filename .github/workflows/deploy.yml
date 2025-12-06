@@ -134,9 +134,10 @@ jobs:
       - name: Build image
         run: |
           docker build \
+            -f containers/app/Dockerfile \
             -t $IMAGE_REPO:${{ github.sha }} \
             -t $IMAGE_REPO:latest \
-            containers/app
+            .
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@0.28.0
