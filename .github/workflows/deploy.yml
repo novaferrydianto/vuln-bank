@@ -31,8 +31,8 @@ jobs:
     name: Security Scan → Build → Deploy → DAST
     if: github.event_name != 'pull_request'
     runs-on: [self-hosted, linux]
-    environment:
-      name: production
+#    environment:
+#      name: production
 
     outputs:
       critical_found: ${{ steps.evaluate.outputs.critical_found }}
