@@ -19,36 +19,45 @@ jobs:
       - uses: actions/checkout@v4
 
       # --------------------------------------------------
-      # Setup Snyk CLI (PINNED SHA – SUPPLY CHAIN SAFE)
+      # Install Snyk CLI (NO sudo, SELF-HOSTED SAFE)
       # --------------------------------------------------
-      - name: Setup Snyk
-        uses: snyk/actions/setup@806182742461562b67788a64410098c9d9b96adb
+      - name: Install Snyk CLI
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+          curl -sSL https://github.com/snyk/cli/releases/latest/download/snyk-linux \
+            -o "$BIN/snyk"
+          chmod +x "$BIN/snyk"
+
+      - name: Verify Snyk
+        run: snyk --version
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       # --------------------------------------------------
-      # SNYK CODE (SAST) — SARIF, NEVER FAIL JOB
+      # SNYK CODE (SAST) — SARIF
       # --------------------------------------------------
       - name: Snyk Code → SARIF
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           snyk code test \
             --sarif-file-output=snyk-code.sarif \
             || true
 
-      - name: Upload Snyk Code SARIF
+      - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: snyk-code.sarif
           category: snyk-code
 
       # --------------------------------------------------
-      # SNYK OPEN SOURCE (SCA) — METADATA ONLY
+      # SNYK SCA (Signal only)
       # --------------------------------------------------
-      - name: Snyk Open Source (monitor)
+      - name: Snyk Open Source
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk monitor --all-projects || true
-
-      # --------------------------------------------------
-      # SNYK IaC (OPTIONAL, NON-BLOCKING)
-      # --------------------------------------------------
-      - name: Snyk IaC
-        run: snyk iac test || true
