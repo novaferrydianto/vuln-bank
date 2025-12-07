@@ -1,63 +1,44 @@
-# -----------------------------
+# ============================================
 # STAGE 1 — BUILDER
-# -----------------------------
+# ============================================
 FROM python:3.11-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    postgresql-client \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    gcc libpq-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY containers/app/requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+COPY app.py database.py auth.py ai_agent_deepseek.py ./
+COPY templates ./templates
+COPY static ./static
+
+RUN python -m compileall /app
 
 
-# -----------------------------
-# STAGE 2 — RUNTIME
-# -----------------------------
-FROM python:3.11-slim AS runtime
+# ============================================
+# STAGE 2 — DISTROLESS
+# ============================================
+FROM gcr.io/distroless/python3-debian12
 
-# Slightly hardened OS
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-client \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /usr/local/lib/python*/distutils \
-    && rm -rf /usr/local/bin/pip
-
-# Non-root user
-RUN addgroup --system appgroup \
-    && adduser --system --ingroup appgroup appuser
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/usr/local/lib/python3.11/site-packages
 
 WORKDIR /app
 
-# -----------------------------
-# COPY ONLY NECESSARY FILES
-# Full Python deps
-# -----------------------------
-COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
-COPY --from=builder /usr/local/bin/ /usr/local/bin/
+COPY --from=builder /install /usr/local
+COPY --from=builder /app /app
 
-# -----------------------------
-# Copy application source
-# -----------------------------
-COPY . .
-
-# Writable uploads directory
-RUN mkdir -p /app/static/uploads \
-    && chown -R appuser:appgroup /app/static/uploads \
-    && chmod 750 /app/static/uploads
-
-USER appuser
+USER nonroot:nonroot
 
 EXPOSE 5000
 
-CMD ["python", "-u", "app.py"]
+# ✅ DO NOT repeat python here
+CMD ["-u", "app.py"]
