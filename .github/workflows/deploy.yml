@@ -262,7 +262,7 @@ jobs:
           ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
             "$SSH_USER@$APP_HOST" << EOF
               set -e
-              cd ~/vuln-bank/containers/app
+              cd /opt/vuln-bank/containers/app
 
               echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
                 docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
