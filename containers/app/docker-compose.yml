@@ -9,30 +9,31 @@ services:
 
     environment:
       DB_NAME: vulnerable_bank
-      DB_USER: postgres
+      DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
-      DB_HOST: 192.168.107.129
+      DB_HOST: ${DB_HOST}
       DB_PORT: 5432
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
 
+      DB_CONNECT_RETRIES: 20
+      DB_CONNECT_DELAY: 3
+
     volumes:
       - uploads:/app/static/uploads:rw
-
-    security_opt:
-      - no-new-privileges:true
-
-    cap_drop:
-      - ALL
 
     read_only: true
 
     tmpfs:
       - /tmp
-      - /var/run
       - /var/tmp
 
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
     healthcheck:
-      test: ["CMD","python","-c","import requests; requests.get('http://127.0.0.1:5000',timeout=2)"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:5000/healthz', timeout=2)"]
       interval: 30s
       timeout: 5s
       retries: 3
