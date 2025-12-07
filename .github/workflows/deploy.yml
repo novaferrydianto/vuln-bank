@@ -260,9 +260,24 @@ jobs:
       # ==================================================
       # 10) DEPLOY TO VM2 (APP HOST)
       # ==================================================
+      - name: Wait for Postgres readiness
+        run: |
+          for i in {1..30}; do
+            if nc -z "${{ secrets.DB_HOST }}" 5432; then
+              echo "✅ Postgres reachable"
+              exit 0
+            fi
+            echo "Waiting for Postgres... ($i/30)"
+            sleep 5
+          done
+          echo "❌ Postgres not ready"
+          exit 1
+
       - name: Deploy app to VM2
         env:
           IMAGE_WITH_TAG: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
@@ -275,6 +290,8 @@ jobs:
                 docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
 
               export IMAGE_WITH_TAG="$IMAGE_WITH_TAG"
+              export DB_HOST="$DB_HOST"
+              export DB_USER="$DB_USER"
               export DB_PASSWORD="$DB_PASSWORD"
               export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
 
