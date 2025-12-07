@@ -1,33 +1,27 @@
+version: "3.9"
+
 services:
   postgres:
-    image: docker.io/library/postgres:16
+    image: postgres:16
     container_name: vuln-bank-db
-    restart: unless-stopped
+
+    user: "999:999"   # postgres user (Podman-safe)
 
     environment:
       POSTGRES_DB: vulnerable_bank
-      POSTGRES_USER: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     volumes:
-      - pg_data:/var/lib/postgresql/data:rw
+      - pg_data:/var/lib/postgresql/data
 
-    # 🔐 Container hardening (good – keep)
+    restart: unless-stopped
+
     security_opt:
-      - no-new-privileges:true
+      - label=disable   # SELinux-safe for Podman
 
-    cap_drop:
-      - ALL
-
-    read_only: false
-
-    # ✅ ADD THIS
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d vulnerable_bank"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+    ports:
+      - "5432:5432"
 
 volumes:
   pg_data:
