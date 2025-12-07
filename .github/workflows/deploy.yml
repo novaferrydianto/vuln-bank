@@ -282,6 +282,12 @@ jobs:
               docker compose up -d
           EOF
 
+      - name: Docker image retention on VM2
+        run: |
+          ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
+            "$SSH_USER@$APP_HOST" \
+            "KEEP_IMAGES=5 sudo /usr/local/bin/vuln-bank-image-retention.sh"
+
       - name: Wait for application
         run: |
           for i in {1..30}; do
