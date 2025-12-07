@@ -260,18 +260,21 @@ jobs:
       # ==================================================
       # 10) DEPLOY TO VM2 (APP HOST)
       # ==================================================
-      - name: Wait for Postgres readiness
+      - name: Wait for Postgres readiness (via App Host)
         run: |
-          for i in {1..30}; do
-            if nc -z "${{ secrets.DB_HOST }}" 5432; then
-              echo "✅ Postgres reachable"
-              exit 0
-            fi
-            echo "Waiting for Postgres... ($i/30)"
-            sleep 5
-          done
-          echo "❌ Postgres not ready"
-          exit 1
+          ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
+            "$SSH_USER@$APP_HOST" << 'EOF'
+              for i in {1..30}; do
+                if nc -z "$DB_HOST" 5432; then
+                  echo "✅ Postgres reachable from App Host"
+                  exit 0
+                fi
+                echo "Waiting for Postgres... ($i/30)"
+                sleep 5
+              done
+              echo "❌ Postgres not ready"
+              exit 1
+            EOF
 
       - name: Deploy app to VM2
         env:
