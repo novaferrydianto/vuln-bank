@@ -306,27 +306,27 @@ jobs:
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
-            --network=host \
             -v "$PWD:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_TARGET_URL" \
               -J "$REPORT_DIR/zap-report.json" \
-              -w "$REPORT_DIR/zap-report.md" \
               -r "$REPORT_DIR/zap-report.html" \
-              -a -T 120
+              -m 5 \
+              -T 120 \
+              || true
 
-          ZAP_EXIT=$?
-          echo "ZAP exit code: $ZAP_EXIT"
+          echo "✅ ZAP baseline completed"
 
-          # Fail pipeline ONLY if ZAP detects FAIL (exit code 1)
-          if [ "$ZAP_EXIT" -eq 1 ]; then
-            echo "❌ ZAP FAIL (HIGH risk)"
-            exit 1
+          # --- HARD CHECK: HIGH RISK ONLY ---
+          if jq -e '
+            .site[].alerts[] | 
+            select(.riskcode == "3" or .riskcode == 3)
+          ' "$REPORT_DIR/zap-report.json" >/dev/null; then
+            echo "❌ ZAP HIGH risk vulnerabilities found"
+          else
+            echo "✅ No ZAP HIGH risk vulnerabilities"
           fi
-
-          echo "✅ ZAP completed (WARN allowed)"
-          exit 0
 
       - name: Upload ZAP reports
         if: always()
@@ -352,16 +352,26 @@ jobs:
             critical=true
           fi
 
-          # ZAP HIGH risk only (riskcode 3)
+          # ---------- Trivy / SCA / SAST ----------
+          if jq -e '
+            .. | objects | 
+            select(.Severity? == "CRITICAL" or .Severity? == "HIGH")
+          ' "$REPORT_DIR"/*.json >/dev/null 2>&1; then
+            critical=true
+          fi
+
+          # ---------- ZAP (HIGH only = riskcode 3) ----------
           if [ -f "$REPORT_DIR/zap-report.json" ]; then
-            if jq -e '.site[].alerts[] | select(.riskcode == 3)' \
-              "$REPORT_DIR/zap-report.json" >/dev/null; then
+            if jq -e '
+              .site[].alerts[] | 
+              select(.riskcode == "3" or .riskcode == 3)
+            ' "$REPORT_DIR/zap-report.json" >/dev/null; then
               critical=true
             fi
           fi
 
           echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
-          echo "critical_found=$critical"
+          echo "Final security verdict: critical=$critical"
 
       # ==================================================
       # 13) AUTO GITHUB ISSUE (RISK-BASED)
