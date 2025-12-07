@@ -12,6 +12,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data:rw
 
+    # 🔐 Container hardening (good – keep)
     security_opt:
       - no-new-privileges:true
 
@@ -19,6 +20,14 @@ services:
       - ALL
 
     read_only: false
+
+    # ✅ ADD THIS
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vulnerable_bank"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
 volumes:
   pg_data:
