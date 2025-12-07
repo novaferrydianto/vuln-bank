@@ -160,6 +160,13 @@ jobs:
       # ==================================================
       # 7) BUILD → IMAGE SCAN → PUSH
       # ==================================================
+      - name: Runner disk hygiene (pre-build)
+        run: |
+          echo "🧹 Cleaning runner before build"
+          docker system prune -af || true
+          docker builder prune -af || true
+          rm -rf ~/.cache/trivy || true
+
       - name: Docker Hub login
         run: |
           if ! docker info > /dev/null 2>&1; then
