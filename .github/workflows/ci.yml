@@ -1,5 +1,10 @@
 name: Vuln Bank CI
 
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # REQUIRED for cosign keyless signing
+
 on:
   push:
     branches: ["main"]
@@ -48,7 +53,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           BIN="$RUNNER_TEMP/bin"
           mkdir -p "$BIN"
           export PATH="$BIN:$PATH"
@@ -145,7 +149,6 @@ jobs:
       # 7) SECURITY GATE (SEVERITY + EPSS)
       # ==================================================
       - name: Security gate (Severity + EPSS)
-        id: gate
         shell: bash
         run: |
           set -euo pipefail
@@ -153,7 +156,6 @@ jobs:
           critical=false
           epss=false
 
-          # ---- Check HIGH / CRITICAL findings ----
           if jq -e '
             .. | objects |
             select(
@@ -166,26 +168,19 @@ jobs:
             critical=true
           fi
 
-          # ---- EPSS scoring (image CVEs only) ----
           if [ -f "$REPORT_DIR/trivy-image.json" ]; then
-            CVES=$(jq -r '
-              .Results[].Vulnerabilities[]?.VulnerabilityID
-            ' "$REPORT_DIR/trivy-image.json" | sort -u)
+            CVES=$(jq -r '.Results[].Vulnerabilities[]?.VulnerabilityID' \
+              "$REPORT_DIR/trivy-image.json" | sort -u)
 
             for cve in $CVES; do
               score=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
                 | jq -r '.data[0].epss // 0')
-
               echo "CVE=$cve EPSS=$score"
-
               if (( $(echo "$score >= $EPSS_THRESHOLD" | bc -l) )); then
                 epss=true
               fi
             done
           fi
-
-          echo "critical_found=$critical"
-          echo "epss_hit=$epss"
 
           if [ "$critical" = true ] && [ "$epss" = true ]; then
             echo "❌ CI BLOCKED: Exploitable vulnerabilities detected"
@@ -208,7 +203,53 @@ jobs:
           docker push "$IMAGE_REPO:latest"
 
       # ==================================================
-      # 9) UPLOAD ARTIFACTS
+      # 9) SBOM + SIGNING TOOLS
+      # ==================================================
+      - name: Install Syft & Cosign
+        run: |
+          BIN="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+          curl -sSL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b "$BIN"
+
+          curl -sSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+            -o "$BIN/cosign"
+          chmod +x "$BIN/cosign"
+
+      # ==================================================
+      # 10) SBOM GENERATION
+      # ==================================================
+      - name: Generate SBOM
+        run: |
+          syft "$IMAGE_REPO:${{ github.sha }}" \
+            -o json \
+            > "$REPORT_DIR/sbom.json"
+
+      # ==================================================
+      # 11) SIGN IMAGE (COSIGN KEYLESS)
+      # ==================================================
+      - name: Cosign sign image
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign --yes "$IMAGE_REPO:${{ github.sha }}"
+
+      # ==================================================
+      # 12) VERIFY SIGNATURE
+      # ==================================================
+      - name: Cosign verify image
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE_REPO:${{ github.sha }}"
+
+      # ==================================================
+      # 13) UPLOAD ARTIFACTS
       # ==================================================
       - name: Upload CI reports
         if: always()
