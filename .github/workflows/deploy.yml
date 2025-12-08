@@ -358,7 +358,7 @@ jobs:
         run: |
           set -e
           ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
-            "$SSH_USER@$APP_HOST" << 'EOF'
+            "$SSH_USER@$APP_HOST" << EOF
               set -e
               cd /opt/vuln-bank/containers/app
 
@@ -371,6 +371,7 @@ jobs:
               export DB_PASSWORD="${DB_PASSWORD}"
               export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}"
 
+              echo "Using image: \$IMAGE_WITH_TAG"
               docker compose pull
               docker compose up -d
           EOF
