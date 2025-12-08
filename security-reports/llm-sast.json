@@ -1,10 +1,13 @@
-[
-  {
-    "name": "Broken Access Control",
-    "summary": "Authorization bypass on admin endpoint",
-    "severity": "HIGH",
-    "file": "templates/admin.html",
-    "reasoning": "No role check before accessing admin data",
-    "remediation": "Enforce role-based decorator"
-  }
-]
+{
+  "scanner": "llm-sast",
+  "category": "Access Control",
+  "severity": "HIGH",
+  "confidence": 0.85,
+  "title": "Unauthenticated admin endpoint",
+  "description": "Endpoint /admin has no access control",
+  "file": "app/routes/admin.py",
+  "line": 42,
+  "cwe": "CWE-284",
+  "asvs": ["V4.1.1"],
+  "remediation": "Enforce authentication and authorization checks"
+}

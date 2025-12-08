@@ -1,33 +1,47 @@
 import os
 import re
-import json
 
-def is_code_file(filename):
-    code_exts = ('.js', '.ts', '.py', '.java', '.go', '.c', '.cpp', '.cs', '.rb', '.php')
-    exclude_exts = ('.md', '.txt', '.rst')
-    return filename.endswith(code_exts) and not filename.endswith(exclude_exts)
+MAX_FILE_SIZE = 200 * 1024  # 200 KB
+ALLOWED_EXTS = {'.py', '.js', '.ts', '.java', '.go', '.php'}
 
-def strip_comments(code, ext):
-    if ext in ('.js', '.ts'):
-        code = re.sub(r'/\*[\s\S]*?\*/', '', code)
-        code = re.sub(r'//.*', '', code)
-    elif ext == '.py':
-        code = re.sub(r'#.*', '', code)
-        code = re.sub(r'"""[\s\S]*?"""', '', code)
-        code = re.sub(r"'''[\s\S]*?'''", '', code)
-    return code
+EXCLUDED_DIRS = {
+    '.git', 'node_modules', 'dist', 'build',
+    'docs', 'doc', 'vendor', '__pycache__'
+}
+
+def is_code_file(path):
+    ext = os.path.splitext(path)[1].lower()
+    return ext in ALLOWED_EXTS
+
+def normalize_path(path, root):
+    return os.path.relpath(path, root).replace("\\", "/")
 
 def scan_codebase(root_dir):
-    code_contents = []
+    blocks = []
+
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        # Exclude hidden dirs, docs, readme, and node_modules
-        dirnames[:] = [d for d in dirnames if not d.startswith('.') and d.lower() not in ('docs', 'doc', 'readme', 'node_modules')]
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+
         for filename in filenames:
-            if is_code_file(filename):
-                filepath = os.path.join(dirpath, filename)
-                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                    ext = os.path.splitext(filename)[1]
+            full_path = os.path.join(dirpath, filename)
+
+            if not is_code_file(full_path):
+                continue
+
+            if os.path.getsize(full_path) > MAX_FILE_SIZE:
+                continue
+
+            try:
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                     code = f.read()
-                    code = strip_comments(code, ext)
-                    code_contents.append(f"\n// File: {filepath}\n{code}")
-    return "\n".join(code_contents)
+
+                rel_path = normalize_path(full_path, root_dir)
+
+                blocks.append(
+                    f"\n### FILE: {rel_path}\n{code}\n"
+                )
+
+            except Exception:
+                continue
+
+    return "\n".join(blocks)

@@ -1,43 +1,78 @@
+#!/usr/bin/env python3
 from dotenv import load_dotenv
 import os
 import argparse
-from agent import Agent
-from utils import scan_codebase
 import json
 
-# Load environment variables from .env if present
+from agent import LLMSASTAgent
+from utils import scan_codebase
+
+# Load env
 load_dotenv()
 
-# Get base_url and api_key from environment, with defaults
-BASE_URL = os.getenv('AI_API_ENDPOINT', 'https://api.llm7.io/v1')
-API_KEY = os.getenv('AI_API_KEY', 'unused')
+BASE_URL = os.getenv("AI_API_ENDPOINT", "https://api.llm7.io/v1")
+API_KEY = os.getenv("AI_API_KEY")
 
-broken_access_control_system = """You are a very experienced cyber security code reviewer, you are very skilled to spot broken access control vulnerabilities based on application flow. Your task is to find broken access control vulnerabilities. Report it in the format of Name, Summary, Vulnerable Code (list of dictionary consist of related relative paths and code snippets), Application Flow, and Reasoning. Output in JSON format with array of keys: 'name', 'summary', 'vulnerable_code', 'application_flow', 'reasoning', 'remediation'. Always output an array, even if empty or only consist of 1 vulnerability."""
+BROKEN_ACCESS_CONTROL_SYSTEM = """
+You are a senior application security engineer.
+
+Detect BROKEN ACCESS CONTROL vulnerabilities.
+
+Rules:
+- Output STRICT JSON only
+- Output MUST be an array
+- No markdown
+- No explanation outside JSON
+
+Each finding:
+- scanner: "llm-sast"
+- category: "Access Control"
+- severity: CRITICAL | HIGH | MEDIUM | LOW
+- confidence: number (0.0 - 1.0)
+- title
+- description
+- file
+- line
+- cwe
+- asvs
+- remediation
+"""
 
 def main():
-    parser = argparse.ArgumentParser(description="SAST LLM Multi-Agent Scanner")
-    parser.add_argument('--scan-path', '-s', type=str, required=True, help='Path to the codebase to scan (absolute or relative)')
+    parser = argparse.ArgumentParser(description="LLM-SAST Scanner (Pipeline Ready)")
+    parser.add_argument(
+        "--scan-path",
+        "-s",
+        required=True,
+        help="Path to source code",
+    )
     args = parser.parse_args()
 
-    # Use the provided path, resolve to absolute if needed
-    if os.path.isabs(args.scan_path):
-        project_root = args.scan_path
-    else:
-        project_root = os.path.abspath(args.scan_path)
+    project_root = os.path.abspath(args.scan_path)
+    code_context = scan_codebase(project_root)
 
-    user_message = scan_codebase(project_root)
-
-    # Instantiate agents
-    broken_access_control_analyzer = Agent(
+    agent = LLMSASTAgent(
         model="deepseek-r1",
-        system_message=broken_access_control_system,
+        system_prompt=BROKEN_ACCESS_CONTROL_SYSTEM,
         base_url=BASE_URL,
-        api_key=API_KEY
+        api_key=API_KEY,
     )
 
-    broken_access_control_reply = broken_access_control_analyzer.chat(user_message)
-    print("Broken Access Control Analyzer findings:")
-    print(broken_access_control_reply)
+    findings = agent.analyze(code_context)
+
+    # ✅ Enforce array
+    if not isinstance(findings, list):
+        raise ValueError("LLM-SAST output is not an array")
+
+    # ✅ Write pipeline artifact
+    out_path = os.path.join("security-reports", "llm-sast.json")
+    os.makedirs("security-reports", exist_ok=True)
+
+    with open(out_path, "w") as f:
+        json.dump(findings, f, indent=2)
+
+    print(f"✅ LLM-SAST completed, findings: {len(findings)}")
+    print(f"📄 Report written to {out_path}")
 
 if __name__ == "__main__":
     main()
