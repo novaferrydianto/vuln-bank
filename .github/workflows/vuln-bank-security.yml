@@ -347,6 +347,7 @@ jobs:
               echo "- ❌ **HIGH / CRITICAL vulnerabilities detected**"
             else
               echo "- ✅ **No HIGH / CRITICAL vulnerabilities found**"
+              
             fi
             echo ""
             echo "## 🔐 ASVS Compliance Scorecard"
@@ -355,6 +356,7 @@ jobs:
             else
               echo "- ⚠️ ASVS scorecard not generated"
             fi
+
             echo ""
             echo "## 📦 Artifacts"
             echo "- 📄 Security reports uploaded as workflow artifact"
