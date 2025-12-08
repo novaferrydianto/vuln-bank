@@ -1,0 +1,16 @@
+{
+  "scanner": "semgrep",
+  "category": "SAST",
+  "severity": "HIGH",
+  "confidence": 0.85,
+  "title": "Reflected XSS via request.args",
+  "description": "Unsanitized user input reflected to response",
+  "file": "app/routes/auth.py",
+  "line": 42,
+  "rule_id": "python.flask.xss",
+  "cwe": "CWE-79",
+  "asvs": ["V5.3.2"],
+  "cve": null,
+  "epss": null,
+  "raw": {}
+}

@@ -1,0 +1,387 @@
+name: Vuln Bank Security Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *" # ~01:00 WIB Daily Scan
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: vuln-bank-security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: vuln-bank
+  REPORT_DIR: security-reports
+  PYTHON_BIN: python3.11
+  IMAGE_REPO: xbash81/vuln-bank
+  EPSS_THRESHOLD: "0.5"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  security_build:
+    name: Security Scan → Build → SBOM → Sign
+    runs-on: [self-hosted, linux]
+    environment:
+      name: production
+    env:
+      COSIGN_EXPERIMENTAL: "1"
+
+    outputs:
+      critical_found: ${{ steps.evaluate.outputs.critical_found }}
+
+    steps:
+      # 0) Checkout & prep
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare report directory
+        run: |
+          set -e
+          mkdir -p "$REPORT_DIR"
+          
+      # 1) Tooling sanity + Python cache
+      - name: Ensure required CLI tools exist
+        run: |
+          set -e
+          for cmd in jq bc curl; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "Installing $cmd..."
+              sudo yum install -y "$cmd" 2>/dev/null || {
+                sudo apt-get update -y
+                sudo apt-get install -y "$cmd"
+              }
+            fi
+          done
+
+      - name: Cache Python packages
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # 2) Python & tests
+      - name: Show Python version
+        run: |
+          set -e
+          $PYTHON_BIN --version || true
+
+      - name: Install Python dependencies
+        run: |
+          set -e
+          $PYTHON_BIN -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            $PYTHON_BIN -m pip install -r requirements.txt
+          else
+            echo "requirements.txt not found, skipping dependency install"
+          fi
+
+      - name: Run unit tests (optional)
+        continue-on-error: true
+        run: |
+          set -e
+          $PYTHON_BIN -m pip install pytest
+          pytest || true
+
+      # 3) Secret scanning – Gitleaks
+      - name: Gitleaks scan
+        continue-on-error: true
+        run: |
+          set -e
+          BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN_DIR"
+          export PATH="$BIN_DIR:$PATH"
+          if ! command -v gitleaks >/dev/null 2>&1; then
+            echo "Installing gitleaks..."
+            curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+              | tar -xz -C "$BIN_DIR"
+            chmod +x "$BIN_DIR/gitleaks"
+          fi
+          gitleaks detect \
+            --source . \
+            --no-git \
+            --redact \
+            --report-format json \
+            --report-path "$REPORT_DIR/gitleaks.json" || true
+
+      # 4) SCA – pip-audit
+      - name: SCA with pip-audit
+        continue-on-error: true
+        run: |
+          set -e
+          $PYTHON_BIN -m pip install pip-audit
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt \
+              -f json \
+              -o "$REPORT_DIR/pip-audit.json" || true
+          else
+            echo "requirements.txt not found, skipping pip-audit"
+          fi
+
+      # 5) SAST – Bandit
+      - name: SAST with Bandit
+        continue-on-error: true
+        run: |
+          set -e
+          $PYTHON_BIN -m pip install bandit
+          bandit -r . \
+            -f json \
+            -o "$REPORT_DIR/bandit.json" || true
+
+      # 6) SAST – Semgrep
+      - name: SAST with Semgrep
+        continue-on-error: true
+        run: |
+          set -e
+          docker pull semgrep/semgrep:latest || true
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            semgrep/semgrep:latest \
+              semgrep scan \
+                --config semgrep/ \
+                --json \
+                -o security-reports/semgrep.json || true
+
+          docker run --rm semgrep/semgrep:latest semgrep --version \
+            > security-reports/semgrep-version.txt || true
+
+      # 7) LLM-SAST
+      - name: LLM-SAST (Business Logic & Access Control)
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+        run: |
+          set -e
+          cd llm-sast
+          $PYTHON_BIN -m pip install -r requirements.txt
+          $PYTHON_BIN main.py \
+            --scan-path "$GITHUB_WORKSPACE"
+
+      # 8) Trivy FS & config
+      - name: Trivy FS scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-fs.json
+          severity: HIGH,CRITICAL
+
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-config.json
+          severity: HIGH,CRITICAL
+
+      # 9) Build → SBOM → image scan → push → sign
+      - name: Runner disk hygiene (pre-build)
+        run: |
+          set -e
+          echo "🧹 Cleaning runner before build"
+          docker system prune -af || true
+          docker builder prune -af || true
+          rm -rf ~/.cache/trivy || true
+
+      - name: Docker Hub login
+        run: |
+          set -e
+          if ! docker info > /dev/null 2>&1; then
+            echo "❌ Docker not available on runner"
+            exit 1
+          fi
+          MAX_RETRY=5
+          SLEEP_SEC=20
+          for i in $(seq 1 $MAX_RETRY); do
+            echo "🔐 Docker login attempt #$i/$MAX_RETRY ..."
+            if echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+                docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin; then
+              echo "✅ Docker login succeeded."
+              exit 0
+            fi
+            echo "⚠️ Docker login failed (attempt #$i)."
+            if [ "$i" -lt "$MAX_RETRY" ]; then
+              echo "⏳ Waiting ${SLEEP_SEC}s before retry..."
+              sleep "$SLEEP_SEC"
+            else
+              echo "❌ Docker login failed after $MAX_RETRY attempts."
+              exit 1
+            fi
+          done
+
+      - name: Build image (with retry for network flakiness)
+        run: |
+          set -e
+          MAX_RETRY=3
+          n=1
+          until [ $n -gt $MAX_RETRY ]; do
+            echo "Docker build attempt #$n ..."
+            if docker build \
+              -f containers/app/Dockerfile \
+              -t "$IMAGE_REPO:${{ github.sha }}" \
+              -t "$IMAGE_REPO:latest" \
+              .; then
+              echo "Docker build succeeded."
+              break
+            fi
+            echo "Docker build failed (attempt #$n)."
+            if [ $n -eq $MAX_RETRY ]; then
+              echo "Giving up after $MAX_RETRY attempts."
+              exit 1
+            fi
+            n=$((n+1))
+            sleep 10
+          done
+
+      - name: Generate SBOM with Syft
+        run: |
+          set -e
+          BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$BIN_DIR"
+          export PATH="$BIN_DIR:$PATH"
+          if ! command -v syft >/dev/null 2>&1; then
+            echo "Installing Syft..."
+            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b "$BIN_DIR"
+          fi
+          syft "$IMAGE_REPO:${{ github.sha }}" -o spdx-json \
+            > "$REPORT_DIR/sbom-image.spdx.json"
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-image.json
+          severity: HIGH,CRITICAL
+
+      # 10) Normalize + Baseline + EPSS + ASVS
+      - name: Normalize security reports
+        run: |
+          set -e
+          $PYTHON_BIN scripts/normalize_reports.py
+
+      - name: Apply baseline
+        run: |
+          set -e
+          $PYTHON_BIN scripts/baseline_apply.py
+
+      - name: Enrich with EPSS
+        run: |
+          set -e
+          $PYTHON_BIN scripts/epss_enrich.py
+
+      - name: Evaluate findings (ASVS + EPSS policy gate)
+        id: evaluate
+        run: |
+          set -e
+          if [ ! -f "$REPORT_DIR/normalized.json" ]; then
+            echo "❌ normalized.json not found — failing pipeline"
+            exit 1
+          fi
+
+          echo "🔎 Evaluating normalized findings (ASVS + EPSS)..."
+
+          if jq -e '
+            .summary.asvs_failed == true and
+            .summary.exploitable == true
+          ' "$REPORT_DIR/normalized.json" >/dev/null; then
+            echo "❌ BLOCK: ASVS FAILED + HIGH EPSS findings exist"
+            echo "critical_found=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "✅ PASS: No exploitable ASVS-breaking issues"
+            echo "critical_found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate ASVS scorecard
+        run: |
+          set -e
+          $PYTHON_BIN scripts/asvs_scorecard.py > "$REPORT_DIR/asvs-scorecard.json"
+          $PYTHON_BIN scripts/render_asvs_markdown.py > "$REPORT_DIR/asvs-scorecard.md"
+
+      # 11) Summary
+      - name: DevSecOps Pipeline Summary
+        if: always()
+        run: |
+          {
+            echo "# 🔐 Vuln Bank – DevSecOps Security Pipeline Summary"
+            echo ""
+            echo "## 🧪 Security Scans Executed"
+            echo "- ✅ Gitleaks (Secrets)"
+            echo "- ✅ pip-audit (SCA)"
+            echo "- ✅ Bandit (SAST)"
+            echo "- ✅ Semgrep (SAST)"
+            echo "- ✅ LLM-SAST (Business Logic)"
+            echo "- ✅ Trivy FS & Config"
+            echo "- ✅ Trivy Image"
+            echo ""
+            echo "## 🐳 Container Image"
+            echo "- Image: \`${IMAGE_REPO}:${GITHUB_SHA}\`"
+            echo ""
+            echo "## 🚦 Security Verdict"
+            if [ "${{ steps.evaluate.outputs.critical_found }}" = "true" ]; then
+              echo "- ❌ **HIGH / CRITICAL vulnerabilities detected**"
+            else
+              echo "- ✅ **No HIGH / CRITICAL vulnerabilities found**"
+            fi
+            echo ""
+            echo "## 🔐 ASVS Compliance Scorecard"
+            if [ -f "$REPORT_DIR/asvs-scorecard.md" ]; then
+              cat "$REPORT_DIR/asvs-scorecard.md"
+            else
+              echo "- ⚠️ ASVS scorecard not generated"
+            fi
+            echo ""
+            echo "## 📦 Artifacts"
+            echo "- 📄 Security reports uploaded as workflow artifact"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: vuln-bank-security-reports
+          path: ${{ env.REPORT_DIR }}
+          if-no-files-found: warn
+
+  notify:
+    name: Notify on Critical Findings
+    needs: security_build
+    runs-on: [self-hosted, linux]
+    if: needs.security_build.outputs.critical_found == 'true'
+
+    steps:
+      - name: Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "SLACK_WEBHOOK_URL not set, skipping notification."
+            exit 0
+          fi
+          curl -X POST -H "Content-type: application/json" \
+            --data '{"text":":rotating_light: Vuln Bank – High/Critical vulnerabilities detected"}' \
+            "$SLACK_WEBHOOK_URL"

@@ -1,0 +1,6 @@
+{
+  "V4": { "name": "Access Control", "total": 10 },
+  "V5": { "name": "Input Validation", "total": 8 },
+  "V7": { "name": "Cryptography", "total": 6 },
+  "V13": { "name": "API Security", "total": 7 }
+}

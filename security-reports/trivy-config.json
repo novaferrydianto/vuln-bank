@@ -1,0 +1,14 @@
+{
+  "Results": [
+    {
+      "Misconfigurations": [
+        {
+          "ID": "KSV001",
+          "Title": "Container running as root",
+          "Severity": "MEDIUM",
+          "Target": "containers/app/Dockerfile"
+        }
+      ]
+    }
+  ]
+}
