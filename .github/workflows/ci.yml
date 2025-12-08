@@ -242,12 +242,11 @@ jobs:
       - name: Cosign verify image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          COSIGN_REPOSITORY: xbash81/vuln-bank
         run: |
           cosign verify \
-            --certificate-identity-regexp \
-            "^https://github.com/${{ github.repository }}/.*$" \
-            --certificate-oidc-issuer \
-            "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.*$" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --check-claims \
             "${{ steps.push.outputs.IMAGE_DIGEST }}"
 
