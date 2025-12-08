@@ -22,6 +22,7 @@ env:
   REPORT_DIR: security-reports
   PYTHON_BIN: python3.11
   IMAGE_REPO: xbash81/vuln-bank
+  EPSS_THRESHOLD: "0.5"
 
 defaults:
   run:
@@ -58,7 +59,10 @@ jobs:
           for cmd in jq bc curl; do
             if ! command -v "$cmd" >/dev/null 2>&1; then
               echo "Installing $cmd..."
-              sudo yum install -y "$cmd" 2>/dev/null || sudo apt-get update -y && sudo apt-get install -y "$cmd"
+              sudo yum install -y "$cmd" 2>/dev/null || {
+                sudo apt-get update -y
+                sudo apt-get install -y "$cmd"
+              }
             fi
           done
 
@@ -145,17 +149,18 @@ jobs:
         continue-on-error: true
         run: |
           set -e
-          docker pull semgrep/semgrep:latest
+          docker pull semgrep/semgrep:latest || true
           docker run --rm \
             -v "$PWD:/src" \
             -w /src \
             semgrep/semgrep:latest \
-            semgrep scan \
-              --config semgrep/ \
-              --json \
-              -o security-reports/semgrep.json
+              semgrep scan \
+                --config semgrep/ \
+                --json \
+                -o security-reports/semgrep.json || true
+
           docker run --rm semgrep/semgrep:latest semgrep --version \
-            > security-reports/semgrep-version.txt
+            > security-reports/semgrep-version.txt || true
 
       # 7) LLM-SAST
       - name: LLM-SAST (Business Logic & Access Control)
@@ -167,10 +172,9 @@ jobs:
         run: |
           set -e
           cd llm-sast
-          pip install -r requirements.txt
-          python main.py \
-            --scan-path "$GITHUB_WORKSPACE" \
-            > "../$REPORT_DIR/llm-sast.json" || true
+          $PYTHON_BIN -m pip install -r requirements.txt
+          $PYTHON_BIN main.py \
+            --scan-path "$GITHUB_WORKSPACE"
 
       # 8) Trivy FS & config
       - name: Trivy FS scan
@@ -274,72 +278,23 @@ jobs:
           output: ${{ env.REPORT_DIR }}/trivy-image.json
           severity: HIGH,CRITICAL
 
-      # 10) EPSS risk scoring
-      - name: EPSS risk evaluation
-        id: epss
-        continue-on-error: true
-        run: |
-          set -e
-          epss_hit=false
-          threshold=0.5
-          if [ ! -f "$REPORT_DIR/trivy-image.json" ]; then
-            echo "No Trivy image report found, skipping EPSS"
-            echo "epss_hit=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CVES=$(jq -r '
-            .Results[]?.Vulnerabilities[]? |
-            select(.Severity=="HIGH" or .Severity=="CRITICAL") |
-            .VulnerabilityID
-          ' "$REPORT_DIR/trivy-image.json" | sort -u)
-          for cve in $CVES; do
-            score=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
-              | jq -r '.data[0].epss // 0')
-            echo "CVE=$cve | EPSS=$score"
-            if (( $(echo "$score >= $threshold" | bc -l) )); then
-              epss_hit=true
-            fi
-            sleep 0.3
-          done
-          echo "epss_hit=$epss_hit" >> "$GITHUB_OUTPUT"
-
-      - name: Push image
-        run: |
-          set -e
-          docker push "$IMAGE_REPO:${{ github.sha }}"
-          docker push "$IMAGE_REPO:latest"
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign image with Cosign (keyless)
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -e
-          cosign version
-          cosign sign --yes "$IMAGE_REPO:${{ github.sha }}"
-
-      - name: Docker cleanup (safe prune)
-        if: always()
-        run: |
-          set -e
-          echo "🧹 Cleaning up old Docker artifacts..."
-          if ! docker info > /dev/null 2>&1; then
-            echo "Docker not available, skipping cleanup."
-            exit 0
-          fi
-          docker image prune -a -f --filter "until=168h" || true
-          docker builder prune -f --filter "until=168h" || true
-          echo "✅ Docker cleanup completed"
-
-      # 11) Normalize + Evaluate + ASVS
+      # 10) Normalize + Baseline + EPSS + ASVS
       - name: Normalize security reports
         run: |
           set -e
           $PYTHON_BIN scripts/normalize_reports.py
 
-      - name: Evaluate findings
+      - name: Apply baseline
+        run: |
+          set -e
+          $PYTHON_BIN scripts/baseline_apply.py
+
+      - name: Enrich with EPSS
+        run: |
+          set -e
+          $PYTHON_BIN scripts/epss_enrich.py
+
+      - name: Evaluate findings (ASVS + EPSS policy gate)
         id: evaluate
         run: |
           set -e
@@ -347,7 +302,9 @@ jobs:
             echo "❌ normalized.json not found — failing pipeline"
             exit 1
           fi
+
           echo "🔎 Evaluating normalized findings (ASVS + EPSS)..."
+
           if jq -e '
             .summary.asvs_failed == true and
             .summary.exploitable == true
@@ -366,7 +323,7 @@ jobs:
           $PYTHON_BIN scripts/asvs_scorecard.py > "$REPORT_DIR/asvs-scorecard.json"
           $PYTHON_BIN scripts/render_asvs_markdown.py > "$REPORT_DIR/asvs-scorecard.md"
 
-      # 12) Summary
+      # 11) Summary
       - name: DevSecOps Pipeline Summary
         if: always()
         run: |
