@@ -355,25 +355,25 @@ jobs:
         id: evaluate
         run: |
           set -e
-          critical=false
 
-          if [ -f "$REPORT_DIR/normalized.json" ]; then
-            echo "Using normalized.json for verdict..."
-            if jq -e '
-              .findings[]? |
-              select(
-                (.severity == "CRITICAL") or
-                (.severity == "HIGH")
-              )
-            ' "$REPORT_DIR/normalized.json" >/dev/null 2>&1; then
-              critical=true
-            fi
-          else
-            echo "normalized.json not found, no fallback implemented"
+          if [ ! -f "$REPORT_DIR/normalized.json" ]; then
+            echo "❌ normalized.json not found — failing pipeline"
+            exit 1
           fi
 
-          echo "critical_found=$critical" >> "$GITHUB_OUTPUT"
-          echo "Final security verdict (normalized): critical=$critical"
+          echo "🔎 Evaluating normalized findings (ASVS + EPSS)..."
+
+          if jq -e '
+            .summary.asvs_failed == true and
+            .summary.exploitable == true
+          ' "$REPORT_DIR/normalized.json" >/dev/null; then
+            echo "❌ BLOCK: ASVS FAILED + HIGH EPSS findings exist"
+            echo "critical_found=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "✅ PASS: No exploitable ASVS-breaking issues"
+            echo "critical_found=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Generate ASVS scorecard
         run: |
