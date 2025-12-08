@@ -145,11 +145,21 @@ jobs:
       # 6) SAST – Semgrep
       - name: SAST with Semgrep
         continue-on-error: true
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: semgrep/
-          format: json
-          output: ${{ env.REPORT_DIR }}/semgrep.json
+        run: |
+          set -e
+          docker pull semgrep/semgrep:latest
+
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            semgrep/semgrep:latest \
+            semgrep scan \
+              --config semgrep/ \
+              --json \
+              -o security-reports/semgrep.json
+
+          docker run --rm semgrep/semgrep:latest semgrep --version \
+            > security-reports/semgrep-version.txt
 
       # 7) LLM-SAST
       - name: LLM-SAST (Business Logic & Access Control)

@@ -11,11 +11,15 @@ output = {
         "critical": sum(f.severity == "CRITICAL" for f in findings),
         "high": sum(f.severity == "HIGH" for f in findings),
         "exploitable": sum(
-            f.epss and f.epss >= 0.5 and not f.baseline
+            f.epss is not None
+            and f.epss >= 0.5
+            and f.baseline is False
             for f in findings
         ),
         "asvs_failed": any(
-            f.asvs and f.severity in ("HIGH", "CRITICAL")
+            f.asvs
+            and f.asvs.get("required") is True
+            and f.severity in ("HIGH", "CRITICAL")
             for f in findings
         )
     },
