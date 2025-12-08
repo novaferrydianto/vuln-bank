@@ -245,9 +245,10 @@ jobs:
         run: |
           cosign verify \
             --certificate-identity-regexp \
-            "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/.*" \
+            "^https://github.com/${{ github.repository }}/.*$" \
             --certificate-oidc-issuer \
             "https://token.actions.githubusercontent.com" \
+            --check-claims \
             "${{ steps.push.outputs.IMAGE_DIGEST }}"
 
       # ==================================================
