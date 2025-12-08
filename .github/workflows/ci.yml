@@ -115,7 +115,7 @@ jobs:
       # ==================================================
       - name: Generate SLSA provenance
         if: github.ref == 'refs/heads/main'
-        uses: slsa-framework/slsa-github-generator/actions/container@v0.9.0
+        uses: slsa-framework/slsa-github-generator/actions/container@v1
         with:
           image: ${{ env.IMAGE_REPO }}
           digest: ${{ steps.push.outputs.IMAGE_DIGEST }}
