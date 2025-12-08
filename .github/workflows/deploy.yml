@@ -362,6 +362,11 @@ jobs:
               set -e
               cd /opt/vuln-bank/containers/app
 
+              if [ -z "$IMAGE_WITH_TAG" ]; then
+                echo "❌ IMAGE_WITH_TAG is empty"
+                exit 1
+              fi
+
               echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
                 docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
 
@@ -403,7 +408,8 @@ jobs:
       - name: Prepare ZAP workspace
         run: |
           set -e
-          chmod -R u+rwX "$GITHUB_WORKSPACE"
+          mkdir -p "$REPORT_DIR/zap"
+          chmod -R u+rwX "$REPORT_DIR/zap"
 
       - name: OWASP ZAP baseline scan
         continue-on-error: true
