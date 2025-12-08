@@ -118,7 +118,7 @@ jobs:
 
       - name: Upload ZAP reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: zap-dast-reports
           path: |
