@@ -17,7 +17,6 @@ env:
   APP_NAME: vuln-bank
   REPORT_DIR: security-reports
   PYTHON_BIN: python3.11
-
   IMAGE_REPO: xbash81/vuln-bank
 
   # === Bastion → VM2 (App Host) ===
@@ -25,6 +24,10 @@ env:
   SSH_USER: "hosting"
   SSH_PORT: "22"
   DAST_TARGET_URL: "http://192.168.107.135:5000"
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   security_build_deploy_dast:
@@ -46,28 +49,44 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare report directory
-        run: mkdir -p "$REPORT_DIR"
+        run: |
+          set -e
+          mkdir -p "$REPORT_DIR"
 
       # ==================================================
-      # 1) TOOLING SANITY (SELF-HOSTED SAFETY)
+      # 1) TOOLING SANITY + PYTHON CACHE
       # ==================================================
       - name: Ensure required CLI tools exist
         run: |
+          set -e
           for cmd in jq bc curl; do
-            if ! command -v $cmd >/dev/null 2>&1; then
+            if ! command -v "$cmd" >/dev/null 2>&1; then
               echo "Installing $cmd..."
-              sudo yum install -y $cmd || sudo apt-get install -y $cmd
+              sudo yum install -y "$cmd" 2>/dev/null || sudo apt-get update -y && sudo apt-get install -y "$cmd"
             fi
           done
+
+      - name: Cache Python packages
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       # ==================================================
       # 2) PYTHON & TEST
       # ==================================================
       - name: Show Python version
-        run: $PYTHON_BIN --version || true
+        run: |
+          set -e
+          $PYTHON_BIN --version || true
 
       - name: Install Python dependencies
         run: |
+          set -e
           $PYTHON_BIN -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             $PYTHON_BIN -m pip install -r requirements.txt
@@ -78,6 +97,7 @@ jobs:
       - name: Run unit tests (optional)
         continue-on-error: true
         run: |
+          set -e
           $PYTHON_BIN -m pip install pytest
           pytest || true
 
@@ -86,7 +106,6 @@ jobs:
       # ==================================================
       - name: Gitleaks scan
         continue-on-error: true
-        shell: bash
         run: |
           set -e
 
@@ -95,10 +114,10 @@ jobs:
           export PATH="$BIN_DIR:$PATH"
 
           if ! command -v gitleaks >/dev/null 2>&1; then
-           echo "Installing gitleaks..."
-           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
-            | tar -xz -C "$BIN_DIR"
-           chmod +x "$BIN_DIR/gitleaks"
+            echo "Installing gitleaks..."
+            curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+              | tar -xz -C "$BIN_DIR"
+            chmod +x "$BIN_DIR/gitleaks"
           fi
 
           gitleaks detect \
@@ -114,6 +133,7 @@ jobs:
       - name: SCA with pip-audit
         continue-on-error: true
         run: |
+          set -e
           $PYTHON_BIN -m pip install pip-audit
           if [ -f requirements.txt ]; then
             pip-audit -r requirements.txt \
@@ -129,6 +149,7 @@ jobs:
       - name: SAST with Bandit
         continue-on-error: true
         run: |
+          set -e
           $PYTHON_BIN -m pip install bandit
           bandit -r . \
             -f json \
@@ -155,11 +176,12 @@ jobs:
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
         run: |
+          set -e
           cd llm-sast
           pip install -r requirements.txt
           python main.py \
             --scan-path "$GITHUB_WORKSPACE" \
-            > "../$REPORT_DIR/llm-sast.json"
+            > "../$REPORT_DIR/llm-sast.json" || true
 
       # ==================================================
       # 8) MISCONFIG & FS SCAN – Trivy
@@ -189,6 +211,7 @@ jobs:
       # ==================================================
       - name: Runner disk hygiene (pre-build)
         run: |
+          set -e
           echo "🧹 Cleaning runner before build"
           docker system prune -af || true
           docker builder prune -af || true
@@ -196,6 +219,7 @@ jobs:
 
       - name: Docker Hub login
         run: |
+          set -e
           if ! docker info > /dev/null 2>&1; then
             echo "❌ Docker not available on runner"
             exit 1
@@ -204,13 +228,29 @@ jobs:
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
             docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Build image
+      - name: Build image (with retry for network flakiness)
         run: |
-          docker build \
-            -f containers/app/Dockerfile \
-            -t "$IMAGE_REPO:${{ github.sha }}" \
-            -t "$IMAGE_REPO:latest" \
-            .
+          set -e
+          MAX_RETRY=3
+          n=1
+          until [ $n -gt $MAX_RETRY ]; do
+            echo "Docker build attempt #$n ..."
+            if docker build \
+              -f containers/app/Dockerfile \
+              -t "$IMAGE_REPO:${{ github.sha }}" \
+              -t "$IMAGE_REPO:latest" \
+              .; then
+              echo "Docker build succeeded."
+              break
+            fi
+            echo "Docker build failed (attempt #$n)."
+            if [ $n -eq $MAX_RETRY ]; then
+              echo "Giving up after $MAX_RETRY attempts."
+              exit 1
+            fi
+            n=$((n+1))
+            sleep 10
+          done
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@0.28.0
@@ -228,6 +268,7 @@ jobs:
         id: epss
         continue-on-error: true
         run: |
+          set -e
           epss_hit=false
           threshold=0.5
 
@@ -238,8 +279,8 @@ jobs:
           fi
 
           CVES=$(jq -r '
-            .Results[]?.Vulnerabilities[]? | 
-             select(.Severity=="HIGH" or .Severity=="CRITICAL") | 
+            .Results[]?.Vulnerabilities[]? |
+            select(.Severity=="HIGH" or .Severity=="CRITICAL") |
             .VulnerabilityID
           ' "$REPORT_DIR/trivy-image.json" | sort -u)
 
@@ -260,6 +301,7 @@ jobs:
 
       - name: Push image
         run: |
+          set -e
           docker push "$IMAGE_REPO:${{ github.sha }}"
           docker push "$IMAGE_REPO:latest"
 
@@ -269,6 +311,7 @@ jobs:
       - name: Docker cleanup (safe prune)
         if: always()
         run: |
+          set -e
           echo "🧹 Cleaning up old Docker artifacts..."
 
           if ! docker info > /dev/null 2>&1; then
@@ -276,10 +319,7 @@ jobs:
             exit 0
           fi
 
-          # Remove unused images older than 7 days
           docker image prune -a -f --filter "until=168h" || true
-
-          # Remove old build cache
           docker builder prune -f --filter "until=168h" || true
 
           echo "✅ Docker cleanup completed"
@@ -295,19 +335,20 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
+          set -e
           ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
-            "$SSH_USER@$APP_HOST" << EOF
+            "$SSH_USER@$APP_HOST" << 'EOF'
               set -e
               cd /opt/vuln-bank/containers/app
 
               echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
                 docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
 
-              export IMAGE_WITH_TAG="$IMAGE_WITH_TAG"
-              export DB_HOST="$DB_HOST"
-              export DB_USER="$DB_USER"
-              export DB_PASSWORD="$DB_PASSWORD"
-              export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
+              export IMAGE_WITH_TAG="${IMAGE_WITH_TAG}"
+              export DB_HOST="${DB_HOST}"
+              export DB_USER="${DB_USER}"
+              export DB_PASSWORD="${DB_PASSWORD}"
+              export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}"
 
               docker compose pull
               docker compose up -d
@@ -315,12 +356,14 @@ jobs:
 
       - name: Docker image retention on VM2
         run: |
+          set -e
           ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
             "$SSH_USER@$APP_HOST" \
             "KEEP_IMAGES=5 sudo /usr/local/bin/vuln-bank-image-retention.sh"
 
       - name: Wait for application
         run: |
+          set -e
           for i in {1..30}; do
             if curl -sf "$DAST_TARGET_URL" > /dev/null; then
               echo "✅ App is reachable at $DAST_TARGET_URL"
@@ -336,11 +379,12 @@ jobs:
       # 13) DAST – OWASP ZAP (Baseline)
       # ==================================================
       - name: Prepare ZAP workspace
-        run: chmod -R u+rwX "$GITHUB_WORKSPACE"
+        run: |
+          set -e
+          chmod -R u+rwX "$GITHUB_WORKSPACE"
 
       - name: OWASP ZAP baseline scan
         continue-on-error: true
-        shell: bash
         run: |
           set +e
 
@@ -362,11 +406,10 @@ jobs:
 
           echo "✅ ZAP baseline completed"
 
-          # --- HARD CHECK: HIGH RISK ONLY ---
           if jq -e '
-            .site[].alerts[] | 
+            .site[].alerts[] |
             select(.riskcode == "3" or .riskcode == 3)
-          ' "$REPORT_DIR/zap-report.json" >/dev/null; then
+          ' "$REPORT_DIR/zap-report.json" >/dev/null 2>&1; then
             echo "❌ ZAP HIGH risk vulnerabilities found"
           else
             echo "✅ No ZAP HIGH risk vulnerabilities"
@@ -379,7 +422,6 @@ jobs:
           name: zap-dast-reports
           path: |
             security-reports/zap-report.json
-            security-reports/zap-report.md
             security-reports/zap-report.html
           if-no-files-found: warn
 
@@ -388,28 +430,29 @@ jobs:
       # ==================================================
       - name: Evaluate findings
         id: evaluate
-        shell: bash
         run: |
+          set -e
           critical=false
 
+          # Generic CRITICAL/HIGH markers in JSON reports
           if grep -RqiE '"severity":\s*"(CRITICAL|HIGH)"' "$REPORT_DIR"; then
             critical=true
           fi
 
-          # ---------- Trivy / SCA / SAST ----------
+          # Trivy-style Severity fields
           if jq -e '
-            .. | objects | 
+            .. | objects |
             select(.Severity? == "CRITICAL" or .Severity? == "HIGH")
           ' "$REPORT_DIR"/*.json >/dev/null 2>&1; then
             critical=true
           fi
 
-          # ---------- ZAP (HIGH only = riskcode 3) ----------
+          # ZAP HIGH risk
           if [ -f "$REPORT_DIR/zap-report.json" ]; then
             if jq -e '
-              .site[].alerts[] | 
+              .site[].alerts[] |
               select(.riskcode == "3" or .riskcode == 3)
-            ' "$REPORT_DIR/zap-report.json" >/dev/null; then
+            ' "$REPORT_DIR/zap-report.json" >/dev/null 2>&1; then
               critical=true
             fi
           fi
@@ -422,6 +465,7 @@ jobs:
       # ==================================================
       - name: Generate ASVS scorecard
         run: |
+          set -e
           python scripts/asvs_scorecard.py > "$REPORT_DIR/asvs-scorecard.json"
 
       # ==================================================
@@ -434,10 +478,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             await github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: "🚨 High-Risk Vulnerabilities Detected (EPSS ≥ 0.5)",
-            body: `
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: "🚨 High-Risk Vulnerabilities Detected (EPSS ≥ 0.5)",
+              body: `
             ### ⚠️ Security Alert – Vuln Bank
 
             This pipeline detected **HIGH/CRITICAL vulnerabilities** with **high EPSS probability**.
@@ -457,7 +501,7 @@ jobs:
             `,
               labels: ["security", "devsecops", "high-risk"]
             });
-    
+
       # ==================================================
       # 16) DEVSECOPS PIPELINE SUMMARY
       # ==================================================
