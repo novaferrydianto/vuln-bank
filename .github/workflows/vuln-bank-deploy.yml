@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Checkout source (for scripts/config)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Prepare report directory
         run: |
