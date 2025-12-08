@@ -78,9 +78,7 @@ jobs:
         run: |
           $PYTHON_BIN -m pip install --upgrade pip pip-audit
           if [ -f requirements.txt ]; then
-            pip-audit -r requirements.txt \
-              -f json \
-              -o "$REPORT_DIR/pip-audit.json" || true
+            pip-audit -r requirements.txt -f json -o "$REPORT_DIR/pip-audit.json" || true
           fi
 
       # ==================================================
@@ -90,9 +88,7 @@ jobs:
         continue-on-error: true
         run: |
           $PYTHON_BIN -m pip install bandit
-          bandit -r . \
-            -f json \
-            -o "$REPORT_DIR/bandit.json" || true
+          bandit -r . -f json -o "$REPORT_DIR/bandit.json" || true
 
       # ==================================================
       # 4) MISCONFIGURATION – TRIVY
@@ -156,7 +152,6 @@ jobs:
           critical=false
           epss=false
 
-          # ---- Check HIGH / CRITICAL findings from all JSON reports ----
           if jq -e '
             .. | objects |
             select(
@@ -169,24 +164,18 @@ jobs:
             critical=true
           fi
 
-          # ---- EPSS scoring (image CVEs only) ----
           if [ -f "$REPORT_DIR/trivy-image.json" ]; then
-            CVES=$(jq -r '
-              .Results[].Vulnerabilities[]?.VulnerabilityID
-            ' "$REPORT_DIR/trivy-image.json" | sort -u)
+            CVES=$(jq -r '.Results[].Vulnerabilities[]?.VulnerabilityID' \
+              "$REPORT_DIR/trivy-image.json" | sort -u)
 
             for cve in $CVES; do
               score=$(curl -s "https://api.first.org/data/v1/epss?cve=$cve" \
                 | jq -r '.data[0].epss // 0')
-              echo "CVE=$cve EPSS=$score"
               if (( $(echo "$score >= $EPSS_THRESHOLD" | bc -l) )); then
                 epss=true
               fi
             done
           fi
-
-          echo "critical_found=$critical"
-          echo "epss_hit=$epss"
 
           if [ "$critical" = true ] && [ "$epss" = true ]; then
             echo "❌ CI BLOCKED: Exploitable vulnerabilities detected"
@@ -213,7 +202,6 @@ jobs:
             "$IMAGE_REPO:${{ github.sha }}")
 
           echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "✅ Image digest: $DIGEST"
 
       # ==================================================
       # 9) INSTALL SBOM + SIGNING TOOLS
@@ -232,16 +220,15 @@ jobs:
           chmod +x "$BIN/cosign"
 
       # ==================================================
-      # 10) SBOM GENERATION (BY DIGEST)
+      # 10) SBOM GENERATION (DIGEST-BASED)
       # ==================================================
       - name: Generate SBOM
         run: |
           syft "${{ steps.push.outputs.IMAGE_DIGEST }}" \
-            -o json \
-            > "$REPORT_DIR/sbom.json"
+            -o json > "$REPORT_DIR/sbom.json"
 
       # ==================================================
-      # 11) SIGN IMAGE (COSIGN KEYLESS, BY DIGEST)
+      # 11) SIGN IMAGE (COSIGN KEYLESS)
       # ==================================================
       - name: Cosign sign image
         env:
@@ -250,19 +237,21 @@ jobs:
           cosign sign --yes "${{ steps.push.outputs.IMAGE_DIGEST }}"
 
       # ==================================================
-      # 12) VERIFY SIGNATURE (BY DIGEST)
+      # 12) VERIFY SIGNATURE (PR-SAFE)
       # ==================================================
       - name: Cosign verify image
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign verify \
-            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp \
+            "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/.*" \
+            --certificate-oidc-issuer \
+            "https://token.actions.githubusercontent.com" \
             "${{ steps.push.outputs.IMAGE_DIGEST }}"
 
       # ==================================================
-      # 13) UPLOAD ARTIFACTS (REPORTS + SBOM)
+      # 13) UPLOAD ARTIFACTS
       # ==================================================
       - name: Upload CI reports
         if: always()
