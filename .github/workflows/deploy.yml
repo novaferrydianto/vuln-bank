@@ -220,13 +220,34 @@ jobs:
       - name: Docker Hub login
         run: |
           set -e
+
           if ! docker info > /dev/null 2>&1; then
             echo "❌ Docker not available on runner"
             exit 1
           fi
 
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
-            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          MAX_RETRY=5
+          SLEEP_SEC=20
+
+          for i in $(seq 1 $MAX_RETRY); do
+            echo "🔐 Docker login attempt #$i/$MAX_RETRY ..."
+
+            if echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+                docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin; then
+              echo "✅ Docker login succeeded."
+              exit 0
+            fi
+
+            echo "⚠️ Docker login failed (attempt #$i)."
+
+            if [ "$i" -lt "$MAX_RETRY" ]; then
+              echo "⏳ Waiting ${SLEEP_SEC}s before retry..."
+              sleep "$SLEEP_SEC"
+            else
+              echo "❌ Docker login failed after $MAX_RETRY attempts."
+              exit 1
+            fi
+          done
 
       - name: Build image (with retry for network flakiness)
         run: |
