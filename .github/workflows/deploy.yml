@@ -389,20 +389,20 @@ jobs:
           set +e
 
           mkdir -p "$REPORT_DIR/zap"
-          chmod -R 777 "$REPORT_DIR"
+          chmod -R u+rwX "$REPORT_DIR/zap"
 
           docker pull ghcr.io/zaproxy/zaproxy:stable
 
           docker run --rm \
-            -v "$PWD:/zap/wrk" \
+            --userns=keep-id \
+            -v "$REPORT_DIR/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_TARGET_URL" \
-              -J "$REPORT_DIR/zap-report.json" \
-              -r "$REPORT_DIR/zap-report.html" \
+              -J zap-report.json \
+              -r zap-report.html \
               -m 5 \
-              -T 120 \
-              || true
+              -T 120 || true
 
           echo "✅ ZAP baseline completed"
 
@@ -421,8 +421,8 @@ jobs:
         with:
           name: zap-dast-reports
           path: |
-            security-reports/zap-report.json
-            security-reports/zap-report.html
+            security-reports/zap/zap-report.json
+            security-reports/zap/zap-report.html
           if-no-files-found: warn
 
       # ==================================================
@@ -448,11 +448,11 @@ jobs:
           fi
 
           # ZAP HIGH risk
-          if [ -f "$REPORT_DIR/zap-report.json" ]; then
+          if [ -f "$REPORT_DIR/zap/zap-report.json" ]; then
             if jq -e '
               .site[].alerts[] |
               select(.riskcode == "3" or .riskcode == 3)
-            ' "$REPORT_DIR/zap-report.json" >/dev/null 2>&1; then
+            ' "$REPORT_DIR/zap/zap-report.json" >/dev/null 2>&1; then
               critical=true
             fi
           fi
