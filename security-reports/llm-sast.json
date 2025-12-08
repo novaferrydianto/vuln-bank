@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Broken Access Control",
+    "summary": "Authorization bypass on admin endpoint",
+    "severity": "HIGH",
+    "file": "templates/admin.html",
+    "reasoning": "No role check before accessing admin data",
+    "remediation": "Enforce role-based decorator"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "site": [
+    {
+      "alerts": [
+        {
+          "alert": "Cross Site Scripting",
+          "riskcode": "3",
+          "confidence": "2",
+          "url": "http://app/search?q=<script>",
+          "param": "q"
+        }
+      ]
+    }
+  ]
+}
