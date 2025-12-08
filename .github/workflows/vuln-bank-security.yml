@@ -178,7 +178,7 @@ jobs:
 
       # 8) Trivy FS & config
       - name: Trivy FS scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         continue-on-error: true
         with:
           scan-type: fs
@@ -188,7 +188,7 @@ jobs:
           severity: HIGH,CRITICAL
 
       - name: Trivy config scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         continue-on-error: true
         with:
           scan-type: config
@@ -270,7 +270,7 @@ jobs:
             > "$REPORT_DIR/sbom-image.spdx.json"
 
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         continue-on-error: true
         with:
           image-ref: ${{ env.IMAGE_REPO }}:${{ github.sha }}
