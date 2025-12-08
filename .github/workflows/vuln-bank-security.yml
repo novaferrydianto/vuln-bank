@@ -9,6 +9,10 @@ on:
     - cron: "0 18 * * *" # ~01:00 WIB Daily Scan
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: write
+
 concurrency:
   group: vuln-bank-security-${{ github.ref }}
   cancel-in-progress: true
@@ -307,20 +311,16 @@ jobs:
           docker push "$IMAGE_REPO:${{ github.sha }}"
           docker push "$IMAGE_REPO:latest"
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Sign image with Cosign (keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           set -e
-          echo "🔐 Signing image with Cosign keyless..."
-          if ! command -v cosign >/dev/null 2>&1; then
-            curl -sSfL https://raw.githubusercontent.com/sigstore/cosign/main/install.sh \
-              | sh -s -- -b /usr/local/bin
-          fi
-
-          cosign sign \
-            --yes \
-            "$IMAGE_REPO:${{ github.sha }}"
+          cosign version
+          cosign sign --yes "$IMAGE_REPO:${{ github.sha }}"
 
       - name: Docker cleanup (safe prune)
         if: always()
@@ -339,7 +339,7 @@ jobs:
       - name: Normalize security reports
         run: |
           set -e
-          python scripts/normalize_reports.py
+          $PYTHON_BIN scripts/normalize_reports.py
 
       - name: Evaluate findings
         id: evaluate
@@ -368,8 +368,8 @@ jobs:
       - name: Generate ASVS scorecard
         run: |
           set -e
-          python scripts/asvs_scorecard.py > "$REPORT_DIR/asvs-scorecard.json"
-          python scripts/render_asvs_markdown.py > "$REPORT_DIR/asvs-scorecard.md"
+          $PYTHON_BIN scripts/asvs_scorecard.py > "$REPORT_DIR/asvs-scorecard.json"
+          $PYTHON_BIN scripts/render_asvs_markdown.py > "$REPORT_DIR/asvs-scorecard.md"
 
       # 12) Summary
       - name: DevSecOps Pipeline Summary
