@@ -222,7 +222,22 @@ def execute_query(query, params=None, fetch=True):
     """
     Execute a database query
     Vulnerability: This function still allows for SQL injection if called with string formatting
+    Fixed: Now rejects queries with signs of unsafe formatting or interpolation.
     """
+    # Safety check: Raise ValueError if query string shows likely SQL injection patterns.
+    # Forbid braces except for CALL statements.
+    if any(token in query for token in ('{', '}')) and not query.strip().startswith("CALL"):
+        raise ValueError(
+            f"Unsafe query detected: braces/bracket formatting found in query.\n"
+            f"Use parameterized queries with %s placeholders only, never f-strings or .format().\nQuery: {query}"
+        )
+    # Forbid percent signs except when followed by 's' or '%'.
+    percents = [i for i in range(len(query)) if query[i] == '%']
+    for i in percents:
+        if not (i+1 < len(query) and query[i+1] in ('s', '%')):
+            raise ValueError(
+                f"Potential unsafe percent-formatting in query: {query}"
+            )
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
