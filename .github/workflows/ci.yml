@@ -17,7 +17,7 @@ permissions:
 env:
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
-  DAST_URL: http://localhost:5000
+  DAST_URL: http://vuln-bank-dast:5000
 
 jobs:
   security_scans:
@@ -168,6 +168,17 @@ jobs:
       - name: Start app stack (DAST)
         run: docker compose -f docker-compose.dast.yml up -d
 
+      - name: Wait for app readiness (DAST)
+        run: |
+          echo "Waiting for application to be ready..."
+          for i in {1..30}; do
+            curl -fs http://127.0.0.1:5000 && exit 0 || true
+            sleep 5
+          done
+          echo "❌ App not ready after timeout"
+          docker compose -f docker-compose.dast.yml logs
+          exit 1
+
       - name: Prepare ZAP workspace (fix permissions)
         run: |
           mkdir -p security-reports/zap
@@ -175,12 +186,13 @@ jobs:
 
       - name: OWASP ZAP baseline scan
         run: |
-          docker run --rm --network host \
+          docker run --rm \
+            --network vuln-bank_dastnet \
             -v "$(pwd)/security-reports/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
-              -J zap.json \
+              -J /zap/wrk/zap.json \
               -m 5 \
               -T 120
 
