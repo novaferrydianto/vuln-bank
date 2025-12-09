@@ -32,6 +32,17 @@ jobs:
 
     steps:
 
+      - name: 🧹 Pre-flight Cleanup (Fix Permissions)
+        run: |
+          echo "Cleaning up root-owned files from previous runs..."
+          if [ -d "security-reports" ]; then
+            sudo rm -rf security-reports
+          fi
+          # Also clean Sonar if it exists
+          if [ -d ".scannerwork" ]; then
+            sudo rm -rf .scannerwork
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
