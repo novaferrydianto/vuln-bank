@@ -146,6 +146,7 @@ jobs:
       - name: Export DAST runtime env
         run: |
           echo "IMAGE_WITH_TAG=vuln-bank:ci" >> $GITHUB_ENV
+          echo "DB_HOST=db" >> $GITHUB_ENV
           echo "DB_USER=postgres" >> $GITHUB_ENV
           echo "DB_PASSWORD=dast" >> $GITHUB_ENV
           echo "DEEPSEEK_API_KEY=dast-placeholder" >> $GITHUB_ENV
