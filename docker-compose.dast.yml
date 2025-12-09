@@ -1,15 +1,13 @@
-version: "3.8"
-
 services:
   vuln-bank-dast:
     image: ${IMAGE_WITH_TAG}
     container_name: vuln-bank-dast
 
-    environment:
-      FLASK_ENV: production
-
     ports:
       - "5000:5000"
+
+    environment:
+      FLASK_ENV: production
 
     healthcheck:
       test:
@@ -17,37 +15,25 @@ services:
           "CMD",
           "python",
           "-c",
-          "import requests; requests.get('http://127.0.0.1:5000/healthz', timeout=2)"
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000', timeout=2)"
         ]
-      interval: 15s
-      timeout: 5s
+      interval: 10s
+      timeout: 3s
       retries: 6
 
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-
+    restart: unless-stopped
     networks:
       - dastnet
 
   zap:
-    image: ghcr.io/zaproxy/zaproxy:stable
-    container_name: zap
+    image: ghcr.io/zaproxy/zaproxy:2.15.0
     depends_on:
       vuln-bank-dast:
         condition: service_healthy
-
     command: >
-      zap-baseline.py
-      -t http://vuln-bank-dast:5000
-      -J zap.json
-      -m 5
-
+      zap.sh -daemon -host 0.0.0.0 -port 8080
     volumes:
-      - ./security-reports/dast:/zap/wrk
-
+      - ./security-reports:/zap/wrk
     mem_limit: 2g
     networks:
       - dastnet
