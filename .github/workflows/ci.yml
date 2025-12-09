@@ -102,6 +102,12 @@ jobs:
       - name: Convert Bandit result → Sonar format
         run: python scripts/bandit_to_sonar.py
 
+      - name: Attach Bandit issues to SonarQube
+        run: |
+          python scripts/bandit_to_sonar.py
+          echo "sonar.externalIssuesReportPaths=security-reports/sonar-bandit.json" \
+            >> sonar-project.properties
+
       - name: SonarQube scan (aggregate issues)
         uses: sonarsource/sonarqube-scan-action@v2
         continue-on-error: true
@@ -115,6 +121,7 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.python.version=3.11
             -Dsonar.sourceEncoding=UTF-8
+            -Dsonar.externalIssuesReportPaths=security-reports/sonar-bandit.json
 
       # ==================================================
       # SCA – Trivy FS
@@ -221,9 +228,7 @@ jobs:
           $PYTHON_BIN -m pip install --upgrade requests
 
           $PYTHON_BIN scripts/epss_gate.py \
-            --inputs \
-              $REPORT_DIR/trivy-sca.json \
-              $REPORT_DIR/pip-audit.json \
+            --input "$REPORT_DIR/trivy-sca.json" \
             --output "$REPORT_DIR/epss-findings.json" \
             --threshold "$EPSS_THRESHOLD"
 
