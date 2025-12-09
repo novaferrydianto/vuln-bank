@@ -31,10 +31,7 @@ jobs:
       gate_failed: ${{ steps.gateflag.outputs.failed }}
 
     steps:
-      - name: Pre-clean Sonar workspace
-        run: |
-          sudo rm -rf .scannerwork || true
-          
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -104,6 +101,14 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_USER_HOME: /tmp/.sonar
+        with:
+          args: >
+            -Dsonar.projectKey=vuln-bank
+            -Dsonar.organization=vuln-bank
+            -Dsonar.sources=.
+            -Dsonar.python.version=3.11
+            -Dsonar.sourceEncoding=UTF-8
 
       # ==================================================
       # SCA – Trivy FS
