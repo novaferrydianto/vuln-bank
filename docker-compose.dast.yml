@@ -1,18 +1,30 @@
+version: "3.8"
+
 services:
   vuln-bank-dast:
     image: ${IMAGE_WITH_TAG}
     container_name: vuln-bank-dast
+
     ports:
       - "5000:5000"
+
     environment:
       FLASK_ENV: production
+
+    restart: unless-stopped
     networks:
       - dastnet
 
   zap:
     image: ghcr.io/zaproxy/zaproxy:2.15.0
-    networks:
-      - dastnet
+    container_name: vuln-bank-zap
+
     volumes:
       - ./security-reports:/zap/wrk
     mem_limit: 2g
+    networks:
+      - dastnet
+
+networks:
+  dastnet:
+    driver: bridge
