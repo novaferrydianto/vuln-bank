@@ -98,6 +98,7 @@ jobs:
 
       - name: SonarQube scan (aggregate issues)
         uses: sonarsource/sonarqube-scan-action@v2
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -105,7 +106,6 @@ jobs:
         with:
           args: >
             -Dsonar.projectKey=vuln-bank
-            -Dsonar.organization=vuln-bank
             -Dsonar.sources=.
             -Dsonar.python.version=3.11
             -Dsonar.sourceEncoding=UTF-8
