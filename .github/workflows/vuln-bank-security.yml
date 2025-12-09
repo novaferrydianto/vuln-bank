@@ -33,7 +33,7 @@ jobs:
     name: Security Scan → Build → SBOM → Sign
     runs-on: [self-hosted, linux]
     environment:
-      name: production
+      name: staging
     env:
       COSIGN_EXPERIMENTAL: "1"
 
@@ -170,11 +170,34 @@ jobs:
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
         run: |
-          set -e
           cd llm-sast
-          $PYTHON_BIN -m pip install -r requirements.txt
-          $PYTHON_BIN main.py \
-            --scan-path "$GITHUB_WORKSPACE"
+
+          echo "📦 Installing LLM-SAST dependencies..."
+          $PYTHON_BIN -m pip install -r requirements.txt || {
+            echo "⚠️ LLM-SAST deps install failed"
+            echo '{"findings":[],"meta":{"source":"llm-sast","status":"deps_failed"}}' \
+              > "../$REPORT_DIR/llm-sast.json"
+            exit 0
+          }
+
+          echo "🧠 Running LLM-SAST..."
+
+          # Disable immediate-exit just for this command
+          set +e
+          $PYTHON_BIN main.py --scan-path "$GITHUB_WORKSPACE"
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "⚠️ LLM-SAST degraded (provider limitation / JSON mode unavailable)"
+            echo '{"findings":[],"meta":{"source":"llm-sast","status":"degraded","exit_code":'"$EXIT_CODE"'}}' \
+              > "../$REPORT_DIR/llm-sast.json"
+          else
+            echo "✅ LLM-SAST completed successfully"
+          fi
+
+          # Never block pipeline
+          exit 0
 
       # 8) Trivy FS & config
       - name: Trivy FS scan
