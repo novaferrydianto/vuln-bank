@@ -32,16 +32,10 @@ jobs:
 
     steps:
 
-      - name: 🧹 Pre-flight Cleanup (Fix Permissions)
+      - name: 🧹 Pre-flight Cleanup (Safe)
         run: |
-          echo "Cleaning up root-owned files from previous runs..."
-          if [ -d "security-reports" ]; then
-            sudo rm -rf security-reports
-          fi
-          # Also clean Sonar if it exists
-          if [ -d ".scannerwork" ]; then
-            sudo rm -rf .scannerwork
-          fi
+          rm -rf security-reports || true
+          rm -rf .scannerwork || true
 
       - uses: actions/checkout@v4
         with:
@@ -174,10 +168,15 @@ jobs:
       - name: Start app stack (DAST)
         run: docker compose -f docker-compose.dast.yml up -d
 
+      - name: Prepare ZAP workspace (fix permissions)
+        run: |
+          mkdir -p security-reports/zap
+          chmod 777 security-reports/zap
+
       - name: OWASP ZAP baseline scan
         run: |
           docker run --rm --network host \
-            -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
+            -v "$(pwd)/security-reports/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
@@ -237,7 +236,7 @@ jobs:
   slack_notify:
     name: Slack Alert (Gate Failed)
     needs: [security_scans]
-    if: needs.security_scans.outputs.gate_failed == 'true'
+    if: always() && needs.security_scans.outputs.gate_failed == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -256,7 +255,7 @@ jobs:
   create_issues:
     name: Auto-create Issues (Exploit-aware)
     needs: [security_scans]
-    if: needs.security_scans.outputs.gate_failed == 'true'
+    if: always() && needs.security_scans.outputs.gate_failed == 'true'
     runs-on: ubuntu-latest
 
     steps:
