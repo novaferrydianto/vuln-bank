@@ -1,0 +1,251 @@
+name: Vuln Bank – Risk-aware DevSecOps CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *"   # ~01:00 WIB
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+
+env:
+  REPORT_DIR: security-reports
+  EPSS_THRESHOLD: "0.5"
+  DAST_URL: http://127.0.0.1:5000
+
+jobs:
+  security_scans:
+    name: Continuous Security Assurance
+    runs-on: self-hosted
+    environment: staging
+
+    outputs:
+      gate_failed: ${{ steps.gateflag.outputs.failed }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare report directory
+        run: mkdir -p "$REPORT_DIR"
+
+      # ==================================================
+      # IaC Scanning (EARLY) – Checkov (Advisory)
+      # ==================================================
+      - name: IaC scanning (Checkov)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: dockerfile,github_actions
+          output_format: json
+          output_file: ${{ env.REPORT_DIR }}/checkov.json
+          soft_fail: true
+
+      - name: Normalize Checkov output
+        run: |
+          if [ ! -s "$REPORT_DIR/checkov.json" ]; then
+            echo '{"results":{"failed_checks":[]}}' > "$REPORT_DIR/checkov.json"
+          fi
+
+      # ==================================================
+      # Secret Scanning
+      # ==================================================
+      - name: Secret scanning (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect -v --format json -r "$REPORT_DIR/gitleaks.json"
+        continue-on-error: true
+
+      # ==================================================
+      # SAST – Bandit
+      # ==================================================
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: SAST scan (Bandit)
+        run: |
+          pip install bandit
+          bandit -r app.py database.py auth.py ai_agent_deepseek.py \
+            -f json -o "$REPORT_DIR/bandit.json" || true
+
+      # --------------------------------------------------
+      # SonarQube – SAST Aggregation
+      # --------------------------------------------------
+      - name: Convert Bandit result → Sonar format
+        run: python scripts/bandit_to_sonar.py
+
+      - name: SonarQube scan (aggregate issues)
+        uses: sonarsource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # ==================================================
+      # SCA – Trivy FS
+      # ==================================================
+      - name: SCA scan (Trivy FS)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-sca.json
+
+      # ==================================================
+      # Misconfiguration – Trivy Config
+      # ==================================================
+      - name: Misconfiguration scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: ./containers
+          severity: HIGH,CRITICAL
+          format: json
+          output: ${{ env.REPORT_DIR }}/trivy-misconfig.json
+
+      # ==================================================
+      # DAST – OWASP ZAP
+      # ==================================================
+      - name: Start app stack (DAST)
+        run: docker compose -f containers/app/docker-compose.yml up -d
+
+      - name: Wait for app readiness
+        run: |
+          for i in {1..30}; do
+            curl -fsS "$DAST_URL/healthz" && exit 0
+            sleep 5
+          done
+          echo "App not ready"; exit 1
+
+      - name: OWASP ZAP baseline scan
+        run: |
+          docker run --rm --network host \
+            -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
+            owasp/zap2docker-stable zap-baseline.py \
+              -t "$DAST_URL" \
+              -J zap.json \
+              -m 5
+        continue-on-error: true
+
+      - name: Stop DAST stack
+        if: always()
+        run: docker compose -f containers/app/docker-compose.yml down || true
+
+      # ==================================================
+      # EPSS + CISA KEV – FINAL DECISION GATE
+      # ==================================================
+      - name: EPSS + CISA KEV gate
+        run: |
+          pip install requests
+          python scripts/epss_gate.py \
+            --input "$REPORT_DIR/trivy-sca.json" \
+            --output "$REPORT_DIR/epss-findings.json" \
+            --threshold "$EPSS_THRESHOLD"
+
+      - name: Gate decision
+        id: gateflag
+        run: |
+          if [ -f "$REPORT_DIR/gate_failed" ]; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ==================================================
+      # Upload artifacts (ALWAYS)
+      # ==================================================
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+  # =====================================================
+  # Slack Notification
+  # =====================================================
+  slack_notify:
+    name: Slack Alert (Gate Failed)
+    needs: [security_scans]
+    if: needs.security_scans.outputs.gate_failed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Slack alert
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+          --data "{
+            \"text\": \"🚨 *Vuln Bank CI Security Gate FAILED*\\nRepo: ${{ github.repository }}\\nRun: ${{ github.run_id }}\"
+          }" "$SLACK_WEBHOOK_URL"
+
+  # =====================================================
+  # Auto-create GitHub Issues (EPSS / KEV)
+  # =====================================================
+  create_issues:
+    name: Auto-create Issues (Exploit-aware)
+    needs: [security_scans]
+    if: needs.security_scans.outputs.gate_failed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      - name: Create GitHub Issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("fs");
+            const data = JSON.parse(
+              fs.readFileSync("security-reports/epss-findings.json","utf8")
+            ).high_risk || [];
+
+            for (const v of data) {
+              const title = `[SECURITY][${v.cve}] ${v.pkg_name}`;
+
+              const existing = await github.rest.search.issuesAndPullRequests({
+                q: `${title} repo:${context.repo.owner}/${context.repo.repo}`
+              });
+              if (existing.data.total_count > 0) continue;
+
+              const body = `
+              ### 🔐 Exploit-Aware Vulnerability
+
+              - **CVE**: ${v.cve}
+              - **Severity**: ${v.severity}
+              - **EPSS**: ${v.epss}
+              - **CISA KEV**: ${v.is_kev ? "YES" : "NO"}
+              - **Package**: ${v.pkg_name}
+
+              **Reasons**: ${(v.reasons || []).join(", ")}
+              `;
+
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [
+                  "security",
+                  "auto-generated",
+                  v.is_kev ? "CISA-KEV" : "EPSS-high"
+                ]
+              });
+            }

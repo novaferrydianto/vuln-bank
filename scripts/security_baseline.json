@@ -1,7 +1,0 @@
-[
-  {
-    "source": "semgrep",
-    "id": "python.flask.xss",
-    "file": "auth.py"
-  }
-]
