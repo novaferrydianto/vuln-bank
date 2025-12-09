@@ -154,14 +154,6 @@ jobs:
       - name: Start app stack (DAST)
         run: docker compose -f docker-compose.dast.yml up -d
 
-      - name: Wait for app readiness
-        run: |
-          for i in {1..30}; do
-            python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000', timeout=2)" && exit 0 || true
-            sleep 5
-          done
-          echo "App not ready"; exit 1
-
       - name: OWASP ZAP baseline scan
         run: |
           docker run --rm --network host \
