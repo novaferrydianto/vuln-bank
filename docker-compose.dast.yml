@@ -2,37 +2,52 @@ version: "3.8"
 
 services:
   vuln-bank-dast:
-    image: ${IMAGE_TAG}
+    image: ${IMAGE_WITH_TAG}
     container_name: vuln-bank-dast
+
     environment:
-      - FLASK_ENV=production
-      - FLASK_RUN_HOST=0.0.0.0
-    command: python app.py --host=0.0.0.0
+      FLASK_ENV: production
+
     ports:
       - "5000:5000"
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:5000"]
-      interval: 10s
-      timeout: 3s
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import requests; requests.get('http://127.0.0.1:5000/healthz', timeout=2)"
+        ]
+      interval: 15s
+      timeout: 5s
       retries: 6
-    restart: unless-stopped
+
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
     networks:
       - dastnet
 
   zap:
-    image: owasp/zap2docker-live
-    # If you want fixed version:
-    # image: owasp/zap2docker-weekly:2024-11-25
+    image: ghcr.io/zaproxy/zaproxy:stable
     container_name: zap
     depends_on:
-      - vuln-bank-dast
+      vuln-bank-dast:
+        condition: service_healthy
+
     command: >
-      zap.sh -daemon -host 0.0.0.0 -port 8080
-    ports:
-      - "8080:8080"
+      zap-baseline.py
+      -t http://vuln-bank-dast:5000
+      -J zap.json
+      -m 5
+
     volumes:
       - ./security-reports/dast:/zap/wrk
-    restart: unless-stopped
+
     mem_limit: 2g
     networks:
       - dastnet

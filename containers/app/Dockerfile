@@ -41,4 +41,5 @@ USER nonroot:nonroot
 EXPOSE 5000
 
 # ✅ DO NOT repeat python here
-CMD ["-u", "app.py"]
+#CMD ["-u", "app.py"]
+CMD ["app.py"]

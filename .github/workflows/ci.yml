@@ -128,8 +128,16 @@ jobs:
       # ==================================================
       # DAST – OWASP ZAP
       # ==================================================
+      - name: Export DAST runtime env
+        run: |
+          echo "IMAGE_WITH_TAG=vuln-bank:ci" >> $GITHUB_ENV
+          echo "DB_USER=postgres" >> $GITHUB_ENV
+          echo "DB_PASSWORD=dast" >> $GITHUB_ENV
+          echo "DB_HOST=127.0.0.1" >> $GITHUB_ENV
+          echo "DEEPSEEK_API_KEY=you_aint_gon_see_sheet" >> $GITHUB_ENV
+
       - name: Start app stack (DAST)
-        run: docker compose -f containers/app/docker-compose.yml up -d
+        run: docker compose -f docker-compose.dast.yml up -d
 
       - name: Wait for app readiness
         run: |
@@ -150,6 +158,10 @@ jobs:
               -m 5 \
               -T 300
         continue-on-error: true
+
+      - name: Cleanup Docker Image
+        if: always()
+        run: docker rmi ghcr.io/zaproxy/zaproxy:stable
 
       - name: Stop DAST stack
         if: always()
