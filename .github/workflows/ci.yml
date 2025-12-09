@@ -17,7 +17,7 @@ permissions:
 env:
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
-  DAST_URL: localhost:5000
+  DAST_URL: http://localhost:5000
 
 jobs:
   security_scans:
@@ -133,7 +133,6 @@ jobs:
           echo "IMAGE_WITH_TAG=vuln-bank:ci" >> $GITHUB_ENV
           echo "DB_USER=postgres" >> $GITHUB_ENV
           echo "DB_PASSWORD=dast" >> $GITHUB_ENV
-          echo "DB_HOST=127.0.0.1" >> $GITHUB_ENV
           echo "DEEPSEEK_API_KEY=dast-placeholder" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
