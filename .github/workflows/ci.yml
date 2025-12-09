@@ -17,7 +17,7 @@ permissions:
 env:
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
-  DAST_URL: http://127.0.0.1:5000
+  DAST_URL: localhost:5000
 
 jobs:
   security_scans:
@@ -163,8 +163,9 @@ jobs:
               -t "$DAST_URL" \
               -J zap.json \
               -m 5 \
-              -T 300
-        continue-on-error: true
+              -T 120
+
+          echo "✅ ZAP baseline completed"
 
       - name: Stop DAST stack
         if: always()
