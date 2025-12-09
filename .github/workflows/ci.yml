@@ -31,6 +31,10 @@ jobs:
       gate_failed: ${{ steps.gateflag.outputs.failed }}
 
     steps:
+      - name: Pre-clean Sonar workspace
+        run: |
+          sudo rm -rf .scannerwork || true
+          
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
