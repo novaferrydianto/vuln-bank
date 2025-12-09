@@ -22,7 +22,7 @@ services:
       - vuln_network
 
   db:
-    image: postgres:16
+    image: postgres:13
     environment:
       - POSTGRES_DB=vulnerable_bank
       - POSTGRES_USER=postgres

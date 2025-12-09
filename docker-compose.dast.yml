@@ -1,27 +1,26 @@
-version: "3.8"
-
 services:
   vuln-bank-dast:
     image: ${IMAGE_WITH_TAG}
     container_name: vuln-bank-dast
-
+    depends_on:
+      - db
+    environment:
+      DB_NAME: vulnerable_bank
+      DB_USER: postgres
+      DB_PASSWORD: dast
+      DB_HOST: db
+      DB_PORT: 5432
     ports:
       - "5000:5000"
-
-    environment:
-      FLASK_ENV: production
-
-    restart: unless-stopped
     networks:
       - dastnet
 
-  zap:
-    image: ghcr.io/zaproxy/zaproxy:2.15.0
-    container_name: vuln-bank-zap
-
-    volumes:
-      - ./security-reports:/zap/wrk
-    mem_limit: 2g
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: vulnerable_bank
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dast
     networks:
       - dastnet
 
