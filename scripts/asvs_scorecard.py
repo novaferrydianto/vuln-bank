@@ -1,54 +1,88 @@
-import json, glob
+#!/usr/bin/env python3
+import json
+import glob
 from collections import defaultdict
+from pathlib import Path
 
-baseline = json.load(open("scripts/asvs_baseline.json"))
-failed = defaultdict(set)
+BASELINE_PATH = Path("scripts/asvs_baseline.json")
+REPORT_PATHS = [Path("security-reports/normalized.json")] + list(
+    Path("security-reports").glob("*.json")
+)
 
-paths = ["security-reports/normalized.json"] + glob.glob("security-reports/*.json")
+baseline = json.loads(BASELINE_PATH.read_text())
 
-for path in paths:
+failed = defaultdict(lambda: {"controls": set(), "sources": set()})
+
+def normalize_asvs(asvs):
+    """
+    Normalize ASVS field into list of controls
+    """
+    if not asvs:
+        return []
+
+    if isinstance(asvs, str):
+        return [asvs]
+
+    if isinstance(asvs, dict):
+        return [asvs.get("control")] if asvs.get("control") else []
+
+    if isinstance(asvs, list):
+        return asvs
+
+    return []
+
+for path in REPORT_PATHS:
     try:
-        data = json.load(open(path))
+        data = json.loads(path.read_text())
     except Exception:
         continue
 
-    if isinstance(data, dict) and "findings" in data:
-        items = data["findings"]
-    elif isinstance(data, list):
-        items = data
-    else:
+    items = data.get("findings", []) if isinstance(data, dict) else data
+    if not isinstance(items, list):
         continue
 
     for item in items:
         sev = (item.get("severity") or "").upper()
-        asvs = item.get("asvs")
-
         if sev not in ("HIGH", "CRITICAL"):
             continue
 
-        if isinstance(asvs, dict):
-            asvs_id = asvs.get("control")
-        else:
-            asvs_id = asvs
+        if item.get("baseline") is True:
+            continue  # ✅ respect accepted risk
 
-        if not asvs_id:
-            continue
+        asvs_controls = normalize_asvs(item.get("asvs"))
+        for control in asvs_controls:
+            domain = control.split(".")[0]
+            failed[domain]["controls"].add(control)
+            failed[domain]["sources"].add(item.get("source", "unknown"))
 
-        domain = asvs_id.split(".")[0]
-        failed[domain].add(asvs_id)
-
+# Build scorecard
 scorecard = {}
+non_compliant = False
 
-for k, v in baseline.items():
-    total = v["total"]
-    fail_count = len(failed.get(k, []))
-    passed = max(total - fail_count, 0)
+for domain, meta in baseline.items():
+    total = meta["total"]
+    failed_controls = failed.get(domain, {}).get("controls", set())
+    failed_count = len(failed_controls)
 
-    scorecard[k] = {
-        "name": v["name"],
+    passed = max(total - failed_count, 0)
+    pass_pct = round((passed / total) * 100, 2) if total else 100.0
+
+    if failed_count > 0 and domain in ("V2", "V4"):
+        non_compliant = True  # ASVS Level 2 breaker
+
+    scorecard[domain] = {
+        "name": meta["name"],
         "total": total,
-        "failed": fail_count,
-        "pass_pct": round((passed / total) * 100, 2) if total else 100.0
+        "failed": failed_count,
+        "failed_controls": sorted(failed_controls),
+        "sources": sorted(failed.get(domain, {}).get("sources", [])),
+        "pass_pct": pass_pct,
     }
 
-print(json.dumps(scorecard, indent=2))
+output = {
+    "level": "ASVS Level 2",
+    "compliant": not non_compliant,
+    "scorecard": scorecard,
+}
+
+print(json.dumps(output, indent=2))
