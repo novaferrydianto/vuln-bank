@@ -134,7 +134,14 @@ jobs:
           echo "DB_USER=postgres" >> $GITHUB_ENV
           echo "DB_PASSWORD=dast" >> $GITHUB_ENV
           echo "DB_HOST=127.0.0.1" >> $GITHUB_ENV
-          echo "DEEPSEEK_API_KEY=you_aint_gon_see_sheet" >> $GITHUB_ENV
+          echo "DEEPSEEK_API_KEY=dast-placeholder" >> $GITHUB_ENV
+
+      - name: Build app image for DAST
+        run: |
+          docker build \
+            -f containers/app/Dockerfile \
+            -t vuln-bank:ci \
+            .
 
       - name: Start app stack (DAST)
         run: docker compose -f docker-compose.dast.yml up -d
@@ -159,13 +166,15 @@ jobs:
               -T 300
         continue-on-error: true
 
-      - name: Cleanup Docker Image
-        if: always()
-        run: docker rmi ghcr.io/zaproxy/zaproxy:stable
-
       - name: Stop DAST stack
         if: always()
-        run: docker compose -f containers/app/docker-compose.yml down || true
+        run: docker compose -f docker-compose.dast.yml down || true
+
+      - name: Cleanup DAST images
+        if: always()
+        run: |
+          docker rmi ghcr.io/zaproxy/zaproxy:stable || true
+          docker rmi vuln-bank:ci || true
 
       # ==================================================
       # EPSS + CISA KEV – FINAL DECISION GATE
