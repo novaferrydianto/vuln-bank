@@ -173,7 +173,10 @@ jobs:
         run: |
           echo "Waiting for application to be ready..."
           for i in {1..30}; do
-            curl -fs http://127.0.0.1:5000 && exit 0 || true
+            docker run --rm \
+              --network vuln-bank_dastnet \
+              curlimages/curl:8.6.0 \
+              curl -fs http://vuln-bank-dast:5000 && exit 0 || true
             sleep 5
           done
           echo "❌ App not ready after timeout"
@@ -195,7 +198,8 @@ jobs:
               -t "$DAST_URL" \
               -J /zap/wrk/zap.json \
               -m 5 \
-              -T 120
+              -T 120 \
+              -I
 
           echo "✅ ZAP baseline completed"
 
