@@ -23,7 +23,9 @@ jobs:
   security_scans:
     name: Continuous Security Assurance
     runs-on: self-hosted
-    environment: staging
+    environment: production
+    env:
+      PYTHON_BIN: python3.11
 
     outputs:
       gate_failed: ${{ steps.gateflag.outputs.failed }}
@@ -45,7 +47,7 @@ jobs:
           directory: .
           framework: dockerfile,github_actions
           output_format: json
-          output_file: ${{ env.REPORT_DIR }}/checkov.json
+          output_file_path: ${{ env.REPORT_DIR }}/checkov.json
           soft_fail: true
 
       - name: Normalize Checkov output
@@ -59,6 +61,8 @@ jobs:
       # ==================================================
       - name: Secret scanning (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: detect -v --format json -r "$REPORT_DIR/gitleaks.json"
         continue-on-error: true
@@ -66,15 +70,24 @@ jobs:
       # ==================================================
       # SAST – Bandit
       # ==================================================
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: SAST scan (Bandit)
         run: |
-          pip install bandit
+          $PYTHON_BIN -m pip install --upgrade pip bandit
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
             -f json -o "$REPORT_DIR/bandit.json" || true
+
+      # ==================================================
+      # SCA – Python dependencies (pip-audit)
+      # ==================================================
+      - name: Python dependency audit (pip-audit)
+        run: |
+          $PYTHON_BIN -m pip install --upgrade pip pip-audit
+          $PYTHON_BIN -m pip install -r containers/app/requirements.txt
+
+          $PYTHON_BIN -m pip_audit \
+            -r containers/app/requirements.txt \
+            --format json \
+            --output $REPORT_DIR/pip-audit.json || true
 
       # --------------------------------------------------
       # SonarQube – SAST Aggregation
@@ -130,10 +143,12 @@ jobs:
         run: |
           docker run --rm --network host \
             -v "$(pwd)/${REPORT_DIR}:/zap/wrk" \
-            owasp/zap2docker-stable zap-baseline.py \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
               -t "$DAST_URL" \
               -J zap.json \
-              -m 5
+              -m 5 \
+              -T 300
         continue-on-error: true
 
       - name: Stop DAST stack
@@ -145,9 +160,12 @@ jobs:
       # ==================================================
       - name: EPSS + CISA KEV gate
         run: |
-          pip install requests
-          python scripts/epss_gate.py \
-            --input "$REPORT_DIR/trivy-sca.json" \
+          $PYTHON_BIN -m pip install --upgrade requests
+
+          $PYTHON_BIN scripts/epss_gate.py \
+            --inputs \
+              $REPORT_DIR/trivy-sca.json \
+              $REPORT_DIR/pip-audit.json \
             --output "$REPORT_DIR/epss-findings.json" \
             --threshold "$EPSS_THRESHOLD"
 
