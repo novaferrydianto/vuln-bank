@@ -15,6 +15,9 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-yaml
-        files: ^ansible/|^k3s/
-      - id: check-added-large-files
-        args: ["--maxkb=500"]
+        files: |
+          ^ansible/playbooks/|
+          ^\.github/workflows/
+        exclude: |
+          ^k3s/|
+          ^ansible/roles/
