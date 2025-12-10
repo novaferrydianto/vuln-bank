@@ -45,8 +45,13 @@ jobs:
           fetch-depth: 0
           clean: false
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}
+
       - name: Prepare report directory
-        run: mkdir -p "${REPORT_DIR}"
+        run: mkdir -p "$REPORT_DIR"
 
       # ------------------------------
       # IaC – Checkov
@@ -57,11 +62,11 @@ jobs:
           directory: .
           framework: dockerfile,github_actions
           output_format: json
-          output_file_path: "${{ env.REPORT_DIR }}/checkov.json"
+          output_file_path: security-reports/checkov.json
           soft_fail: true
 
       # ------------------------------
-      # Secrets – Gitleaks (CLI)
+      # Secrets – Gitleaks
       # ------------------------------
       - name: Secret scan (Gitleaks)
         run: |
@@ -71,7 +76,7 @@ jobs:
             detect \
             --source /repo \
             --format json \
-            --report-path /repo/${REPORT_DIR}/gitleaks.json
+            --report-path /repo/security-reports/gitleaks.json
         continue-on-error: true
 
       # ------------------------------
@@ -79,16 +84,16 @@ jobs:
       # ------------------------------
       - name: SAST scan (Bandit)
         run: |
-          ${PYTHON_BIN} -m pip install -q bandit
+          $PYTHON_BIN -m pip install -q bandit
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
-            -f json -o "${REPORT_DIR}/bandit.json" || true
+            -f json -o "$REPORT_DIR/bandit.json" || true
 
-      - name: Bandit → Sonar external issues
+      - name: Bandit → Sonar
         run: |
-          ${PYTHON_BIN} scripts/bandit_semgrep_to_sonar.py
+          $PYTHON_BIN scripts/merge_security_to_sonar.py
 
       # ------------------------------
-      # SonarQube (property-based)
+      # SonarQube Scan
       # ------------------------------
       - name: SonarQube scan
         uses: sonarsource/sonarqube-scan-action@v2
@@ -106,11 +111,14 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           format: json
-          output: "${{ env.REPORT_DIR }}/trivy-sca.json"
+          output: security-reports/trivy-sca.json
 
       # ------------------------------
       # DAST – OWASP ZAP
       # ------------------------------
+      - name: Docker sanity check
+        run: docker ps
+
       - name: Build app image (DAST)
         run: |
           docker buildx build \
@@ -136,15 +144,15 @@ jobs:
 
       - name: OWASP ZAP baseline scan
         run: |
-          mkdir -p "${REPORT_DIR}/zap"
-          chmod 777 "${REPORT_DIR}/zap"
+          mkdir -p "$REPORT_DIR/zap"
+          chmod 777 "$REPORT_DIR/zap"
 
           docker run --rm \
             --network vuln-bank_dastnet \
-            -v "$PWD/${REPORT_DIR}/zap:/zap/wrk" \
+            -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-              -t "${DAST_URL}" \
+              -t "$DAST_URL" \
               -J /zap/wrk/zap.json \
               -I
 
@@ -153,20 +161,20 @@ jobs:
         run: docker compose -f docker-compose.dast.yml down || true
 
       # ------------------------------
-      # EPSS + CISA KEV GATE
+      # EPSS + CISA KEV Gate
       # ------------------------------
       - name: EPSS + CISA KEV gate
         run: |
-          ${PYTHON_BIN} -m pip install -q requests
-          ${PYTHON_BIN} scripts/epss_gate.py \
-            --input "${REPORT_DIR}/trivy-sca.json" \
-            --output "${REPORT_DIR}/epss-findings.json" \
-            --threshold "${EPSS_THRESHOLD}"
+          $PYTHON_BIN -m pip install -q requests
+          $PYTHON_BIN scripts/epss_gate.py \
+            --input "$REPORT_DIR/trivy-sca.json" \
+            --output "$REPORT_DIR/epss-findings.json" \
+            --threshold "$EPSS_THRESHOLD"
 
       - name: Gate decision
         id: gateflag
         run: |
-          if [ -f "${REPORT_DIR}/gate_failed" ]; then
+          if [ -f "$REPORT_DIR/gate_failed" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
             exit 1
           else
@@ -202,7 +210,7 @@ jobs:
 
       - name: Parse ZAP results → GitHub Issues
         run: |
-          python3 scripts/zap_to_github_issues.py
+          python3 scripts/zap_to_github_issues.py security-reports/zap/zap.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
