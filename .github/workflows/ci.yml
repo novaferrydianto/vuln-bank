@@ -39,9 +39,9 @@ jobs:
       # -------------------------------------------------
       - name: Pre-clean workspace (self-hosted fix)
         run: |
-          sudo chown -R $(id -u):$(id -g) "$GITHUB_WORKSPACE" || true
-          sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
-          
+          sudo chown -R github-runner:github-runner /home/github-runner/actions-runner/_work || true
+          sudo chmod -R u+rwX /home/github-runner/actions-runner/_work || true
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
