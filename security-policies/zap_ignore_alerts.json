@@ -1,0 +1,5 @@
+[
+  "Missing Anti-clickjacking Header",
+  "X-Content-Type-Options Header Missing",
+  "Content Security Policy (CSP) Header Not Set"
+]

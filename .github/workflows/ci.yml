@@ -156,6 +156,12 @@ jobs:
               -J /zap/wrk/zap.json \
               -I
 
+      - name: ZAP Severity Gate
+        run: |
+          python3 scripts/zap_severity_gate.py \
+            security-reports/zap/zap.json \
+            "${ZAP_FAIL_SEVERITY}"
+
       - name: Stop DAST stack
         if: always()
         run: docker compose -f docker-compose.dast.yml down || true
