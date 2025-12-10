@@ -121,6 +121,7 @@ jobs:
             fs /work \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
+            --cache-dir /tmp/trivy-cache \
             --format json \
             -o "/work/$REPORT_DIR/trivy-sca.json"
 
