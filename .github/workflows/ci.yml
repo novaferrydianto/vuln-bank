@@ -42,10 +42,14 @@ jobs:
           sudo chown -R github-runner:github-runner /home/github-runner/actions-runner/_work || true
           sudo chmod -R u+rwX /home/github-runner/actions-runner/_work || true
 
+      - name: Workspace cleanup (self-hosted safe)
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"/*
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: true
+          clean: false
 
       - uses: actions/cache@v4
         with:
