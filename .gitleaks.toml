@@ -1,0 +1,52 @@
+title = "Vuln Bank – Custom Gitleaks Rules"
+
+# ----------------------------------------
+# Global configuration
+# ----------------------------------------
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+  "^security-reports/",
+  "^scripts/",
+]
+
+# ----------------------------------------
+# Custom rules (HIGH / CRITICAL)
+# ----------------------------------------
+
+[[rules]]
+id = "private-key"
+description = "Private key detected"
+severity = "CRITICAL"
+regex = '''-----BEGIN (RSA|DSA|EC|OPENSSH|PRIVATE) KEY-----'''
+tags = ["key", "crypto"]
+
+[[rules]]
+id = "jwt-secret"
+description = "Hardcoded JWT secret"
+severity = "HIGH"
+regex = '''(?i)(jwt|token)_?(secret|key)\s*[:=]\s*["'][^"']{16,}["']'''
+tags = ["jwt", "auth"]
+
+[[rules]]
+id = "db-password"
+description = "Hardcoded database password"
+severity = "HIGH"
+regex = '''(?i)(db|database)_?(password|pass)\s*[:=]\s*["'][^"']+["']'''
+tags = ["database", "credentials"]
+
+[[rules]]
+id = "cloud-api-key"
+description = "Cloud provider API key"
+severity = "CRITICAL"
+regex = '''(?i)(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z\-_]{35})'''
+tags = ["cloud", "api-key"]
+
+[[rules]]
+id = "generic-secret"
+description = "Generic secret assignment"
+severity = "MEDIUM"
+regex = '''(?i)(secret|apikey|api_key|access_key)\s*[:=]\s*["'][^"']{8,}["']'''
+tags = ["generic"]

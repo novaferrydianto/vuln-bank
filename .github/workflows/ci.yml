@@ -69,15 +69,30 @@ jobs:
       # Secrets – Gitleaks
       # ------------------------------
       - name: Secret scan (Gitleaks)
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            zricethezav/gitleaks:latest \
-            detect \
-            --source /repo \
-            --format json \
-            --report-path /repo/security-reports/gitleaks.json
-        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-path: .gitleaks.toml
+          report-format: sarif
+          report-path: security-reports/gitleaks.sarif
+          fail: false
+
+      - name: Upload Gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: security-reports/gitleaks.sarif
+
+      - name: Upload Gitleaks SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-reports/gitleaks.sarif
+
+      - name: Secret severity gate
+        run: python3 scripts/gitleaks_gate.py
 
       # ------------------------------
       # SAST – Bandit
