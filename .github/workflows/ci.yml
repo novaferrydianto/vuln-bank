@@ -157,7 +157,7 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
-              -J /zap/wrk/zap.json \
+              -J zap.json \
               -I
 
       - name: ZAP Severity Gate
