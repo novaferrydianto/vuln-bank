@@ -49,7 +49,7 @@ jobs:
       # -------------------------------------------------
       # IaC Security – Checkov (non-root)
       # -------------------------------------------------
-      - name: IaC scan (Checkov)
+      - name: IaC scan (Checkov) — non-root safe
         run: |
           docker run --rm \
             -u $(id -u):$(id -g) \
