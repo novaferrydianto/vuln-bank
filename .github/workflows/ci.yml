@@ -228,7 +228,7 @@ jobs:
             .
 
       - name: Start app stack (DAST)
-        run: docker compose -f docker-compose.dast.yml up -d
+        run: docker compose -p vuln-bank -f docker-compose.dast.yml up -d
 
       - name: Wait for app readiness (DAST)
         run: |
@@ -257,7 +257,7 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
-              -J /zap/wrk/zap.json \
+              -J zap.json \
               -m 5 \
               -T 120 \
               -I

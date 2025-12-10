@@ -5,7 +5,7 @@ from pathlib import Path
 REPORT_DIR = Path("security-reports")
 BANDIT_JSON = REPORT_DIR / "bandit.json"
 SEMGREP_JSON = REPORT_DIR / "semgrep.json"
-OUT_JSON = REPORT_DIR / "sonar-security.json"
+OUT_JSON = REPORT_DIR / "sonar-bandit.json"
 
 
 def load_json(path: Path):
