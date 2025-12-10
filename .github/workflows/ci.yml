@@ -160,6 +160,7 @@ jobs:
             zap-baseline.py \
               -t "$DAST_URL" \
               -J /zap/wrk/zap.json \
+              -w /zap/wrk \
               -I
 
       - name: ZAP severity gate
