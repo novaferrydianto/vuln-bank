@@ -41,6 +41,11 @@ jobs:
         run: |
           rm -rf security-reports .scannerwork || true
 
+      - name: Fix workspace permissions (self-hosted)
+        run: |
+          sudo chown -R $(id -u):$(id -g) "$GITHUB_WORKSPACE" || true
+          sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
