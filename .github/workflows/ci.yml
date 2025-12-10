@@ -144,12 +144,12 @@ jobs:
 
       - name: OWASP ZAP baseline scan
         run: |
-          mkdir -p "$REPORT_DIR/zap"
-          chmod 777 "$REPORT_DIR/zap"
+          mkdir -p "${REPORT_DIR}/zap"
+          chmod 777 "${REPORT_DIR}/zap"
 
           docker run --rm \
             --network vuln-bank_dastnet \
-            -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
+            -v "$PWD/${REPORT_DIR}/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
