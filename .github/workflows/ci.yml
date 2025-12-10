@@ -152,6 +152,10 @@ jobs:
 
       - name: OWASP ZAP baseline scan
         run: |
+
+          mkdir -p "$REPORT_DIR/zap/home"
+          chmod -R 777 "$REPORT_DIR/zap"
+
           docker run --rm \
             -u $(id -u):$(id -g) \
             --network vuln-bank_dastnet \
