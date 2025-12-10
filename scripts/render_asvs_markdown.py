@@ -43,32 +43,29 @@ def main():
     lines.append("")
     lines.append(f"- **Profile**: {meta.get('profile', 'N/A')}")
     lines.append(f"- **Total Requirements**: {total_req}")
-    lines.append(
-        f"- **Implemented**: {implemented} ({overall_pct:.1f}%)"
-    )
+    lines.append(f"- **Implemented**: {implemented} ({overall_pct:.1f}%)")
     lines.append(f"- **Partial**: {partial}")
     lines.append(f"- **Not Implemented**: {not_impl}")
     lines.append("")
 
-    # Simple badge (bisa kamu taruh di README)
+    # Risk-aware grading
     if overall_pct >= 80:
-        grade = "🟢 Strong"
+        grade = "🟢 Compliant / Low Risk"
     elif overall_pct >= 50:
-        grade = "🟡 Medium"
+        grade = "🟡 Partially Compliant / Medium Risk"
     else:
-        grade = "🔴 Weak"
+        grade = "🔴 Non-Compliant / High Risk"
 
     lines.append(f"> **Overall ASVS posture**: {grade} ({overall_pct:.1f}% implemented)")
     lines.append("")
 
-    # Table per category
+    # Table
     lines.append("## Per-Category Summary")
     lines.append("")
     lines.append("| Category | Name | Total | Implemented | Partial | Not Impl. | Coverage |")
     lines.append("|----------|------|-------|-------------|---------|-----------|----------|")
 
     for cat_id, value in categories.items():
-        # value bisa dict, bisa string, jadi hati2
         if isinstance(value, dict):
             name = value.get("name", cat_id)
             t = safe_int(value.get("total"))
@@ -76,13 +73,14 @@ def main():
             p = safe_int(value.get("partial"))
             n = safe_int(value.get("not_implemented"))
         else:
-            # fallback kalo cuma string → semua unknown
             name = str(value)
             t = i = p = n = 0
 
         pct = (i / t * 100) if t else 0.0
+        badge = "🟢" if pct >= 80 else "🟡" if pct >= 50 else "🔴"
+
         lines.append(
-            f"| {cat_id} | {name} | {t} | {i} | {p} | {n} | {pct:.1f}% |"
+            f"| {cat_id} | {name} | {t} | {i} | {p} | {n} | {badge} {pct:.1f}% |"
         )
 
     DST.write_text("\n".join(lines), encoding="utf-8")

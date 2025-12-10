@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
+"""
+Merge Bandit + Semgrep JSON → SonarQube Generic Issue Format
+"""
+
 import json
 from pathlib import Path
 
 REPORT_DIR = Path("security-reports")
+
 BANDIT_JSON = REPORT_DIR / "bandit.json"
 SEMGREP_JSON = REPORT_DIR / "semgrep.json"
-OUT_JSON = REPORT_DIR / "sonar-bandit.json"
+
+# Must match sonar-project.properties
+OUT_JSON = REPORT_DIR / "sonar-external.json"
 
 
 def load_json(path: Path):
@@ -26,59 +33,55 @@ def bandit_to_sonar(data):
         else:
             sev = "MINOR"
 
-        issues.append(
-            {
-                "engineId": "bandit",
-                "ruleId": r.get("test_id"),
-                "severity": sev,
-                "type": "VULNERABILITY",
-                "primaryLocation": {
-                    "message": r.get("issue_text"),
-                    "filePath": r.get("filename"),
-                    "textRange": {
-                        "startLine": r.get("line_number"),
-                        "endLine": r.get("line_number"),
-                    },
+        issues.append({
+            "engineId": "bandit",
+            "ruleId": r.get("test_id") or "bandit-unknown",
+            "severity": sev,
+            "type": "VULNERABILITY",
+            "primaryLocation": {
+                "message": r.get("issue_text") or "Bandit finding",
+                "filePath": r.get("filename"),
+                "textRange": {
+                    "startLine": r.get("line_number", 1),
+                    "endLine": r.get("line_number", 1),
                 },
-            }
-        )
+            },
+        })
     return issues
 
 
 def semgrep_to_sonar(data):
     issues = []
     for r in data.get("results", []):
-        extra = r.get("extra", {}) or {}
+        extra = r.get("extra") or {}
         sev_raw = (extra.get("severity") or "").upper()
 
-        if sev_raw in ("CRITICAL", "ERROR"):
+        if sev_raw in ("CRITICAL", "ERROR", "HIGH"):
             sev = "CRITICAL"
-        elif sev_raw in ("HIGH",):
-            sev = "CRITICAL"
-        elif sev_raw in ("MEDIUM",):
+        elif sev_raw == "MEDIUM":
             sev = "MAJOR"
         else:
             sev = "MINOR"
 
-        start = r.get("start", {}) or {}
-        end = r.get("end", {}) or {}
+        start = r.get("start") or {}
+        end = r.get("end") or {}
 
-        issues.append(
-            {
-                "engineId": "semgrep",
-                "ruleId": r.get("check_id"),
-                "severity": sev,
-                "type": "VULNERABILITY",
-                "primaryLocation": {
-                    "message": extra.get("message"),
-                    "filePath": r.get("path"),
-                    "textRange": {
-                        "startLine": start.get("line", 1),
-                        "endLine": end.get("line", start.get("line", 1)),
-                    },
+        issues.append({
+            "engineId": "semgrep",
+            "ruleId": r.get("check_id") or "semgrep-unknown",
+            "severity": sev,
+            "type": "VULNERABILITY",
+            "primaryLocation": {
+                "message": extra.get("message")
+                           or r.get("check_id")
+                           or "Semgrep finding",
+                "filePath": r.get("path"),
+                "textRange": {
+                    "startLine": start.get("line", 1),
+                    "endLine": end.get("line", start.get("line", 1)),
                 },
-            }
-        )
+            },
+        })
     return issues
 
 
@@ -94,7 +97,10 @@ def main():
     with OUT_JSON.open("w", encoding="utf-8") as f:
         json.dump({"issues": issues}, f, indent=2)
 
-    print(f"[INFO] Wrote merged Sonar external issues to {OUT_JSON} (total={len(issues)})")
+    print(
+        f"[INFO] Sonar external issues generated: {OUT_JSON} "
+        f"(total issues = {len(issues)})"
+    )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ EPSS_API_URL = "https://api.first.org/data/v1/epss"
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 BATCH_SIZE = 50  # Batch size to prevent HTTP 414 (URI Too Long)
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="EPSS + CISA KEV gate for Trivy SCA results")
     parser.add_argument("--input", required=True, help="Trivy SCA JSON file (fs scan)")
@@ -30,12 +31,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", required=True, type=float, help="EPSS threshold (0.0–1.0)")
     return parser.parse_args()
 
+
 def get_retry_session() -> requests.Session:
     """Creates a requests session with retry logic."""
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
+
 
 def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
     """Extract HIGH/CRITICAL CVEs from Trivy FS JSON."""
@@ -53,7 +56,6 @@ def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
     vulns: List[Dict[str, Any]] = []
 
     for result in results:
-        # Check if 'Vulnerabilities' key exists and is not None
         detected_vulns = result.get("Vulnerabilities")
         if not detected_vulns:
             continue
@@ -70,10 +72,11 @@ def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
                 "fixed_version": v.get("FixedVersion", "N/A"),
                 "severity": severity,
                 "description": (v.get("Description") or "")[:500],
-                "target": result.get("Target", "Unknown") # Useful to know which file
+                "target": result.get("Target", "Unknown"),
             })
 
     return vulns
+
 
 def fetch_epss_scores(cves: List[str]) -> Dict[str, float]:
     """Fetch EPSS for list of CVEs from FIRST.org using batching."""
@@ -82,17 +85,16 @@ def fetch_epss_scores(cves: List[str]) -> Dict[str, float]:
 
     scores: Dict[str, float] = {}
     session = get_retry_session()
-    
-    # Batch requests to avoid URL length limits
+
     for i in range(0, len(cves), BATCH_SIZE):
         batch = cves[i:i + BATCH_SIZE]
         params = {"cve": ",".join(batch)}
-        
+
         try:
             resp = session.get(EPSS_API_URL, params=params, timeout=20)
             resp.raise_for_status()
             data = resp.json().get("data", [])
-            
+
             for item in data:
                 cve = item.get("cve")
                 try:
@@ -101,12 +103,12 @@ def fetch_epss_scores(cves: List[str]) -> Dict[str, float]:
                     epss = 0.0
                 if cve:
                     scores[cve] = epss
-                    
+
         except requests.RequestException as e:
             print(f"[WARN] Failed to fetch EPSS batch {i}: {e}")
-            # Continue to next batch rather than failing completely
 
     return scores
+
 
 def fetch_cisa_kev() -> Dict[str, bool]:
     """Fetch KEV catalog from CISA -> return set-like dict {CVE: True}."""
@@ -129,24 +131,24 @@ def fetch_cisa_kev() -> Dict[str, bool]:
 
     return kev_map
 
+
 def write_history(out_dir: Path, stats: Dict[str, Any]) -> None:
     """Appends a stats record to the history file."""
     hist_path = out_dir / "epss-history.jsonl"
-    
-    # ISO 8601 Timestamp
+
     stats["timestamp"] = datetime.now(timezone.utc).isoformat()
-    # Add Run ID for correlation
     stats["run_id"] = os.getenv("GITHUB_RUN_ID", "manual")
-    
+
     try:
         with open(hist_path, "a", encoding="utf-8") as hf:
             hf.write(json.dumps(stats) + "\n")
     except IOError as e:
         print(f"[WARN] Could not write history: {e}")
 
+
 def main() -> None:
     args = parse_args()
-    threshold = args.threshold # Already typed as float by argparse
+    threshold = args.threshold
 
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -155,8 +157,7 @@ def main() -> None:
 
     print(f"[INFO] Loading Trivy SCA results from: {input_path}")
     vulns = load_trivy_vulns(str(input_path))
-    
-    # Base stats for history
+
     stats = {
         "total_high_crit_from_trivy": len(vulns),
         "epss_high_count": 0,
@@ -167,19 +168,17 @@ def main() -> None:
     if not vulns:
         print("[INFO] No HIGH/CRITICAL vulnerabilities from Trivy SCA.")
         empty_output = {
-            "threshold": threshold, 
-            "total_high_crit_from_trivy": 0, 
-            "high_risk": []
+            "threshold": threshold,
+            "total_high_crit_from_trivy": 0,
+            "high_risk": [],
         }
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(empty_output, f, indent=2)
 
         write_history(out_dir, stats)
-        # Gate passes (no failure file created)
         print("[GATE] ✅ EPSS/KEV gate PASSED (Clean scan)")
         return
 
-    # Get unique CVEs to minimize API calls
     unique_cves = sorted({v["cve"] for v in vulns if v.get("cve")})
 
     print(f"[INFO] Fetching EPSS scores for {len(unique_cves)} unique CVEs...")
@@ -188,16 +187,16 @@ def main() -> None:
     print("[INFO] Fetching CISA KEV catalog...")
     kev_map = fetch_cisa_kev()
 
-    high_risk: List[Dict] = []
-    
-    # Statistics calculation
+    high_risk: List[Dict[str, Any]] = []
+
     max_epss = 0.0
     epss_breach_count = 0
     kev_breach_count = 0
 
     for v in vulns:
         cve = v["cve"]
-        epss = float(epss_scores.get(cve, 0.0))
+        epss_raw = epss_scores.get(cve)
+        epss = float(epss_raw) if epss_raw is not None else 0.0
         is_kev = kev_map.get(cve, False)
 
         reasons = []
@@ -206,7 +205,6 @@ def main() -> None:
         if epss >= threshold:
             reasons.append(f"EPSS>={threshold}")
 
-        # Update Stats
         if epss > max_epss:
             max_epss = epss
         if is_kev:
@@ -223,7 +221,6 @@ def main() -> None:
             }
             high_risk.append(entry)
 
-    # Output Findings
     result = {
         "threshold": threshold,
         "total_high_crit_from_trivy": len(vulns),
@@ -233,31 +230,32 @@ def main() -> None:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
-    # Write History
     stats.update({
         "epss_high_count": epss_breach_count,
         "kev_count": kev_breach_count,
-        "max_epss": max_epss
+        "max_epss": max_epss,
     })
     write_history(out_dir, stats)
 
-    # Gate Logic
     gate_file = out_dir / "gate_failed"
-    
-    # Ensure gate file is clean from previous runs if passed
-    if gate_file.exists() and not high_risk:
+
+    try:
         gate_file.unlink()
+    except OSError:
+        pass
 
     if high_risk:
         print(
             f"[GATE] 🚨 EPSS/KEV gate FAILED – {len(high_risk)} findings "
             f"met criteria (EPSS>={threshold} or CISA KEV)"
         )
-        gate_file.write_text(f"Gate failed: {len(high_risk)} risks found\n", encoding="utf-8")
-        # Optional: exit with error code if you want the step to fail immediately
-        # sys.exit(1) 
+        gate_file.write_text(
+            f"Gate failed: {len(high_risk)} risks found\n",
+            encoding="utf-8",
+        )
     else:
         print("[GATE] ✅ EPSS/KEV gate PASSED – no prioritization criteria met")
+
 
 if __name__ == "__main__":
     main()

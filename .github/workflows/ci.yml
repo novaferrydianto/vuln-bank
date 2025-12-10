@@ -31,13 +31,16 @@ jobs:
       gate_failed: ${{ steps.gateflag.outputs.failed }}
 
     steps:
-
+      # --------------------------------------------------
+      # Housekeeping
+      # --------------------------------------------------
       - name: 🧹 Pre-flight Cleanup (Safe)
         run: |
           rm -rf security-reports || true
           rm -rf .scannerwork || true
 
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           clean: false
@@ -83,19 +86,14 @@ jobs:
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
             -f json -o "$REPORT_DIR/bandit.json" || true
 
-      # ==================================================
-      # SAST – Semgrep
-      # ==================================================
-      - name: SAST scan (Semgrep)
+      - name: Generate Sonar external issues from Bandit
         run: |
-          $PYTHON_BIN -m pip install --upgrade semgrep
-          mkdir -p "$REPORT_DIR"
-          semgrep \
-            --config=p/ci \
-            --error \
-            --json \
-            --output "$REPORT_DIR/semgrep.json" \
-            || true
+          $PYTHON_BIN scripts/bandit_to_sonar.py
+          ls -lah "$REPORT_DIR"
+
+      - name: Generate Bandit HTML report
+        run: |
+          python scripts/bandit_html_report.py
 
       # ==================================================
       # SCA – Python dependencies (pip-audit)
@@ -111,16 +109,8 @@ jobs:
             --output $REPORT_DIR/pip-audit.json || true
 
       # --------------------------------------------------
-      # SonarQube – SAST Aggregation
+      # SonarQube – SAST Aggregation (+ Bandit external issues)
       # --------------------------------------------------
-      - name: Merge Bandit + Semgrep → Sonar external issues
-        run: |
-          python scripts/merge_security_to_sonar.py
-
-      - name: Generate Bandit HTML report
-        run: |
-          python scripts/bandit_html_report.py
-
       - name: SonarQube scan (aggregate issues)
         uses: sonarsource/sonarqube-scan-action@v2
         continue-on-error: true
@@ -135,47 +125,6 @@ jobs:
             -Dsonar.python.version=3.11
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.externalIssuesReportPaths=security-reports/sonar-bandit.json
-
-      - name: Sonar Quality Gate → EPSS gate
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          REPORT_DIR: ${{ env.REPORT_DIR }}
-          PYTHON_BIN: python3.11
-        run: |
-          $PYTHON_BIN - << 'PY'
-          import os, sys, requests, pathlib, time
-
-          host = os.environ["SONAR_HOST_URL"].rstrip("/")
-          token = os.environ["SONAR_TOKEN"]
-          project_key = "vuln-bank"
-          report_dir = pathlib.Path(os.environ.get("REPORT_DIR", "security-reports"))
-          gate_file = report_dir / "gate_failed"
-
-          url = f"{host}/api/qualitygates/project_status?projectKey={project_key}"
-
-          for attempt in range(10):
-              try:
-                  resp = requests.get(url, auth=(token, ""))
-                  resp.raise_for_status()
-                  status = resp.json()["projectStatus"]["status"]
-                  print(f"[SonarQube] Quality Gate status = {status}")
-                  if status in ("OK", "WARN", "ERROR"):
-                      break
-              except Exception as e:
-                  print(f"[WARN] Failed to get QG status (attempt {attempt+1}): {e}")
-              time.sleep(5)
-
-          else:
-              print("[WARN] Could not get stable Quality Gate status, skipping gate sync.")
-              sys.exit(0)
-
-          if status != "OK":
-              print("[GATE] Sonar Quality Gate FAILED, marking gate_failed")
-              report_dir.mkdir(parents=True, exist_ok=True)
-              with gate_file.open("a", encoding="utf-8") as f:
-                  f.write(f"sonar_quality_gate_status={status}\n")
-          PY
 
       # ==================================================
       # SCA – Trivy FS
@@ -228,20 +177,24 @@ jobs:
             .
 
       - name: Start app stack (DAST)
-        run: docker compose -p vuln-bank -f docker-compose.dast.yml up -d
+        run: docker compose -f docker-compose.dast.yml up -d
 
       - name: Wait for app readiness (DAST)
         run: |
-          echo "Waiting for application to be ready..."
+          echo "Waiting for application to be ready on vuln-bank_dastnet..."
           for i in {1..30}; do
-            docker run --rm \
+            if docker run --rm \
               --network vuln-bank_dastnet \
               curlimages/curl:8.6.0 \
-              curl -fs http://vuln-bank-dast:5000 && exit 0 || true
+              curl -fs http://vuln-bank-dast:5000 > /dev/null 2>&1; then
+              echo "✅ App is ready"
+              exit 0
+            fi
+            echo "Retry $i/30..."
             sleep 5
           done
           echo "❌ App not ready after timeout"
-          docker compose -f docker-compose.dast.yml logs
+          docker compose -f docker-compose.dast.yml logs || true
           exit 1
 
       - name: Prepare ZAP workspace (fix permissions)
@@ -257,7 +210,7 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
-              -J zap.json \
+              -J /zap/wrk/zap.json \
               -m 5 \
               -T 120 \
               -I
@@ -286,15 +239,20 @@ jobs:
             --output "$REPORT_DIR/epss-findings.json" \
             --threshold "$EPSS_THRESHOLD"
 
-      - name: Gate decision
+      - name: Gate decision (set output only)
         id: gateflag
         run: |
           if [ -f "$REPORT_DIR/gate_failed" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
-            exit 1
           else
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Fail pipeline if security gate failed
+        if: steps.gateflag.outputs.failed == 'true'
+        run: |
+          echo "🚨 Security gate failed – blocking pipeline."
+          exit 1
 
       # ==================================================
       # Upload artifacts (ALWAYS)
@@ -382,85 +340,5 @@ jobs:
                   "auto-generated",
                   v.is_kev ? "CISA-KEV" : "EPSS-high"
                 ]
-              });
-            }
-
-  zap_issues:
-    name: Auto-create Issues from ZAP (DAST)
-    needs: [security_scans]
-    if: always()
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: security-reports
-          path: security-reports
-
-      - name: Create GitHub Issues from ZAP alerts
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require("fs");
-
-            let zap;
-            try {
-              zap = JSON.parse(
-                fs.readFileSync("security-reports/zap/zap.json", "utf8")
-              );
-            } catch (e) {
-              core.warning("No ZAP JSON found, skipping DAST issues.");
-              return;
-            }
-
-            const sites = zap.site || [];
-            const alerts = sites.flatMap(s => s.alerts || []);
-
-            for (const a of alerts) {
-              // riskcode: 0=Info,1=Low,2=Medium,3=High
-              const riskCode = parseInt(a.riskcode || "0", 10);
-              if (riskCode < 2) continue; // only Medium/High
-
-              const alertName = a.alert;
-              const uri = (a.instances && a.instances[0] && a.instances[0].uri) || a.url || "N/A";
-              const risk = a.riskdesc || "";
-              const pluginId = a.pluginId || "unknown";
-
-              const title = `[DAST][${risk}] ${alertName}`;
-
-              const query = `${title} repo:${context.repo.owner}/${context.repo.repo}`;
-              const existing = await github.rest.search.issuesAndPullRequests({
-                q: query
-              });
-
-              if (existing.data.total_count > 0) {
-                core.info(`Issue already exists for ${title}, skipping.`);
-                continue;
-              }
-
-              const body = `
-              ### 🔍 ZAP DAST Finding
-
-              - **Alert**: ${alertName}
-              - **Risk**: ${risk}
-              - **Plugin ID**: ${pluginId}
-              - **URL**: ${uri}
-
-              **Description**:
-              ${a.desc || "_No description provided by ZAP._"}
-
-              **Solution (from ZAP)**:
-              ${a.solution || "_No solution provided by ZAP._"}
-              `;
-
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["security", "dast", "auto-generated"]
               });
             }
