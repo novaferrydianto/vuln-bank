@@ -24,17 +24,17 @@ for a in alerts:
     sev = "HIGH" if sev_raw == "HIGH" else "MEDIUM" if sev_raw == "MEDIUM" else "LOW"
 
     if SEV_ORDER.get(sev, 0) >= THRESH_VAL:
-        violations.append({
-            "alert": a.get("alert"),
-            "severity": sev,
-            "instances": len(a.get("instances", []))
-        })
+        violations.append(
+            {
+                "alert": a.get("alert"),
+                "severity": sev,
+                "instances": len(a.get("instances", [])),
+            }
+        )
 
 if violations:
     gate = OUT_DIR / "zap_gate_failed"
-    gate.write_text(
-        f"ZAP gate failed ({len(violations)} findings >= {THRESHOLD})\n"
-    )
+    gate.write_text(f"ZAP gate failed ({len(violations)} findings >= {THRESHOLD})\n")
 
     print("[GATE] 🚨 ZAP Severity Gate FAILED")
     for v in violations:

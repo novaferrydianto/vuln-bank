@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+        name: gitleaks-enterprise
+        args:
+          - detect
+          - --config=.gitleaks.toml
+          - --redact
+          - --exit-code=1
+        stages: [pre-commit]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-yaml
+        files: ^ansible/|^k3s/
+      - id: check-added-large-files
+        args: ["--maxkb=500"]

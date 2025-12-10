@@ -16,6 +16,7 @@ SONAR_SEV = {
     "LOW": "MINOR",
 }
 
+
 def main():
     if not INPUT.exists():
         raise FileNotFoundError(f"Bandit output missing: {INPUT}")
@@ -34,7 +35,6 @@ def main():
             "ruleId": r.get("test_id"),
             "type": "VULNERABILITY",
             "severity": sonar_sev,
-
             # Required by SonarQube Generic Issue Format
             "primaryLocation": {
                 "message": r.get("issue_text"),
@@ -44,7 +44,6 @@ def main():
                     "endLine": r.get("line_number"),
                 },
             },
-
             # Optional but recommended → Sonar uses this in UI
             "effortMinutes": 5 if sonar_sev in ("CRITICAL", "MAJOR") else 2,
         }

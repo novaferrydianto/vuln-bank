@@ -1,35 +1,17 @@
-#!/usr/bin/env python3
-import json
-import sys
-from pathlib import Path
+import json, sys
 
-REPORT = Path("security-reports/gitleaks.sarif")
+SARIF = sys.argv[1]
+FAIL_LEVELS = {"CRITICAL", "HIGH"}
 
-if not REPORT.exists():
-    print("[INFO] No gitleaks SARIF found → skipping gate")
-    sys.exit(0)
+data = json.load(open(SARIF))
+results = data["runs"][0]["results"]
 
-data = json.loads(REPORT.read_text())
-runs = data.get("runs", [])
-results = runs[0].get("results", []) if runs else []
-
-violations = []
-
-for r in results:
-    level = (r.get("level") or "").upper()
-    rule = r.get("ruleId")
-
-    if level in ("ERROR", "WARNING"):
-        violations.append({
-            "rule": rule,
-            "level": level,
-            "message": r.get("message", {}).get("text"),
-        })
+violations = [r for r in results if r["properties"].get("severity") in FAIL_LEVELS]
 
 if violations:
-    print("[GATE] 🚨 Secret gate FAILED")
+    print("🚨 Secret gate FAILED")
     for v in violations:
-        print(f"- {v['level']} | {v['rule']} | {v['message']}")
+        print(f"- {v['ruleId']} ({v['properties']['severity']})")
     sys.exit(1)
 
-print("[GATE] ✅ Secret gate PASSED")
+print("✅ Secret gate PASSED")

@@ -8,8 +8,9 @@ SEV_MAP = {
     "High": "CRITICAL",
     "Medium": "HIGH",
     "Low": "MEDIUM",
-    "Informational": "LOW"
+    "Informational": "LOW",
 }
+
 
 def main():
     if not ZAP_JSON.exists():
@@ -31,17 +32,20 @@ def main():
 
             severity = SEV_MAP.get(risk, "LOW")
 
-            findings.append({
-                "title": title,
-                "severity": severity,
-                "risk": risk,
-                "description": description,
-                "solution": solution,
-                "reference": refs,
-                "instances": [i.get("uri") for i in instances if i.get("uri")]
-            })
+            findings.append(
+                {
+                    "title": title,
+                    "severity": severity,
+                    "risk": risk,
+                    "description": description,
+                    "solution": solution,
+                    "reference": refs,
+                    "instances": [i.get("uri") for i in instances if i.get("uri")],
+                }
+            )
 
     print(json.dumps(findings))
-    
+
+
 if __name__ == "__main__":
     main()
