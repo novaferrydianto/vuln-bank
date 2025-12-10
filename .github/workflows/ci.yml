@@ -66,7 +66,6 @@ jobs:
       - name: Secret scan (Gitleaks)
         run: |
           docker run --rm \
-            -u $(id -u):$(id -g) \
             -v "$PWD:/repo" \
             ghcr.io/gitleaks/gitleaks:8.30.0 \
             detect \
