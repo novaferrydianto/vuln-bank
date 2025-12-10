@@ -5,46 +5,27 @@ from pathlib import Path
 
 ZAP_JSON = Path(sys.argv[1])
 THRESHOLD = sys.argv[2].upper()
-
 OUT_DIR = Path("security-reports")
-IGNORE_FILE = Path("security-policies/zap_ignore_alerts.json")
 
-SEV_ORDER = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+SEV_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 THRESH_VAL = SEV_ORDER.get(THRESHOLD, 3)
-
-# --------------------------------------------------
-# Load ignore list
-# --------------------------------------------------
-ignored_alerts = set()
-if IGNORE_FILE.exists():
-    ignored_alerts = set(json.loads(IGNORE_FILE.read_text()))
 
 if not ZAP_JSON.exists():
     print("[WARN] ZAP JSON not found, skipping gate")
     sys.exit(0)
 
 data = json.loads(ZAP_JSON.read_text())
-sites = data.get("site", [])
-alerts = sites[0].get("alerts", []) if sites else []
+alerts = data.get("site", [])[0].get("alerts", [])
 
 violations = []
 
 for a in alerts:
-    alert_name = a.get("alert")
-
-    if alert_name in ignored_alerts:
-        continue
-
-    risk = (a.get("riskdesc", "") or "").upper()
-    sev = (
-        "HIGH" if "HIGH" in risk else
-        "MEDIUM" if "MEDIUM" in risk else
-        "LOW"
-    )
+    sev_raw = (a.get("risk") or "").upper()
+    sev = "HIGH" if sev_raw == "HIGH" else "MEDIUM" if sev_raw == "MEDIUM" else "LOW"
 
     if SEV_ORDER.get(sev, 0) >= THRESH_VAL:
         violations.append({
-            "alert": alert_name,
+            "alert": a.get("alert"),
             "severity": sev,
             "instances": len(a.get("instances", []))
         })
