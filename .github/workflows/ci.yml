@@ -67,7 +67,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD:/repo" \
-            zricethezav/gitleaks:8.30.0 \
+            zricethezav/gitleaks:latest \
             detect \
               --source /repo \
               --config /repo/.gitleaks.toml \
