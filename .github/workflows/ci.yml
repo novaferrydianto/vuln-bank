@@ -67,7 +67,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD:/repo" \
-            ghcr.io/gitleaks/gitleaks:8.30.0 \
+            zricethezav/gitleaks:8.30.0 \
             detect \
               --source /repo \
               --config /repo/.gitleaks.toml \
