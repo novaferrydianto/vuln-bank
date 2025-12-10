@@ -155,6 +155,7 @@ jobs:
           docker run --rm \
             -u $(id -u):$(id -g) \
             --network vuln-bank_dastnet \
+            -e HOME=/zap/wrk \
             -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
