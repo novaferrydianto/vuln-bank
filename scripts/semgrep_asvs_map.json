@@ -1,5 +1,0 @@
-{
-  "python.flask.xss": ["V5.3.2"],
-  "python.jwt.hardcoded-secret": ["V7.1.1"],
-  "python.sqlalchemy.sql-injection": ["V5.3.1"]
-}
