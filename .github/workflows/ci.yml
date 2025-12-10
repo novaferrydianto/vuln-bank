@@ -110,9 +110,13 @@ jobs:
       # -------------------------------------------------
       - name: SCA scan (Trivy FS)
         run: |
+
+          mkdir -p "$PWD/.trivy-cache"
+
           docker run --rm \
             -u $(id -u):$(id -g) \
             -v "$PWD:/work" \
+            -v "$PWD/.trivy-cache:/tmp/trivy-cache" \
             aquasec/trivy:0.49.1 \
             fs /work \
             --severity HIGH,CRITICAL \
