@@ -37,6 +37,11 @@ jobs:
       # -------------------------------------------------
       # Workspace
       # -------------------------------------------------
+      - name: Pre-clean workspace (self-hosted fix)
+        run: |
+          sudo chown -R $(id -u):$(id -g) "$GITHUB_WORKSPACE" || true
+          sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
+          
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -199,12 +204,6 @@ jobs:
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
-
-      - name: Fix workspace permissions
-        if: always()
-        run: |
-          sudo chown -R $(id -u):$(id -g) "$GITHUB_WORKSPACE" || true
-          sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
 
 # =====================================================
 # 2️⃣ ZAP ALERTS → GITHUB ISSUES
