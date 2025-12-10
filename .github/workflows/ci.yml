@@ -95,12 +95,6 @@ jobs:
         run: |
           python3 scripts/gitleaks_gate.py results.sarif
 
-      - name: Fix permissions (self-hosted)
-        if: always()
-        run: |
-          sudo chown -R $(id -u):$(id -g) "$GITHUB_WORKSPACE" || true
-          sudo chmod -R u+rwX "$GITHUB_WORKSPACE" || true
-
       # ------------------------------
       # SAST – Bandit
       # ------------------------------
