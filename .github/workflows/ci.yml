@@ -132,7 +132,7 @@ jobs:
 
       - name: Wait for app readiness
         run: |
-          for i in {1..30}; do
+          for i in {1..20}; do
             docker run --rm \
               --network vuln-bank_dastnet \
               curlimages/curl:8.6.0 \
