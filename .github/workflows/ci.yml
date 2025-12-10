@@ -73,9 +73,6 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          config-path: .gitleaks.toml
-          fail: false
 
       - name: Upload Gitleaks SARIF to GitHub Security
         if: always()
