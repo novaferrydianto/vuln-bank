@@ -19,6 +19,7 @@ env:
   EPSS_THRESHOLD: "0.5"
   DAST_URL: http://vuln-bank-dast:5000
   PYTHON_BIN: python3.11
+  ZAP_FAIL_SEVERITY: HIGH
 
 # =====================================================
 # 1️⃣ SECURITY SCANS (PRODUCER)
@@ -89,10 +90,10 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: security-reports/gitleaks.sarif
+          sarif_file: results.sarif
 
       - name: Secret severity gate
-        run: python3 scripts/gitleaks_gate.py
+        run: python3 scripts/gitleaks_gate.py results.sarif
 
       # ------------------------------
       # SAST – Bandit
