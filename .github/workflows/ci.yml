@@ -19,6 +19,7 @@ env:
   EPSS_THRESHOLD: "0.5"
   DAST_URL: http://vuln-bank-dast:5000
   PYTHON_BIN: python3.11
+  ZAP_FAIL_SEVERITY: HIGH
 
 # =====================================================
 # 1️⃣ SECURITY SCANS (PRODUCER)
@@ -69,15 +70,18 @@ jobs:
       # Secrets – Gitleaks
       # ------------------------------
       - name: Secret scan (Gitleaks)
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            zricethezav/gitleaks:latest \
-            detect \
-            --source /repo \
-            --format json \
-            --report-path /repo/security-reports/gitleaks.json
-        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Gitleaks SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+
+      - name: Secret severity gate
+        run: python3 scripts/gitleaks_gate.py results.sarif
 
       # ------------------------------
       # SAST – Bandit
@@ -144,17 +148,23 @@ jobs:
 
       - name: OWASP ZAP baseline scan
         run: |
-          mkdir -p "$REPORT_DIR/zap"
-          chmod 777 "$REPORT_DIR/zap"
+          mkdir -p "${REPORT_DIR}/zap"
+          chmod 777 "${REPORT_DIR}/zap"
 
           docker run --rm \
             --network vuln-bank_dastnet \
-            -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
+            -v "$PWD/${REPORT_DIR}/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t "$DAST_URL" \
-              -J /zap/wrk/zap.json \
+              -J zap.json \
               -I
+
+      - name: ZAP Severity Gate
+        run: |
+          python3 scripts/zap_severity_gate.py \
+            security-reports/zap/zap.json \
+            "${ZAP_FAIL_SEVERITY}"
 
       - name: Stop DAST stack
         if: always()
