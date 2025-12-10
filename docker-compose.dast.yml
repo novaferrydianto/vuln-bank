@@ -1,29 +1,25 @@
+version: "3.9"
+
 services:
   vuln-bank-dast:
-    image: ${IMAGE_WITH_TAG}
+    image: vuln-bank:ci
     container_name: vuln-bank-dast
-    depends_on:
-      - db
-    environment:
-      DB_NAME: vulnerable_bank
-      DB_USER: postgres
-      DB_PASSWORD: dast
-      DB_HOST: db
-      DB_PORT: 5432
     ports:
       - "5000:5000"
+    environment:
+      DB_HOST: db
+      DB_USER: postgres
+      DB_PASSWORD: dast
     networks:
       - dastnet
 
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: vulnerable_bank
-      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: dast
     networks:
       - dastnet
 
 networks:
   dastnet:
-    driver: bridge
+    name: vuln-bank_dastnet
