@@ -1,26 +1,23 @@
-# ----------------------------------------
-# Generated security artifacts (CI output)
-# ----------------------------------------
-security-reports/**
-.scannerwork/**
-coverage.xml
+title = "Vuln Bank Gitleaks Config"
 
-# ----------------------------------------
-# Build / cache
-# ----------------------------------------
-node_modules/**
-__pycache__/**
-.venv/**
-venv/**
+[allowlist]
+description = "Ignore CI-generated artifacts, caches, tooling, documentation"
+paths = [
+  "security-reports/.*",
+  ".scannerwork/.*",
+  "coverage.xml",
+  "node_modules/.*",
+  "__pycache__/.*",
+  ".venv/.*",
+  "venv/.*",
+  "scripts/.*",
+  "tools/.*",
+  "docs/.*"
+]
 
-# ----------------------------------------
-# Tooling scripts (no secrets expected)
-# ----------------------------------------
-scripts/**
-tools/**
-
-# ----------------------------------------
-# Docs / examples
-# ----------------------------------------
-docs/**
-*.example
+# Add custom secret matchers below — optional
+[[rules]]
+id = "custom-gcp-key"
+regex = '''AIza[0-9A-Za-z\-_]{35}'''
+description = "GCP API Key"
+tags = ["key", "gcp"]
