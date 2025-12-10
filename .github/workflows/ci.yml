@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *"   # ~01:00 WIB
+    - cron: "0 18 * * *" # ~01:00 WIB
   workflow_dispatch:
 
 permissions:
@@ -18,117 +18,87 @@ env:
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
   DAST_URL: http://vuln-bank-dast:5000
+  PYTHON_BIN: python3.11
 
+# =====================================================
+# 1️⃣ SECURITY SCANS (PRODUCER)
+# =====================================================
 jobs:
   security_scans:
     name: Continuous Security Assurance
     runs-on: self-hosted
     environment: production
-    env:
-      PYTHON_BIN: python3.11
 
     outputs:
       gate_failed: ${{ steps.gateflag.outputs.failed }}
 
     steps:
-      # --------------------------------------------------
-      # Housekeeping
-      # --------------------------------------------------
-      - name: 🧹 Pre-flight Cleanup (Safe)
+      # ------------------------------
+      # PREP
+      # ------------------------------
+      - name: Pre-flight cleanup
         run: |
-          rm -rf security-reports || true
-          rm -rf .scannerwork || true
+          rm -rf security-reports .scannerwork || true
 
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           clean: false
 
       - name: Prepare report directory
-        run: mkdir -p "$REPORT_DIR"
+        run: mkdir -p "${REPORT_DIR}"
 
-      # ==================================================
-      # IaC Scanning (EARLY) – Checkov (Advisory)
-      # ==================================================
-      - name: IaC scanning (Checkov)
+      # ------------------------------
+      # IaC – Checkov
+      # ------------------------------
+      - name: IaC scan (Checkov)
         uses: bridgecrewio/checkov-action@master
         with:
           directory: .
           framework: dockerfile,github_actions
           output_format: json
-          output_file_path: ${{ env.REPORT_DIR }}/checkov.json
+          output_file_path: "${{ env.REPORT_DIR }}/checkov.json"
           soft_fail: true
 
-      - name: Normalize Checkov output
+      # ------------------------------
+      # Secrets – Gitleaks (CLI)
+      # ------------------------------
+      - name: Secret scan (Gitleaks)
         run: |
-          if [ ! -s "$REPORT_DIR/checkov.json" ]; then
-            echo '{"results":{"failed_checks":[]}}' > "$REPORT_DIR/checkov.json"
-          fi
-
-      # ==================================================
-      # Secret Scanning
-      # ==================================================
-      - name: Secret scanning (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: detect -v --format json -r "$REPORT_DIR/gitleaks.json"
+          docker run --rm \
+            -v "$PWD:/repo" \
+            zricethezav/gitleaks:latest \
+            detect \
+            --source /repo \
+            --format json \
+            --report-path /repo/${REPORT_DIR}/gitleaks.json
         continue-on-error: true
 
-      # ==================================================
+      # ------------------------------
       # SAST – Bandit
-      # ==================================================
+      # ------------------------------
       - name: SAST scan (Bandit)
         run: |
-          $PYTHON_BIN -m pip install --upgrade pip bandit
+          ${PYTHON_BIN} -m pip install -q bandit
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
-            -f json -o "$REPORT_DIR/bandit.json" || true
+            -f json -o "${REPORT_DIR}/bandit.json" || true
 
-      - name: Generate Sonar external issues from Bandit
+      - name: Bandit → Sonar external issues
         run: |
-          $PYTHON_BIN scripts/bandit_to_sonar.py
-          ls -lah "$REPORT_DIR"
+          ${PYTHON_BIN} scripts/bandit_semgrep_to_sonar.py
 
-      - name: Generate Bandit HTML report
-        run: |
-          python scripts/bandit_html_report.py
-
-      # ==================================================
-      # SCA – Python dependencies (pip-audit)
-      # ==================================================
-      - name: Python dependency audit (pip-audit)
-        run: |
-          $PYTHON_BIN -m pip install --upgrade pip pip-audit
-          $PYTHON_BIN -m pip install -r containers/app/requirements.txt
-
-          $PYTHON_BIN -m pip_audit \
-            -r containers/app/requirements.txt \
-            --format json \
-            --output $REPORT_DIR/pip-audit.json || true
-
-      # --------------------------------------------------
-      # SonarQube – SAST Aggregation (+ Bandit external issues)
-      # --------------------------------------------------
-      - name: SonarQube scan (aggregate issues)
+      # ------------------------------
+      # SonarQube (property-based)
+      # ------------------------------
+      - name: SonarQube scan
         uses: sonarsource/sonarqube-scan-action@v2
-        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          SONAR_USER_HOME: /tmp/.sonar
-        with:
-          args: >
-            -Dsonar.projectKey=vuln-bank
-            -Dsonar.sources=.
-            -Dsonar.python.version=3.11
-            -Dsonar.sourceEncoding=UTF-8
-            -Dsonar.externalIssuesReportPaths=security-reports/sonar-bandit.json
 
-      # ==================================================
+      # ------------------------------
       # SCA – Trivy FS
-      # ==================================================
+      # ------------------------------
       - name: SCA scan (Trivy FS)
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -136,127 +106,76 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           format: json
-          output: ${{ env.REPORT_DIR }}/trivy-sca.json
+          output: "${{ env.REPORT_DIR }}/trivy-sca.json"
 
-      # ==================================================
-      # Misconfiguration – Trivy Config
-      # ==================================================
-      - name: Misconfiguration scan
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: config
-          scan-ref: ./containers
-          severity: HIGH,CRITICAL
-          format: json
-          output: ${{ env.REPORT_DIR }}/trivy-misconfig.json
-
-      # ==================================================
+      # ------------------------------
       # DAST – OWASP ZAP
-      # ==================================================
-      - name: Export DAST runtime env
+      # ------------------------------
+      - name: Build app image (DAST)
         run: |
-          echo "IMAGE_WITH_TAG=vuln-bank:ci" >> $GITHUB_ENV
-          echo "DB_HOST=db" >> $GITHUB_ENV
-          echo "DB_USER=postgres" >> $GITHUB_ENV
-          echo "DB_PASSWORD=dast" >> $GITHUB_ENV
-          echo "DEEPSEEK_API_KEY=dast-placeholder" >> $GITHUB_ENV
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build app image for DAST (BuildKit + GHA cache)
-        env:
-          DOCKER_BUILDKIT: "1"
-        run: |
-          time docker buildx build \
-            --cache-from=type=gha,scope=vuln-bank \
-            --cache-to=type=gha,scope=vuln-bank,mode=max \
+          docker buildx build \
             -f containers/app/Dockerfile \
             -t vuln-bank:ci \
             --load \
             .
 
-      - name: Start app stack (DAST)
+      - name: Start DAST stack
         run: docker compose -f docker-compose.dast.yml up -d
 
-      - name: Wait for app readiness (DAST)
+      - name: Wait for app readiness
         run: |
-          echo "Waiting for application to be ready on vuln-bank_dastnet..."
           for i in {1..30}; do
-            if docker run --rm \
+            docker run --rm \
               --network vuln-bank_dastnet \
               curlimages/curl:8.6.0 \
-              curl -fs http://vuln-bank-dast:5000 > /dev/null 2>&1; then
-              echo "✅ App is ready"
-              exit 0
-            fi
-            echo "Retry $i/30..."
+              curl -fs http://vuln-bank-dast:5000 && exit 0
             sleep 5
           done
-          echo "❌ App not ready after timeout"
-          docker compose -f docker-compose.dast.yml logs || true
+          docker compose -f docker-compose.dast.yml logs
           exit 1
-
-      - name: Prepare ZAP workspace (fix permissions)
-        run: |
-          mkdir -p security-reports/zap
-          chmod 777 security-reports/zap
 
       - name: OWASP ZAP baseline scan
         run: |
+          mkdir -p "${REPORT_DIR}/zap"
+          chmod 777 "${REPORT_DIR}/zap"
+
           docker run --rm \
             --network vuln-bank_dastnet \
-            -v "$(pwd)/security-reports/zap:/zap/wrk" \
+            -v "$PWD/${REPORT_DIR}/zap:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-              -t "$DAST_URL" \
+              -t "${DAST_URL}" \
               -J /zap/wrk/zap.json \
-              -m 5 \
-              -T 120 \
               -I
-
-          echo "✅ ZAP baseline completed"
 
       - name: Stop DAST stack
         if: always()
         run: docker compose -f docker-compose.dast.yml down || true
 
-      - name: Cleanup DAST images
-        if: always()
-        run: |
-          docker rmi ghcr.io/zaproxy/zaproxy:stable || true
-          docker rmi vuln-bank:ci || true
-
-      # ==================================================
-      # EPSS + CISA KEV – FINAL DECISION GATE
-      # ==================================================
+      # ------------------------------
+      # EPSS + CISA KEV GATE
+      # ------------------------------
       - name: EPSS + CISA KEV gate
         run: |
-          $PYTHON_BIN -m pip install --upgrade requests
+          ${PYTHON_BIN} -m pip install -q requests
+          ${PYTHON_BIN} scripts/epss_gate.py \
+            --input "${REPORT_DIR}/trivy-sca.json" \
+            --output "${REPORT_DIR}/epss-findings.json" \
+            --threshold "${EPSS_THRESHOLD}"
 
-          $PYTHON_BIN scripts/epss_gate.py \
-            --input "$REPORT_DIR/trivy-sca.json" \
-            --output "$REPORT_DIR/epss-findings.json" \
-            --threshold "$EPSS_THRESHOLD"
-
-      - name: Gate decision (set output only)
+      - name: Gate decision
         id: gateflag
         run: |
-          if [ -f "$REPORT_DIR/gate_failed" ]; then
+          if [ -f "${REPORT_DIR}/gate_failed" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
+            exit 1
           else
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fail pipeline if security gate failed
-        if: steps.gateflag.outputs.failed == 'true'
-        run: |
-          echo "🚨 Security gate failed – blocking pipeline."
-          exit 1
-
-      # ==================================================
-      # Upload artifacts (ALWAYS)
-      # ==================================================
+      # ------------------------------
+      # ARTIFACTS
+      # ------------------------------
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -264,32 +183,13 @@ jobs:
           name: security-reports
           path: security-reports
 
-  # =====================================================
-  # Slack Notification
-  # =====================================================
-  slack_notify:
-    name: Slack Alert (Gate Failed)
+# =====================================================
+# 2️⃣ ZAP ALERTS → GITHUB ISSUES (CONSUMER)
+# =====================================================
+  zap_create_issues:
+    name: ZAP Alerts → GitHub Issues
     needs: [security_scans]
-    if: always() && needs.security_scans.outputs.gate_failed == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Send Slack alert
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          curl -X POST -H "Content-Type: application/json" \
-          --data "{
-            \"text\": \"🚨 *Vuln Bank CI Security Gate FAILED*\\nRepo: ${{ github.repository }}\\nRun: ${{ github.run_id }}\"
-          }" "$SLACK_WEBHOOK_URL"
-
-  # =====================================================
-  # Auto-create GitHub Issues (EPSS / KEV)
-  # =====================================================
-  create_issues:
-    name: Auto-create Issues (Exploit-aware)
-    needs: [security_scans]
-    if: always() && needs.security_scans.outputs.gate_failed == 'true'
+    if: always()
     runs-on: ubuntu-latest
 
     steps:
@@ -300,45 +200,26 @@ jobs:
           name: security-reports
           path: security-reports
 
-      - name: Create GitHub Issues
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require("fs");
-            const data = JSON.parse(
-              fs.readFileSync("security-reports/epss-findings.json","utf8")
-            ).high_risk || [];
+      - name: Parse ZAP results → GitHub Issues
+        run: |
+          python3 scripts/zap_to_github_issues.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-            for (const v of data) {
-              const title = `[SECURITY][${v.cve}] ${v.pkg_name}`;
+# =====================================================
+# 3️⃣ SLACK NOTIFICATION
+# =====================================================
+  slack_notify:
+    name: Slack Alert (Gate Failed)
+    needs: [security_scans]
+    if: always() && needs.security_scans.outputs.gate_failed == 'true'
+    runs-on: ubuntu-latest
 
-              const existing = await github.rest.search.issuesAndPullRequests({
-                q: `${title} repo:${context.repo.owner}/${context.repo.repo}`
-              });
-              if (existing.data.total_count > 0) continue;
-
-              const body = `
-              ### 🔐 Exploit-Aware Vulnerability
-
-              - **CVE**: ${v.cve}
-              - **Severity**: ${v.severity}
-              - **EPSS**: ${v.epss}
-              - **CISA KEV**: ${v.is_kev ? "YES" : "NO"}
-              - **Package**: ${v.pkg_name}
-
-              **Reasons**: ${(v.reasons || []).join(", ")}
-              `;
-
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: [
-                  "security",
-                  "auto-generated",
-                  v.is_kev ? "CISA-KEV" : "EPSS-high"
-                ]
-              });
-            }
+    steps:
+      - name: Send Slack alert
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+          --data "{
+            \"text\": \"🚨 *Vuln Bank Security Gate FAILED*\\nRepo: ${{ github.repository }}\\nRun: ${{ github.run_id }}\"
+          }" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
