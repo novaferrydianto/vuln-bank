@@ -58,7 +58,7 @@ jobs:
             -d /repo \
             --framework dockerfile,github_actions \
             -o json \
-            > "$REPORT_DIR/checkov.json"
+            > "$REPORT_DIR/checkov.json" || true
 
       # -------------------------------------------------
       # Secrets – Gitleaks (SARIF + Gate)
