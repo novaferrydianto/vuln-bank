@@ -81,11 +81,6 @@ jobs:
         with:
           sarif_file: ${{ env.REPORT_DIR }}/gitleaks.sarif
 
-      - name: Upload Zap SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: ${{ env.REPORT_DIR }}/zap/zap.sarif
-
       - name: Secret severity gate
         run: |
           ${{ env.PYTHON_BIN }} scripts/gitleaks_gate.py \
@@ -158,6 +153,9 @@ jobs:
       - name: OWASP ZAP baseline scan
         run: |
 
+          mkdir -p security-reports/zap
+          chmod -R 777 security-reports/zap
+
           docker run --rm \
             --network vuln-bank_dastnet \
             -v "$PWD/security-reports/zap:/zap/wrk" \
@@ -166,10 +164,18 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap.sh -cmd -autorun /zap/automation.yml
 
+          test -f security-reports/zap/zap.sarif
+          test -f security-reports/zap/zap_alerts.json
+
+      - name: Upload ZAP SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: security-reports/zap/zap.sarif
+
       - name: ZAP severity gate
         run: |
           ${{ env.PYTHON_BIN }} scripts/zap_severity_gate.py \
-            $REPORT_DIR/zap/zap.json \
+            $REPORT_DIR/zap/zap_alerts.json \
             $ZAP_FAIL_SEVERITY
 
       - name: Stop DAST stack
