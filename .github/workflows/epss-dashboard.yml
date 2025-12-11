@@ -1,17 +1,14 @@
 name: Publish EPSS / KEV Dashboard
 
 on:
-  # Rebuild dashboard when main changes
   push:
     branches: [main]
-
-  # Allow manual re-run
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write       # REQUIRED for GitHub Pages
-  id-token: write    # REQUIRED for OIDC
+  pages: write
+  id-token: write
 
 concurrency:
   group: "github-pages"
@@ -29,27 +26,45 @@ jobs:
         uses: actions/checkout@v4
 
       # --------------------------------------------------------------
-      # Download latest CI artifact (security-reports)
+      # Debug: Show last 10 workflow runs (helps diagnose artifact miss)
+      # --------------------------------------------------------------
+      - name: Debug workflow runs
+        run: gh run list --workflow="ci.yml" --limit 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # --------------------------------------------------------------
+      # Download security-reports artifact from the CI pipeline
       # --------------------------------------------------------------
       - name: Download latest security-reports artifact
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v6
         with:
           repo: ${{ github.repository }}
-          workflow_search: true
           workflow: ci.yml
-          workflow_conclusion: success
-          name: security-reports
+          workflow_search: true         # critical: allow matching "ci.yml"
+          workflow_conclusion: success  # only successful runs
+          name: security-reports        # artifact name from DevSecOps CI
           path: security-reports
           check_artifacts: true
           if_no_artifact_found: fail
 
       - name: Debug artifact contents
         run: |
-          echo "=== security-reports directory ==="
+          echo "=== security-reports (raw) ==="
           ls -R security-reports || true
 
       # --------------------------------------------------------------
-      # Python setup
+      # Validate required file exists
+      # --------------------------------------------------------------
+      - name: Ensure epss-findings.json exists
+        run: |
+          if [ ! -f security-reports/epss-findings.json ]; then
+            echo "::error::Missing epss-findings.json. CI pipeline did not produce EPSS output."
+            exit 1
+          fi
+
+      # --------------------------------------------------------------
+      # Setup Python
       # --------------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -61,7 +76,7 @@ jobs:
           pip install -q pandas matplotlib jinja2 plotly
 
       # --------------------------------------------------------------
-      # Build dashboard
+      # Generate Dashboard (HTML + PNG charts)
       # --------------------------------------------------------------
       - name: Generate EPSS Dashboard
         run: |
@@ -71,7 +86,7 @@ jobs:
             --outdir site
 
       # --------------------------------------------------------------
-      # Upload dashboard as GitHub Pages artifact
+      # Upload GitHub Pages artifact
       # --------------------------------------------------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
@@ -86,6 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Deploy GitHub Pages
