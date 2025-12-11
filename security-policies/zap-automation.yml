@@ -5,9 +5,6 @@ env:
         - ${target_url}
       includePaths:
         - ${target_url}.*
-      authentication:
-        method: noAuthentication
-
   parameters:
     failOnError: false
     failOnWarning: false
