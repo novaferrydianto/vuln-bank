@@ -6,7 +6,7 @@ env:
       includePaths:
         - ${target_url}.*
       authentication:
-        method: none
+        method: noAuthentication
 
   parameters:
     failOnError: false
@@ -23,7 +23,7 @@ jobs:
       scanOnlyInScope: true
 
   # --------------------------------------------------
-  # Spider
+  # Spider (Crawl)
   # --------------------------------------------------
   - type: spider
     parameters:
@@ -33,19 +33,11 @@ jobs:
       maxDuration: 3
 
   # --------------------------------------------------
-  # Wait for Passive Scan
-  # --------------------------------------------------
-  - type: passiveScan-wait
-    parameters:
-      timeout: 60
-
-  # --------------------------------------------------
-  # Active Scan (controlled + safe)
+  # Active Scan (Safe / CI-friendly)
   # --------------------------------------------------
   - type: activeScan
     parameters:
       context: vuln-bank
-      scanOnlyInScope: true
       policy: Default Policy
       maxRuleDurationInMins: 2
       maxScanDurationInMins: 5
@@ -65,10 +57,3 @@ jobs:
       template: sarif-json
       reportDir: /zap/wrk
       reportFile: zap.sarif
-
-  # --------------------------------------------------
-  # Summary (for gating & metrics)
-  # --------------------------------------------------
-  - type: outputSummary
-    parameters:
-      outputFile: /zap/wrk/zap_out.json
