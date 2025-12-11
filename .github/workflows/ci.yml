@@ -80,7 +80,11 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ env.REPORT_DIR }}/gitleaks.sarif
-          sarif_file: security-reports/zap/zap.sarif
+
+      - name: Upload Zap SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ env.REPORT_DIR }}/zap/zap.sarif
 
       - name: Secret severity gate
         run: |
