@@ -2,11 +2,12 @@ env:
   contexts:
     - name: vuln-bank
       urls:
-        - ${DAST_URL}
+        - ${target_url}
       includePaths:
-        - ${DAST_URL}.*
+        - ${target_url}.*
       authentication:
         method: none
+
   parameters:
     failOnError: false
     failOnWarning: false
@@ -14,7 +15,7 @@ env:
 
 jobs:
   # --------------------------------------------------
-  # Passive Scan (baseline equivalent)
+  # Passive Scan Configuration
   # --------------------------------------------------
   - type: passiveScan-config
     parameters:
@@ -27,22 +28,31 @@ jobs:
   - type: spider
     parameters:
       context: vuln-bank
+      url: ${target_url}
       maxDepth: 5
       maxDuration: 3
 
   # --------------------------------------------------
-  # Active Scan (safe defaults)
+  # Wait for Passive Scan
+  # --------------------------------------------------
+  - type: passiveScan-wait
+    parameters:
+      timeout: 60
+
+  # --------------------------------------------------
+  # Active Scan (controlled + safe)
   # --------------------------------------------------
   - type: activeScan
     parameters:
       context: vuln-bank
+      scanOnlyInScope: true
       policy: Default Policy
       maxRuleDurationInMins: 2
       maxScanDurationInMins: 5
       threadPerHost: 2
 
   # --------------------------------------------------
-  # Reporting
+  # Reports
   # --------------------------------------------------
   - type: report
     parameters:
@@ -56,6 +66,9 @@ jobs:
       reportDir: /zap/wrk
       reportFile: zap.sarif
 
+  # --------------------------------------------------
+  # Summary (for gating & metrics)
+  # --------------------------------------------------
   - type: outputSummary
     parameters:
       outputFile: /zap/wrk/zap_out.json
