@@ -1,8 +1,6 @@
 name: Vuln Bank – Secure Release & Deploy
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
 
 permissions:
