@@ -1,20 +1,26 @@
-name: Publish EPSS Dashboard
+name: Publish EPSS / KEV Dashboard
 
 on:
-  workflow_dispatch:
+  # Rebuild dashboard when main changes
   push:
     branches: [main]
 
+  # Allow manual re-run
+  workflow_dispatch:
+
 permissions:
   contents: read
-  pages: write
-  id-token: write
+  pages: write       # REQUIRED for GitHub Pages
+  id-token: write    # REQUIRED for OIDC
 
 concurrency:
   group: "github-pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
+  # ======================================================================
+  # 1) BUILD DASHBOARD
+  # ======================================================================
   build:
     runs-on: ubuntu-latest
 
@@ -28,43 +34,60 @@ jobs:
       - name: Download latest security-reports
         uses: dawidd6/action-download-artifact@v6
         with:
-          workflow: ci.yml             # <-- adjust if needed
+          repo: ${{ github.repository }}
+          workflow_search: true
+          workflow: ci.yml
+          workflow_conclusion: success
           name: security-reports
           path: security-reports
-          repo: ${{ github.repository }}
-          run_number: latest
+          check_artifacts: true
+          if_no_artifact_found: fail
 
-      # ----------------------------------------------
-      # Generate dashboard
-      # ----------------------------------------------
+      - name: Debug artifact contents
+        run: |
+          echo "=== security-reports directory ==="
+          ls -R security-reports || true
+
+      # --------------------------------------------------------------
+      # Python setup
+      # --------------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
-        run: pip install pandas plotly jinja2
+      - name: Install dashboard dependencies
+        run: |
+          pip install -q pandas matplotlib jinja2 plotly
 
+      # --------------------------------------------------------------
+      # Build dashboard
+      # --------------------------------------------------------------
       - name: Generate EPSS Dashboard
         run: |
           mkdir -p site
-          python scripts/epss_dashboard.py
+          python scripts/epss_dashboard.py \
+            --input security-reports/epss-findings.json \
+            --outdir site
 
-      # ----------------------------------------------
-      # Upload Pages artifact
-      # ----------------------------------------------
+      # --------------------------------------------------------------
+      # Upload dashboard as GitHub Pages artifact
+      # --------------------------------------------------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
+  # ======================================================================
+  # 2) DEPLOY TO GITHUB PAGES
+  # ======================================================================
   deploy:
     needs: build
     runs-on: ubuntu-latest
-
     environment:
       name: github-pages
 
     steps:
-      - name: Deploy to GitHub Pages
+      - name: Deploy GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
