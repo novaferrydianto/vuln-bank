@@ -28,11 +28,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------------------
-      # Download latest CI artifact (security-reports)
-      # --------------------------------------------------------------
-      - name: Download latest security-reports artifact
-        uses: dawidd6/action-download-artifact@v3
+      # ----------------------------------------------
+      # FIX → Download security-reports artifact
+      # ----------------------------------------------
+      - name: Download latest security-reports
+        uses: dawidd6/action-download-artifact@v6
         with:
           repo: ${{ github.repository }}
           workflow_search: true
