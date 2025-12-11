@@ -80,6 +80,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ env.REPORT_DIR }}/gitleaks.sarif
+          sarif_file: security-reports/zap/zap.sarif
 
       - name: Secret severity gate
         run: |
@@ -153,22 +154,14 @@ jobs:
       - name: OWASP ZAP baseline scan
         run: |
 
-          mkdir -p "$REPORT_DIR/zap/home"
-          chmod -R 777 "$REPORT_DIR/zap"
-
           docker run --rm \
-            -u $(id -u):$(id -g) \
             --network vuln-bank_dastnet \
-            -e HOME=/zap/home \
+            -e DAST_URL="$DAST_URL" \
             -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
-            -v "$PWD/$REPORT_DIR/zap/home:/zap/home" \
+            -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml" \
             ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-              -t "$DAST_URL" \
-              -J /zap/wrk/zap.json \
-              -j /zap/home/zap_out.json \
-              -w /zap/wrk \
-              -I
+            zap.sh -cmd \
+            -autorun /zap/automation.yml
 
       - name: ZAP severity gate
         run: |

@@ -1,0 +1,55 @@
+env:
+  contexts:
+    - name: vuln-bank
+      urls:
+        - ${DAST_URL}
+      includePaths:
+        - ${DAST_URL}.*
+      authentication:
+        method: none
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  # --------------------------------------------------
+  # Passive Scan (baseline equivalent)
+  # --------------------------------------------------
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 1000
+      scanOnlyInScope: true
+
+  # --------------------------------------------------
+  # Spider
+  # --------------------------------------------------
+  - type: spider
+    parameters:
+      context: vuln-bank
+      maxDepth: 5
+      maxDuration: 3
+
+  # --------------------------------------------------
+  # Active Scan (safe defaults)
+  # --------------------------------------------------
+  - type: activeScan
+    parameters:
+      context: vuln-bank
+      policy: Default Policy
+      maxRuleDurationInMins: 2
+      maxScanDurationInMins: 5
+      threadPerHost: 2
+
+  # --------------------------------------------------
+  # Reporting
+  # --------------------------------------------------
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: /zap/wrk
+      reportFile: zap.sarif
+
+  - type: outputSummary
+    parameters:
+      outputFile: /zap/wrk/zap_out.json
