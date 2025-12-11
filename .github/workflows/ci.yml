@@ -164,13 +164,13 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap.sh -cmd -autorun /zap/automation.yml
 
-          test -f security-reports/zap/zap.sarif
+          test -f security-reports/zap/zap.sarif.json
           test -f security-reports/zap/zap_alerts.json
 
       - name: Upload ZAP SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: security-reports/zap/zap.sarif
+          sarif_file: security-reports/zap/zap.sarif.json
 
       - name: ZAP severity gate
         run: |
