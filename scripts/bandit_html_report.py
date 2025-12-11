@@ -68,6 +68,7 @@ ROW_TEMPLATE = """
 </tr>
 """
 
+
 def main():
     if not INPUT_FILE.exists():
         print(f"[WARN] Input file not found: {INPUT_FILE}")
@@ -82,7 +83,7 @@ def main():
         return
 
     results = data.get("results", [])
-    
+
     # Sort: High -> Medium -> Low
     severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     results.sort(key=lambda x: severity_order.get(x.get("issue_severity"), 99))
@@ -90,23 +91,30 @@ def main():
     rows = []
     for r in results:
         severity = r.get("issue_severity", "LOW")
-        rows.append(ROW_TEMPLATE.format(
-            sev_lower=severity.lower(),
-            severity=severity,
-            test_id=r.get("test_id", "N/A"),
-            text=r.get("issue_text", "No description"),
-            filename=r.get("filename", ""),
-            line=r.get("line_number", ""),
-            confidence=r.get("issue_confidence", "N/A")
-        ))
+        rows.append(
+            ROW_TEMPLATE.format(
+                sev_lower=severity.lower(),
+                severity=severity,
+                test_id=r.get("test_id", "N/A"),
+                text=r.get("issue_text", "No description"),
+                filename=r.get("filename", ""),
+                line=r.get("line_number", ""),
+                confidence=r.get("issue_confidence", "N/A"),
+            )
+        )
 
     html = HTML_TEMPLATE.format(
         date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        rows="".join(rows) if rows else "<tr><td colspan='4'><i>No issues found. Great job!</i></td></tr>"
+        rows=(
+            "".join(rows)
+            if rows
+            else "<tr><td colspan='4'><i>No issues found. Great job!</i></td></tr>"
+        ),
     )
 
     OUTPUT_FILE.write_text(html, encoding="utf-8")
     print(f"[INFO] Generated Bandit HTML report at: {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
     main()

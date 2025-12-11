@@ -1,0 +1,56 @@
+env:
+  contexts:
+    - name: vuln-bank
+      urls:
+        - ${target_url}
+      includePaths:
+        - ${target_url}.*
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  # --------------------------------------------------
+  # Passive Scan Configuration
+  # --------------------------------------------------
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 1000
+      scanOnlyInScope: true
+
+  # --------------------------------------------------
+  # Spider (Crawl)
+  # --------------------------------------------------
+  - type: spider
+    parameters:
+      context: vuln-bank
+      url: ${target_url}
+      maxDepth: 5
+      maxDuration: 3
+
+  # --------------------------------------------------
+  # Active Scan (Safe / CI-friendly)
+  # --------------------------------------------------
+  - type: activeScan
+    parameters:
+      context: vuln-bank
+      policy: Default Policy
+      maxRuleDurationInMins: 2
+      maxScanDurationInMins: 5
+      threadPerHost: 2
+
+  # --------------------------------------------------
+  # Reports
+  # --------------------------------------------------
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk
+      reportFile: zap_alerts.json
+
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: /zap/wrk
+      reportFile: zap.sarif

@@ -25,10 +25,16 @@ BATCH_SIZE = 50  # Batch size to prevent HTTP 414 (URI Too Long)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="EPSS + CISA KEV gate for Trivy SCA results")
+    parser = argparse.ArgumentParser(
+        description="EPSS + CISA KEV gate for Trivy SCA results"
+    )
     parser.add_argument("--input", required=True, help="Trivy SCA JSON file (fs scan)")
-    parser.add_argument("--output", required=True, help="Output JSON file (epss-findings.json)")
-    parser.add_argument("--threshold", required=True, type=float, help="EPSS threshold (0.0–1.0)")
+    parser.add_argument(
+        "--output", required=True, help="Output JSON file (epss-findings.json)"
+    )
+    parser.add_argument(
+        "--threshold", required=True, type=float, help="EPSS threshold (0.0–1.0)"
+    )
     return parser.parse_args()
 
 
@@ -65,15 +71,17 @@ def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
             if severity not in ("HIGH", "CRITICAL"):
                 continue
 
-            vulns.append({
-                "cve": v.get("VulnerabilityID"),
-                "pkg_name": v.get("PkgName"),
-                "installed_version": v.get("InstalledVersion"),
-                "fixed_version": v.get("FixedVersion", "N/A"),
-                "severity": severity,
-                "description": (v.get("Description") or "")[:500],
-                "target": result.get("Target", "Unknown"),
-            })
+            vulns.append(
+                {
+                    "cve": v.get("VulnerabilityID"),
+                    "pkg_name": v.get("PkgName"),
+                    "installed_version": v.get("InstalledVersion"),
+                    "fixed_version": v.get("FixedVersion", "N/A"),
+                    "severity": severity,
+                    "description": (v.get("Description") or "")[:500],
+                    "target": result.get("Target", "Unknown"),
+                }
+            )
 
     return vulns
 
@@ -87,7 +95,7 @@ def fetch_epss_scores(cves: List[str]) -> Dict[str, float]:
     session = get_retry_session()
 
     for i in range(0, len(cves), BATCH_SIZE):
-        batch = cves[i:i + BATCH_SIZE]
+        batch = cves[i : i + BATCH_SIZE]
         params = {"cve": ",".join(batch)}
 
         try:
@@ -230,11 +238,13 @@ def main() -> None:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
-    stats.update({
-        "epss_high_count": epss_breach_count,
-        "kev_count": kev_breach_count,
-        "max_epss": max_epss,
-    })
+    stats.update(
+        {
+            "epss_high_count": epss_breach_count,
+            "kev_count": kev_breach_count,
+            "max_epss": max_epss,
+        }
+    )
     write_history(out_dir, stats)
 
     gate_file = out_dir / "gate_failed"

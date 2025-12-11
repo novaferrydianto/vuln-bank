@@ -33,20 +33,22 @@ def bandit_to_sonar(data):
         else:
             sev = "MINOR"
 
-        issues.append({
-            "engineId": "bandit",
-            "ruleId": r.get("test_id") or "bandit-unknown",
-            "severity": sev,
-            "type": "VULNERABILITY",
-            "primaryLocation": {
-                "message": r.get("issue_text") or "Bandit finding",
-                "filePath": r.get("filename"),
-                "textRange": {
-                    "startLine": r.get("line_number", 1),
-                    "endLine": r.get("line_number", 1),
+        issues.append(
+            {
+                "engineId": "bandit",
+                "ruleId": r.get("test_id") or "bandit-unknown",
+                "severity": sev,
+                "type": "VULNERABILITY",
+                "primaryLocation": {
+                    "message": r.get("issue_text") or "Bandit finding",
+                    "filePath": r.get("filename"),
+                    "textRange": {
+                        "startLine": r.get("line_number", 1),
+                        "endLine": r.get("line_number", 1),
+                    },
                 },
-            },
-        })
+            }
+        )
     return issues
 
 
@@ -66,22 +68,24 @@ def semgrep_to_sonar(data):
         start = r.get("start") or {}
         end = r.get("end") or {}
 
-        issues.append({
-            "engineId": "semgrep",
-            "ruleId": r.get("check_id") or "semgrep-unknown",
-            "severity": sev,
-            "type": "VULNERABILITY",
-            "primaryLocation": {
-                "message": extra.get("message")
-                           or r.get("check_id")
-                           or "Semgrep finding",
-                "filePath": r.get("path"),
-                "textRange": {
-                    "startLine": start.get("line", 1),
-                    "endLine": end.get("line", start.get("line", 1)),
+        issues.append(
+            {
+                "engineId": "semgrep",
+                "ruleId": r.get("check_id") or "semgrep-unknown",
+                "severity": sev,
+                "type": "VULNERABILITY",
+                "primaryLocation": {
+                    "message": extra.get("message")
+                    or r.get("check_id")
+                    or "Semgrep finding",
+                    "filePath": r.get("path"),
+                    "textRange": {
+                        "startLine": start.get("line", 1),
+                        "endLine": end.get("line", start.get("line", 1)),
+                    },
                 },
-            },
-        })
+            }
+        )
     return issues
 
 

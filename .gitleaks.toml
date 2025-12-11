@@ -1,82 +1,25 @@
-title = "Vuln Bank – Enterprise Gitleaks Policy"
+title = "Vuln Bank Enterprise Gitleaks Policy"
 
-# ======================================================
-# GLOBAL ALLOWLIST (PATH-BASED IGNORE)
-# ======================================================
-# ✅ Gitleaks ONLY supports path ignores via allowlist.paths
-# ❌ Never use glob paths in .gitleaksignore
+[extend]
+useDefault = true
 
 [allowlist]
-description = "Ignore generated artifacts, CI outputs, tooling, docs"
+description = "Ignore CI artifacts, caches, documentation"
 paths = [
-  "security-reports/.*",
-  ".scannerwork/.*",
-  "coverage.xml",
-  "node_modules/.*",
-  "__pycache__/.*",
-  ".venv/.*",
-  "venv/.*",
-  "scripts/.*",
-  "tools/.*",
-  "docs/.*",
-  ".*\\.example"
+  '''^security-reports/''',
+  '''^\.scannerwork/''',
+  '''^coverage\.xml$''',
+  '''^node_modules/''',
+  '''^__pycache__/''',
+  '''^\.venv/''',
+  '''^venv/''',
+  '''^docs/'''
 ]
 
-# ======================================================
-# HIGH & CRITICAL SECRETS (BLOCK PR)
-# ======================================================
-
-# ---------- GCP ----------
+# Example: custom detector
 [[rules]]
-id = "gcp-api-key"
+id = "custom-gcp-api-key"
 description = "Google Cloud API Key"
 regex = '''AIza[0-9A-Za-z\-_]{35}'''
-tags = ["cloud", "gcp", "critical"]
-severity = "CRITICAL"
-
-# ---------- AWS ----------
-[[rules]]
-id = "aws-access-key"
-description = "AWS Access Key ID"
-regex = '''AKIA[0-9A-Z]{16}'''
-tags = ["cloud", "aws", "critical"]
-severity = "CRITICAL"
-
-[[rules]]
-id = "aws-secret-key"
-description = "AWS Secret Access Key"
-regex = '''(?i)aws(.{0,20})?(secret|access)[_-]?(key|token)?(.{0,20})?[=:]['"][0-9a-zA-Z/+]{40}'''
-tags = ["cloud", "aws", "critical"]
-severity = "CRITICAL"
-
-# ---------- DATABASE ----------
-[[rules]]
-id = "db-password"
-description = "Hardcoded database password"
-regex = '''(?i)(db|database|postgres|mysql|mongo|redis)(.{0,20})?(password|passwd|pwd)['"]?\s*[:=]\s*['"][^'"]{8,}'''
-tags = ["database", "credential", "high"]
+tags = ["gcp", "apikey"]
 severity = "HIGH"
-
-# ---------- JWT ----------
-[[rules]]
-id = "jwt-secret"
-description = "JWT signing secret"
-regex = '''(?i)(jwt|token)(.{0,20})?(secret|key)['"]?\s*[:=]\s*['"][^'"]{10,}'''
-tags = ["auth", "jwt", "high"]
-severity = "HIGH"
-
-# ---------- OAUTH ----------
-[[rules]]
-id = "oauth-client-secret"
-description = "OAuth client secret"
-regex = '''(?i)(client|oauth)(.{0,20})?secret['"]?\s*[:=]\s*['"][^'"]{10,}'''
-tags = ["oauth", "auth", "high"]
-severity = "HIGH"
-
-# ---------- PRIVATE KEY ----------
-[[rules]]
-id = "private-key"
-description = "Private key material"
-regex = '''-----BEGIN (RSA|EC|DSA|OPENSSH|PRIVATE) KEY-----'''
-tags = ["crypto", "critical"]
-severity = "CRITICAL"

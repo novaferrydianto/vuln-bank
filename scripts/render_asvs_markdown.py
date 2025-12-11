@@ -56,14 +56,20 @@ def main():
     else:
         grade = "🔴 Non-Compliant / High Risk"
 
-    lines.append(f"> **Overall ASVS posture**: {grade} ({overall_pct:.1f}% implemented)")
+    lines.append(
+        f"> **Overall ASVS posture**: {grade} ({overall_pct:.1f}% implemented)"
+    )
     lines.append("")
 
     # Table
     lines.append("## Per-Category Summary")
     lines.append("")
-    lines.append("| Category | Name | Total | Implemented | Partial | Not Impl. | Coverage |")
-    lines.append("|----------|------|-------|-------------|---------|-----------|----------|")
+    lines.append(
+        "| Category | Name | Total | Implemented | Partial | Not Impl. | Coverage |"
+    )
+    lines.append(
+        "|----------|------|-------|-------------|---------|-----------|----------|"
+    )
 
     for cat_id, value in categories.items():
         if isinstance(value, dict):
