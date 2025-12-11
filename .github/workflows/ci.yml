@@ -216,12 +216,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ✅ REQUIRED: bring scripts into workspace
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
-      - name: Create Issues from ZAP Alerts
+      - name: Create GitHub Issues from ZAP alerts
         run: |
           python3 scripts/zap_to_github_issues.py \
             security-reports/zap/zap_alerts.json
