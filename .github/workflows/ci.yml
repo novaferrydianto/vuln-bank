@@ -1,4 +1,4 @@
-name: Vuln Bank – Risk-Aware DevSecOps CI
+name: Vuln Bank - DevSecOps CI
 
 on:
   push:
