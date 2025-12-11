@@ -166,6 +166,7 @@ jobs:
             zap-baseline.py \
               -t "$DAST_URL" \
               -J /zap/wrk/zap.json \
+              -j /zap/home/zap_out.json \
               -w /zap/wrk \
               -I
 
