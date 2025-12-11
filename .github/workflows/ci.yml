@@ -172,13 +172,6 @@ jobs:
           python3 scripts/zap_to_github_issues.py \
           security-reports/zap/zap_alerts.json
 
-      - name: Upload security reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: security-reports
-
       - name: ZAP severity gate
         run: |
           $PYTHON_BIN scripts/zap_severity_gate.py \
