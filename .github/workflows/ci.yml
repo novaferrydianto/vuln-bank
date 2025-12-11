@@ -181,7 +181,7 @@ jobs:
 
       - name: ZAP severity gate
         run: |
-          ${{ env.PYTHON_BIN }} scripts/zap_severity_gate.py \
+          $PYTHON_BIN scripts/zap_severity_gate.py \
             $REPORT_DIR/zap/zap_alerts.json \
             $ZAP_FAIL_SEVERITY
 
