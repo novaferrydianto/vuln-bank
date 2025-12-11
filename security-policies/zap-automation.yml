@@ -46,6 +46,12 @@ jobs:
   # --------------------------------------------------
   - type: report
     parameters:
+      template: traditional-json
+      reportDir: /zap/wrk
+      reportFile: zap_alerts.json
+
+  - type: report
+    parameters:
       template: sarif-json
       reportDir: /zap/wrk
       reportFile: zap.sarif
