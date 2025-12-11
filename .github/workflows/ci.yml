@@ -1,4 +1,4 @@
-name: Vuln Bank – Risk-aware DevSecOps CI
+name: Vuln Bank – Risk-Aware DevSecOps CI
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *"   # ~01:00 WIB
+    - cron: "0 18 * * *" # ~01:00 WIB
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ env:
   ZAP_FAIL_SEVERITY: HIGH
 
 # =====================================================
-# 1️⃣ CONTINUOUS SECURITY ASSURANCE (PRODUCER)
+# 1️⃣ CONTINUOUS SECURITY ASSURANCE
 # =====================================================
 jobs:
   security_scans:
@@ -35,21 +35,22 @@ jobs:
 
     steps:
       # -------------------------------------------------
-      # Checkout & workspace prep
+      # Checkout
       # -------------------------------------------------
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           clean: false
 
-      - name: Prepare report structure
+      - name: Prepare directories
         run: |
-          mkdir -p "$REPORT_DIR/zap"
+          mkdir -p $REPORT_DIR/zap
+          mkdir -p .trivy-cache
 
       # -------------------------------------------------
-      # IaC Security – Checkov (non-root)
+      # IaC – Checkov (non-root)
       # -------------------------------------------------
-      - name: IaC scan (Checkov) — non-root safe
+      - name: IaC Scan (Checkov)
         run: |
           docker run --rm \
             -u $(id -u):$(id -g) \
@@ -63,7 +64,7 @@ jobs:
       # -------------------------------------------------
       # Secrets – Gitleaks (SARIF + Gate)
       # -------------------------------------------------
-      - name: Secret scan (Gitleaks)
+      - name: Secret Scan (Gitleaks)
         run: |
           docker run --rm \
             -v "$PWD:/repo" \
@@ -79,40 +80,37 @@ jobs:
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: ${{ env.REPORT_DIR }}/gitleaks.sarif
+          sarif_file: security-reports/gitleaks.sarif
 
-      - name: Secret severity gate
+      - name: Gitleaks Severity Gate
         run: |
-          ${{ env.PYTHON_BIN }} scripts/gitleaks_gate.py \
+          $PYTHON_BIN scripts/gitleaks_gate.py \
             $REPORT_DIR/gitleaks.sarif
 
       # -------------------------------------------------
-      # SAST – Bandit → Sonar External Issues
+      # SAST – Bandit → Sonar
       # -------------------------------------------------
-      - name: SAST scan (Bandit)
+      - name: SAST Scan (Bandit)
         run: |
-          ${{ env.PYTHON_BIN }} -m pip install -q bandit
+          $PYTHON_BIN -m pip install -q bandit
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
             -f json -o "$REPORT_DIR/bandit.json" || true
 
       - name: Merge SAST → Sonar
         run: |
-          ${{ env.PYTHON_BIN }} scripts/merge_security_to_sonar.py
+          $PYTHON_BIN scripts/merge_security_to_sonar.py
 
-      - name: SonarQube scan
+      - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       # -------------------------------------------------
-      # SCA – Trivy (filesystem, non-root)
+      # SCA – Trivy FS (non-root)
       # -------------------------------------------------
-      - name: SCA scan (Trivy FS)
+      - name: SCA Scan (Trivy)
         run: |
-
-          mkdir -p "$PWD/.trivy-cache"
-
           docker run --rm \
             -u $(id -u):$(id -g) \
             -v "$PWD:/work" \
@@ -123,22 +121,22 @@ jobs:
             --ignore-unfixed \
             --cache-dir /tmp/trivy-cache \
             --format json \
-            -o "/work/$REPORT_DIR/trivy-sca.json"
+            -o /work/$REPORT_DIR/trivy-sca.json
 
       # -------------------------------------------------
-      # DAST – OWASP ZAP
+      # DAST – OWASP ZAP (Automation Framework)
       # -------------------------------------------------
-      - name: Build application image
+      - name: Build Application Image
         run: |
           docker build \
             -f containers/app/Dockerfile \
             -t vuln-bank:ci .
 
-      - name: Start DAST stack
+      - name: Start DAST Stack
         run: |
           docker compose -f docker-compose.dast.yml up -d
 
-      - name: Wait for application readiness
+      - name: Wait for App Readiness
         run: |
           for i in {1..20}; do
             docker run --rm \
@@ -150,53 +148,45 @@ jobs:
           docker compose -f docker-compose.dast.yml logs
           exit 1
 
-      - name: OWASP ZAP baseline scan
+      - name: ZAP Automation Scan
         run: |
-
-          mkdir -p security-reports/zap
-          chmod -R 777 security-reports/zap
+          chmod -R 777 $REPORT_DIR/zap
 
           docker run --rm \
             --network vuln-bank_dastnet \
-            -v "$PWD/security-reports/zap:/zap/wrk" \
+            -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
             -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml:ro" \
             -e target_url="$DAST_URL" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap.sh -cmd -autorun /zap/automation.yml
 
-          test -f security-reports/zap/zap.sarif.json
-          test -f security-reports/zap/zap_alerts.json
+          test -f $REPORT_DIR/zap/zap_alerts.json
 
-      - name: Create GitHub Issues from ZAP alerts
-        run: |
-          python3 scripts/zap_to_github_issues.py \
-          security-reports/zap/zap_alerts.json
-
-      - name: ZAP severity gate
+      - name: ZAP Severity Gate
         run: |
           $PYTHON_BIN scripts/zap_severity_gate.py \
             $REPORT_DIR/zap/zap_alerts.json \
             $ZAP_FAIL_SEVERITY
 
-      - name: Stop DAST stack
+      - name: Stop DAST Stack
         if: always()
         run: docker compose -f docker-compose.dast.yml down || true
 
       # -------------------------------------------------
-      # Risk-based EPSS + CISA KEV Gate
+      # EPSS + CISA KEV Gate
       # -------------------------------------------------
-      - name: EPSS + CISA KEV gate
+      - name: EPSS + CISA KEV Gate
         run: |
-          ${{ env.PYTHON_BIN }} -m pip install -q requests
-          ${{ env.PYTHON_BIN }} scripts/epss_gate.py \
+          $PYTHON_BIN -m pip install -q requests
+          $PYTHON_BIN scripts/epss_gate.py \
             --input "$REPORT_DIR/trivy-sca.json" \
             --output "$REPORT_DIR/epss-findings.json" \
             --threshold "$EPSS_THRESHOLD"
 
       # -------------------------------------------------
-      # Final decision
+      # Final Gate Decision
       # -------------------------------------------------
-      - name: Gate decision
+      - name: Gate Decision
         id: gate_decision
         run: |
           if [ -f "$REPORT_DIR/gate_failed" ]; then
@@ -207,17 +197,17 @@ jobs:
           fi
 
       # -------------------------------------------------
-      # Artifacts
+      # Artifacts (ONE TIME)
       # -------------------------------------------------
-      - name: Upload security reports
+      - name: Upload Security Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
-          path: ${{ env.REPORT_DIR }}
+          path: security-reports
 
 # =====================================================
-# 2️⃣ ZAP ALERTS → GITHUB ISSUES (CONSUMER)
+# 2️⃣ ZAP ALERTS → GITHUB ISSUES
 # =====================================================
   zap_create_issues:
     name: ZAP Alerts → GitHub Issues
@@ -226,17 +216,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
-      - name: Create GitHub Issues from ZAP alerts
+      - name: Create Issues from ZAP Alerts
         run: |
           python3 scripts/zap_to_github_issues.py \
-            security-reports/zap/zap.json
+            security-reports/zap/zap_alerts.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -244,13 +232,13 @@ jobs:
 # 3️⃣ SLACK NOTIFICATION
 # =====================================================
   slack_notify:
-    name: Slack Alert (Security Gate Failed)
+    name: Slack Alert (Gate Failed)
     needs: security_scans
     if: needs.security_scans.outputs.gate_failed == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Slack alert
+      - name: Send Slack Alert
         run: |
           curl -X POST -H "Content-Type: application/json" \
             --data "{
