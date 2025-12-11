@@ -1,43 +1,57 @@
-name: Publish EPSS/KEV Dashboard
+name: Publish EPSS / KEV Dashboard
 
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: read         # Read repo
+  pages: write           # Publish Pages
+  id-token: write        # Required by deploy-pages
 
 concurrency:
   group: "github-pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build Dashboard
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Generate EPSS/KEV Dashboard
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: |
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests plotly jinja2 pandas
+
+      - name: Generate EPSS / KEV Dashboard
+        run: |
+          mkdir -p site
           python scripts/epss_dashboard.py
 
-      - name: Upload Pages artifact
+      - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
   deploy:
+    name: Deploy to GitHub Pages
     needs: build
     environment:
       name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+
     steps:
-      - name: Deploy to GitHub Pages
+      - name: Publish dashboard
         id: deployment
         uses: actions/deploy-pages@v4
