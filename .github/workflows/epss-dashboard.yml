@@ -1,26 +1,20 @@
 name: Publish EPSS / KEV Dashboard
 
 on:
-  # Rebuild dashboard when main changes
   push:
     branches: [main]
-
-  # Allow manual re-run
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write       # REQUIRED for GitHub Pages
-  id-token: write    # REQUIRED for OIDC
+  pages: write
+  id-token: write
 
 concurrency:
-  group: "github-pages"
+  group: github-pages
   cancel-in-progress: true
 
 jobs:
-  # ======================================================================
-  # 1) BUILD DASHBOARD
-  # ======================================================================
   build:
     runs-on: ubuntu-latest
 
@@ -28,15 +22,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ----------------------------------------------
-      # FIX → Download security-reports artifact
-      # ----------------------------------------------
-      - name: Download latest security-reports
-        uses: dawidd6/action-download-artifact@v6
+      # -------------------------------------------------
+      # Download latest CI artifact
+      # -------------------------------------------------
+      - name: Download security-reports artifact
+        uses: dawidd6/action-download-artifact@v3
         with:
           repo: ${{ github.repository }}
-          workflow_search: true
           workflow: ci.yml
+          workflow_search: true
           workflow_conclusion: success
           name: security-reports
           path: security-reports
@@ -45,42 +39,43 @@ jobs:
 
       - name: Debug artifact contents
         run: |
-          echo "=== security-reports directory ==="
-          ls -R security-reports || true
+          echo "=== security-reports ==="
+          ls -R security-reports
 
-      # --------------------------------------------------------------
-      # Python setup
-      # --------------------------------------------------------------
+      # -------------------------------------------------
+      # Python venv (CLEAN)
+      # -------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dashboard dependencies
+      - name: Create virtualenv
         run: |
-          pip install -q pandas matplotlib jinja2 plotly
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install pandas matplotlib jinja2 plotly
 
-      # --------------------------------------------------------------
-      # Build dashboard
-      # --------------------------------------------------------------
+      # -------------------------------------------------
+      # Generate dashboard
+      # -------------------------------------------------
       - name: Generate EPSS Dashboard
         run: |
+          source .venv/bin/activate
           mkdir -p site
           python scripts/epss_dashboard.py \
             --input security-reports/epss-findings.json \
             --outdir site
 
-      # --------------------------------------------------------------
-      # Upload dashboard as GitHub Pages artifact
-      # --------------------------------------------------------------
+      # -------------------------------------------------
+      # Publish Pages artifact
+      # -------------------------------------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
-  # ======================================================================
-  # 2) DEPLOY TO GITHUB PAGES
-  # ======================================================================
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -88,6 +83,6 @@ jobs:
       name: github-pages
 
     steps:
-      - name: Deploy GitHub Pages
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
