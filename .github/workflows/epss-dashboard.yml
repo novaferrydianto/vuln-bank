@@ -11,13 +11,10 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "github-pages"
+  group: github-pages
   cancel-in-progress: true
 
 jobs:
-  # ======================================================================
-  # 1) BUILD DASHBOARD
-  # ======================================================================
   build:
     runs-on: ubuntu-latest
 
@@ -25,85 +22,67 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------------------
-      # Debug: Show last 10 workflow runs (helps diagnose artifact miss)
-      # --------------------------------------------------------------
-      - name: Debug workflow runs
-        run: gh run list --workflow="ci.yml" --limit 10
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      # --------------------------------------------------------------
-      # Download security-reports artifact from the CI pipeline
-      # --------------------------------------------------------------
-      - name: Download latest security-reports artifact
-        uses: dawidd6/action-download-artifact@v6
+      # -------------------------------------------------
+      # Download latest CI artifact
+      # -------------------------------------------------
+      - name: Download security-reports artifact
+        uses: dawidd6/action-download-artifact@v3
         with:
           repo: ${{ github.repository }}
           workflow: ci.yml
-          workflow_search: true         # critical: allow matching "ci.yml"
-          workflow_conclusion: success  # only successful runs
-          name: security-reports        # artifact name from DevSecOps CI
+          workflow_search: true
+          workflow_conclusion: success
+          name: security-reports
           path: security-reports
           check_artifacts: true
           if_no_artifact_found: fail
 
       - name: Debug artifact contents
         run: |
-          echo "=== security-reports (raw) ==="
-          ls -R security-reports || true
+          echo "=== security-reports ==="
+          ls -R security-reports
 
-      # --------------------------------------------------------------
-      # Validate required file exists
-      # --------------------------------------------------------------
-      - name: Ensure epss-findings.json exists
-        run: |
-          if [ ! -f security-reports/epss-findings.json ]; then
-            echo "::error::Missing epss-findings.json. CI pipeline did not produce EPSS output."
-            exit 1
-          fi
-
-      # --------------------------------------------------------------
-      # Setup Python
-      # --------------------------------------------------------------
+      # -------------------------------------------------
+      # Python venv (CLEAN)
+      # -------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dashboard dependencies
+      - name: Create virtualenv
         run: |
-          pip install -q pandas matplotlib jinja2 plotly
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install pandas matplotlib jinja2 plotly
 
-      # --------------------------------------------------------------
-      # Generate Dashboard (HTML + PNG charts)
-      # --------------------------------------------------------------
+      # -------------------------------------------------
+      # Generate dashboard
+      # -------------------------------------------------
       - name: Generate EPSS Dashboard
         run: |
+          source .venv/bin/activate
           mkdir -p site
           python scripts/epss_dashboard.py \
             --input security-reports/epss-findings.json \
             --outdir site
 
-      # --------------------------------------------------------------
-      # Upload GitHub Pages artifact
-      # --------------------------------------------------------------
+      # -------------------------------------------------
+      # Publish Pages artifact
+      # -------------------------------------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
-  # ======================================================================
-  # 2) DEPLOY TO GITHUB PAGES
-  # ======================================================================
   deploy:
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy GitHub Pages
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
