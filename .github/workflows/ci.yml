@@ -206,7 +206,82 @@ jobs:
           path: security-reports
 
 # =====================================================
-# 2️⃣ ZAP ALERTS → GITHUB ISSUES
+# 2️⃣ IMPORT RESULTS → DEFECTDOJO
+# =====================================================
+  import_defectdojo:
+    name: Import Security Reports → DefectDojo
+    needs: security_scans
+    if: always()
+    runs-on: ubuntu-latest
+
+    env:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+      DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+      DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+
+    steps:
+      - name: Download security reports artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      # -----------------------------
+      # ZAP
+      # -----------------------------
+      - name: Import ZAP to DefectDojo
+        run: |
+          if [ ! -f security-reports/zap/zap_alerts.json ]; then
+            echo "[SKIP] No ZAP report"
+            exit 0
+          fi
+
+          curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
+            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
+            -F "scan_type=ZAP Scan" \
+            -F "file=@security-reports/zap/zap_alerts.json" \
+            -F "product=$DEFECTDOJO_PRODUCT_ID" \
+            -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID" \
+            -F "active=true" \
+            -F "verified=true"
+
+      # -----------------------------
+      # Trivy
+      # -----------------------------
+      - name: Import Trivy to DefectDojo
+        run: |
+          if [ ! -f security-reports/trivy-sca.json ]; then
+            echo "[SKIP] No Trivy report"
+            exit 0
+          fi
+
+          curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
+            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
+            -F "scan_type=Trivy Scan" \
+            -F "file=@security-reports/trivy-sca.json" \
+            -F "product=$DEFECTDOJO_PRODUCT_ID" \
+            -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID"
+
+      # -----------------------------
+      # Bandit
+      # -----------------------------
+      - name: Import Bandit to DefectDojo
+        run: |
+          if [ ! -f security-reports/bandit.json ]; then
+            echo "[SKIP] No Bandit report"
+            exit 0
+          fi
+
+          curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
+            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
+            -F "scan_type=Bandit Scan" \
+            -F "file=@security-reports/bandit.json" \
+            -F "product=$DEFECTDOJO_PRODUCT_ID" \
+            -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID"
+
+# =====================================================
+# 3️⃣ ZAP ALERTS → GITHUB ISSUES
 # =====================================================
   zap_create_issues:
     name: ZAP Alerts → GitHub Issues
@@ -229,9 +304,10 @@ jobs:
             security-reports/zap/zap_alerts.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
 # =====================================================
-# 3️⃣ SLACK NOTIFICATION
+# SLACK NOTIFICATION
 # =====================================================
   slack_notify:
     name: Slack Alert (Gate Failed)
