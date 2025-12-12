@@ -19,11 +19,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------------------------------
+      # Checkout
+      # -------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # -------------------------------------------------
-      # Download latest CI artifact
+      # Download latest CI artifact (security-reports)
       # -------------------------------------------------
       - name: Download security-reports artifact
         uses: dawidd6/action-download-artifact@v3
@@ -43,33 +46,25 @@ jobs:
           ls -R security-reports
 
       # -------------------------------------------------
-      # Python venv (CLEAN)
+      # Setup Python (NO extra deps needed)
       # -------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Create virtualenv
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip
-          pip install pandas matplotlib jinja2 plotly
-
       # -------------------------------------------------
-      # Generate dashboard
+      # Generate Dashboard (STATIC HTML)
       # -------------------------------------------------
       - name: Generate EPSS Dashboard
         run: |
-          source .venv/bin/activate
           mkdir -p site
           python scripts/epss_dashboard.py \
             --input security-reports/epss-findings.json \
             --outdir site
 
       # -------------------------------------------------
-      # Publish Pages artifact
+      # Upload Pages artifact
       # -------------------------------------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

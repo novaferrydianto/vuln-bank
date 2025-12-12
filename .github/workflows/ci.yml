@@ -28,7 +28,6 @@ jobs:
   security_scans:
     name: Continuous Security Assurance
     runs-on: self-hosted
-    environment: production
 
     outputs:
       gate_failed: ${{ steps.gate_decision.outputs.failed }}
