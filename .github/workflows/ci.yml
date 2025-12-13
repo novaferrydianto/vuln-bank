@@ -245,6 +245,15 @@ jobs:
             "${REPORT_DIR}/zap/zap_alerts.json" \
             "${ZAP_FAIL_SEVERITY}"
 
+      - name: Incident – OWASP A01/A02 (High–High)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ZAP_JSON: security-reports/zap/zap_alerts.json
+        run: python3 scripts/zap_a01_a02_incident.py
+
       - name: Stop DAST stack
         if: always()
         shell: bash
