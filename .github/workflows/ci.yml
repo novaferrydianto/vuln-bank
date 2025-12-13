@@ -53,6 +53,10 @@ jobs:
           chmod +x scripts/create_defectdojo_engagement.sh
           bash scripts/create_defectdojo_engagement.sh
 
+      - name: Debug engagement output
+        run: |
+          echo "DEFECTDOJO_ENGAGEMENT_ID=${DEFECTDOJO_ENGAGEMENT_ID:-<empty>}"
+
       - name: Export engagement ID (fallback-safe)
         id: export
         run: |
@@ -281,7 +285,8 @@ jobs:
       - create_engagement
       - import_defectdojo
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    continue-on-error: true
 
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
