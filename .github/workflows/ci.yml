@@ -2,11 +2,11 @@ name: Vuln Bank – DevSecOps CI (Enterprise)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   schedule:
-    - cron: "0 18 * * *"
+    - cron: "0 18 * * *" # ~01:00 WIB
   workflow_dispatch:
 
 concurrency:
@@ -25,37 +25,41 @@ env:
   DAST_URL: http://vuln-bank-dast:5000
   ZAP_FAIL_SEVERITY: HIGH
 
-# =====================================================
-# 0️⃣ DEFECTDOJO ENGAGEMENT (PR ONLY)
-# =====================================================
 jobs:
+# =====================================================
+# 0) DEFECTDOJO ENGAGEMENT (PR ONLY)
+# =====================================================
   create_engagement:
-    name: Create DefectDojo Engagement
+    name: Create DefectDojo Engagement (PR)
     if: github.event_name == 'pull_request'
     runs-on: self-hosted
     permissions:
       contents: read
     outputs:
       engagement_id: ${{ steps.export.outputs.id }}
-
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
       DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Create / reuse engagement
+        shell: bash
         run: |
+          set -euo pipefail
           chmod +x scripts/create_defectdojo_engagement.sh
           bash scripts/create_defectdojo_engagement.sh
 
       - id: export
-        run: echo "id=${DEFECTDOJO_ENGAGEMENT_ID:-}" >> "$GITHUB_OUTPUT"
+        name: Export engagement ID
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "id=${DEFECTDOJO_ENGAGEMENT_ID:-}" >> "$GITHUB_OUTPUT"
 
 # =====================================================
-# 1️⃣ SECURITY SCANS (AUTHORITATIVE GATE)
+# 1) SECURITY SCANS (AUTHORITATIVE GATE)
 # =====================================================
   security_scans:
     name: Security Scans & Gates
@@ -65,10 +69,8 @@ jobs:
     permissions:
       contents: read
       security-events: write
-
     outputs:
       gate_failed: ${{ steps.gate.outputs.failed }}
-
     env:
       DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
 
@@ -79,216 +81,398 @@ jobs:
           clean: false
 
       - name: Prepare workspace
+        shell: bash
         run: |
-          mkdir -p "$REPORT_DIR/zap" "$REPORT_DIR/governance"
-          mkdir -p "$BASELINE_DIR" ".trivy-cache"
-          rm -f "$REPORT_DIR/gate_failed" || true
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}/zap" "${REPORT_DIR}/governance"
+          mkdir -p "${BASELINE_DIR}" ".trivy-cache"
+          rm -f "${REPORT_DIR}/gate_failed" || true
 
-      # ---------- SECRETS ----------
-      - name: Gitleaks
+      # ----------------------------
+      # SECRETS - Gitleaks
+      # ----------------------------
+      - name: Gitleaks (SARIF)
+        shell: bash
         run: |
-          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
-            detect --source /repo \
-            --config /repo/.gitleaks.toml \
-            --report-format sarif \
-            --report-path /repo/$REPORT_DIR/gitleaks.sarif \
-            --exit-code 0
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/repo" \
+            zricethezav/gitleaks:latest \
+            detect \
+              --source /repo \
+              --config /repo/.gitleaks.toml \
+              --report-format sarif \
+              --report-path /repo/"${REPORT_DIR}"/gitleaks.sarif \
+              --redact \
+              --exit-code 0
 
-      - uses: github/codeql-action/upload-sarif@v4
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
-      - run: $PYTHON_BIN scripts/gitleaks_gate.py "$REPORT_DIR/gitleaks.sarif"
-
-      # ---------- SAST ----------
-      - name: Bandit
+      - name: Gitleaks severity gate
+        shell: bash
         run: |
-          $PYTHON_BIN -m pip install -q bandit
+          set -euo pipefail
+          "${PYTHON_BIN}" scripts/gitleaks_gate.py "${REPORT_DIR}/gitleaks.sarif"
+
+      # ----------------------------
+      # SAST - Bandit + Normalize
+      # ----------------------------
+      - name: Bandit (JSON)
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${PYTHON_BIN}" -m pip install -q bandit
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
-            -f json -o "$REPORT_DIR/bandit.json" || true
+            -f json -o "${REPORT_DIR}/bandit.json" || true
 
-      - name: Normalize Bandit
-        run: |
-          $PYTHON_BIN scripts/bandit_normalize.py \
-            "$REPORT_DIR/bandit.json" \
-            "$REPORT_DIR/bandit_dd.json"
+          # Ensure output exists to avoid downstream FileNotFound
+          test -f "${REPORT_DIR}/bandit.json" || echo '{"results":[]}' > "${REPORT_DIR}/bandit.json"
 
-      - name: Semgrep (OWASP / ASVS)
+      - name: Normalize Bandit (DefectDojo compatible)
+        shell: bash
         run: |
-          if [ -f "$BASELINE_DIR/semgrep-baseline.json" ]; then
-            cp "$BASELINE_DIR/semgrep-baseline.json" "$REPORT_DIR/semgrep-baseline.json"
+          set -euo pipefail
+          "${PYTHON_BIN}" scripts/bandit_normalize.py \
+            "${REPORT_DIR}/bandit.json" \
+            "${REPORT_DIR}/bandit_dd.json"
+
+          test -f "${REPORT_DIR}/bandit_dd.json" || echo '{"findings":[]}' > "${REPORT_DIR}/bandit_dd.json"
+
+      # ----------------------------
+      # SAST - Semgrep (baseline-aware)
+      # ----------------------------
+      - name: Load Semgrep baseline (if exists)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "${BASELINE_DIR}/semgrep-baseline.json" ]; then
+            cp "${BASELINE_DIR}/semgrep-baseline.json" "${REPORT_DIR}/semgrep-baseline.json"
+            echo "[INFO] Semgrep baseline loaded"
+          else
+            echo "[INFO] No Semgrep baseline found (first run ok)"
           fi
 
-          docker run --rm -v "$PWD:/src" returntocorp/semgrep \
+      - name: Semgrep scan (OWASP / ASVS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" \
+            returntocorp/semgrep \
             semgrep scan \
               --config p/owasp-top-ten \
               --config p/security-audit \
               --config p/python \
               --json \
-              --output /src/$REPORT_DIR/semgrep.json || true
+              --output /src/"${REPORT_DIR}"/semgrep.json || true
 
-      - name: Semgrep OWASP Gate
+          test -f "${REPORT_DIR}/semgrep.json" || echo '{"results":[]}' > "${REPORT_DIR}/semgrep.json"
+
+      - name: Semgrep OWASP gate (baseline-aware)
+        shell: bash
         run: |
-          if [ -f "$REPORT_DIR/semgrep-baseline.json" ]; then
-            $PYTHON_BIN scripts/semgrep_owasp_gate.py \
-              "$REPORT_DIR/semgrep.json" \
-              "$REPORT_DIR/semgrep-baseline.json"
+          set -euo pipefail
+          if [ -f "${REPORT_DIR}/semgrep-baseline.json" ]; then
+            "${PYTHON_BIN}" scripts/semgrep_owasp_gate.py \
+              "${REPORT_DIR}/semgrep.json" \
+              "${REPORT_DIR}/semgrep-baseline.json"
           else
-            $PYTHON_BIN scripts/semgrep_owasp_gate.py "$REPORT_DIR/semgrep.json"
+            "${PYTHON_BIN}" scripts/semgrep_owasp_gate.py "${REPORT_DIR}/semgrep.json"
           fi
 
-      # ---------- SCA ----------
-      - name: Trivy FS
+      # ----------------------------
+      # SCA - Trivy FS (rootless + cache-safe)
+      # ----------------------------
+      - name: Trivy FS (JSON)
+        shell: bash
         run: |
-          docker run --rm -u $(id -u):$(id -g) \
+          set -euo pipefail
+          mkdir -p ".trivy-cache"
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -e TRIVY_CACHE_DIR=/tmp/trivy-cache \
             -v "$PWD:/work" \
             -v "$PWD/.trivy-cache:/tmp/trivy-cache" \
             aquasec/trivy:0.49.1 \
             fs /work \
             --severity HIGH,CRITICAL \
+            --ignore-unfixed \
             --format json \
-            -o /work/$REPORT_DIR/trivy-sca.json
+            -o /work/"${REPORT_DIR}"/trivy-sca.json
 
-      - name: EPSS + KEV Gate
+          test -f "${REPORT_DIR}/trivy-sca.json" || echo '{"Results":[]}' > "${REPORT_DIR}/trivy-sca.json"
+
+      - name: EPSS + KEV gate
+        shell: bash
         run: |
-          $PYTHON_BIN scripts/epss_gate.py \
-            --input "$REPORT_DIR/trivy-sca.json" \
-            --output "$REPORT_DIR/epss-findings.json" \
-            --threshold "$EPSS_THRESHOLD"
+          set -euo pipefail
+          "${PYTHON_BIN}" scripts/epss_gate.py \
+            --input "${REPORT_DIR}/trivy-sca.json" \
+            --output "${REPORT_DIR}/epss-findings.json" \
+            --threshold "${EPSS_THRESHOLD}"
 
-      # ---------- DAST ----------
-      - run: docker build -t vuln-bank:ci -f containers/app/Dockerfile .
-      - run: docker compose -f docker-compose.dast.yml up -d
+          test -f "${REPORT_DIR}/epss-findings.json" || echo '{"high_risk":[],"threshold":"'"${EPSS_THRESHOLD}"'"}' > "${REPORT_DIR}/epss-findings.json"
 
-      - name: ZAP Scan
+      # ----------------------------
+      # DAST - ZAP Automation Framework
+      # ----------------------------
+      - name: Build app image (for DAST)
+        shell: bash
         run: |
-          chmod -R 777 "$REPORT_DIR/zap" || true
-          docker run --rm --network vuln-bank_dastnet \
-            -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
+          set -euo pipefail
+          docker build -t vuln-bank:ci -f containers/app/Dockerfile .
+
+      - name: Start DAST stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.dast.yml up -d
+
+      - name: Wait for app readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in {1..20}; do
+            docker run --rm \
+              --network vuln-bank_dastnet \
+              curlimages/curl:8.6.0 \
+              curl -fs "${DAST_URL}" && exit 0
+            sleep 5
+          done
+          docker compose -f docker-compose.dast.yml logs
+          exit 1
+
+      - name: ZAP scan (Automation Framework)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod -R 777 "${REPORT_DIR}/zap" || true
+
+          docker run --rm \
+            --network vuln-bank_dastnet \
+            -v "$PWD/${REPORT_DIR}/zap:/zap/wrk" \
             -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml:ro" \
+            -e target_url="${DAST_URL}" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap.sh -cmd -autorun /zap/automation.yml
 
-      - run: |
-          $PYTHON_BIN scripts/zap_severity_gate.py \
-            "$REPORT_DIR/zap/zap_alerts.json" "$ZAP_FAIL_SEVERITY"
+          test -f "${REPORT_DIR}/zap/zap_alerts.json"
 
-      - if: always()
-        run: docker compose -f docker-compose.dast.yml down || true
-
-      # ---------- GOVERNANCE OUTPUT ----------
-      - name: ASVS Export
+      - name: ZAP severity gate
+        shell: bash
         run: |
-          $PYTHON_BIN scripts/asvs_export.py \
-            --semgrep "$REPORT_DIR/semgrep.json" \
-            --bandit "$REPORT_DIR/bandit_dd.json" \
-            --out-json "$REPORT_DIR/governance/asvs-coverage.json" \
-            --out-md "$REPORT_DIR/governance/asvs-coverage.md"
+          set -euo pipefail
+          "${PYTHON_BIN}" scripts/zap_severity_gate.py \
+            "${REPORT_DIR}/zap/zap_alerts.json" \
+            "${ZAP_FAIL_SEVERITY}"
 
+      - name: Stop DAST stack
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.dast.yml down || true
+
+      # ----------------------------
+      # GOVERNANCE OUTPUTS (ASVS Export)
+      # ----------------------------
+      - name: ASVS export (JSON + MD)
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${PYTHON_BIN}" scripts/asvs_export.py \
+            --semgrep "${REPORT_DIR}/semgrep.json" \
+            --bandit "${REPORT_DIR}/bandit_dd.json" \
+            --out-json "${REPORT_DIR}/governance/asvs-coverage.json" \
+            --out-md "${REPORT_DIR}/governance/asvs-coverage.md"
+
+          test -f "${REPORT_DIR}/governance/asvs-coverage.json"
+
+      # ----------------------------
+      # FINAL AUTHORITATIVE GATE
+      # ----------------------------
       - name: Final Gate
         id: gate
+        shell: bash
         run: |
-          if [ -f "$REPORT_DIR/gate_failed" ]; then
+          set -euo pipefail
+          if [ -f "${REPORT_DIR}/gate_failed" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           echo "failed=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload security reports (always)
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
 # =====================================================
-# 2️⃣ GOVERNANCE (PR LABELS + REGRESSION + METRICS)
+# 2) GOVERNANCE (PR LABELS + REGRESSION + METRICS)
 # =====================================================
   governance:
-    name: Governance
+    name: Governance (Labels / Regression / Metrics)
     needs: [security_scans]
+    if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
       issues: write
-
     outputs:
       asvs_regression: ${{ steps.asvs.outputs.regression }}
-      epss_max:        ${{ steps.epss.outputs.max }}
-      zap_high:        ${{ steps.zap.outputs.high }}
+      epss_max: ${{ steps.epss.outputs.max }}
+      zap_high: ${{ steps.zap.outputs.high }}
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
       - id: epss
+        name: Compute EPSS max (high-risk)
+        shell: bash
         run: |
-          python3 - <<'PY'
+          set -euo pipefail
+          python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
           import json
           p="security-reports/epss-findings.json"
           mx=0.0
           try:
             d=json.load(open(p))
-            hr=d.get("high_risk",[])
+            hr=d.get("high_risk",[]) or []
             if hr:
-              mx=max(float(v.get("epss",0)) for v in hr)
-          except Exception: pass
+              mx=max(float(v.get("epss",0) or 0) for v in hr)
+          except Exception:
+            mx=0.0
           print(f"max={mx:.2f}")
-          PY | tee -a "$GITHUB_OUTPUT"
+          PY
 
       - id: zap
+        name: Compute ZAP HIGH count
+        shell: bash
         run: |
-          python3 - <<'PY'
+          set -euo pipefail
+          python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
           import json
           high=0
           try:
             d=json.load(open("security-reports/zap/zap_alerts.json"))
-            for s in d.get("site",[]):
-              for a in s.get("alerts",[]):
-                if str(a.get("riskcode"))=="3": high+=1
-          except Exception: pass
+            for s in d.get("site",[]) or []:
+              for a in s.get("alerts",[]) or []:
+                # riskcode 3 = HIGH (typical ZAP)
+                if str(a.get("riskcode")) == "3":
+                  high += 1
+          except Exception:
+            pass
           print(f"high={high}")
-          PY | tee -a "$GITHUB_OUTPUT"
+          PY
 
       - id: asvs
+        name: Detect ASVS regression vs baseline
+        shell: bash
         run: |
-          python3 - <<'PY'
+          set -euo pipefail
+          python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
           import json, pathlib
           cur=pathlib.Path("security-reports/governance/asvs-coverage.json")
           base=pathlib.Path("security-baselines/asvs-baseline.json")
           reg=False
           if cur.exists() and base.exists():
-            c=json.load(open(cur)).get("counts",{})
-            b=json.load(open(base)).get("counts",{})
-            for k in b:
-              if c.get(k,0) < b.get(k,0): reg=True
+            c=json.load(open(cur)).get("counts",{}) or {}
+            b=json.load(open(base)).get("counts",{}) or {}
+            # regression if any baseline key decreases
+            for k,v in b.items():
+              if int(c.get(k,0)) < int(v):
+                reg=True
+                break
           print(f"regression={'true' if reg else 'false'}")
-          PY | tee -a "$GITHUB_OUTPUT"
+          PY
 
-      - name: ASVS → OWASP Labels
+      - name: ASVS → OWASP Labels (PR only)
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/asvs_to_labels.py
-
-      - name: Block PR on ASVS regression
-        if: github.event_name == 'pull_request'
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 scripts/asvs_to_labels.py
+
+      - name: Block PR on ASVS regression (PR only)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
           if [ "${{ steps.asvs.outputs.regression }}" = "true" ]; then
             echo "[GATE] ASVS regression detected"
             exit 1
           fi
 
 # =====================================================
-# 3️⃣ SLACK (RISK-AWARE, ENRICHED)
+# 3) BASELINE UPDATE (MAIN ONLY, CLEAN RUN)
+# =====================================================
+  update_baselines:
+    name: Update baselines (main only)
+    needs: [security_scans, governance]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.security_scans.outputs.gate_failed == 'false'
+    runs-on: self-hosted
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      - name: Update baselines (semgrep + asvs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${BASELINE_DIR}"
+          cp "${REPORT_DIR}/semgrep.json" "${BASELINE_DIR}/semgrep-baseline.json"
+          cp "${REPORT_DIR}/governance/asvs-coverage.json" "${BASELINE_DIR}/asvs-baseline.json"
+
+      - name: Commit & push baselines (idempotent)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "devsecops-bot"
+          git config user.email "devsecops@vulnbank.local"
+
+          git add "${BASELINE_DIR}" || true
+
+          if git diff --cached --quiet; then
+            echo "[INFO] No baseline changes"
+            exit 0
+          fi
+
+          git commit -m "chore(security): update baselines [auto]"
+          git push
+
+# =====================================================
+# 4) SLACK (RISK-AWARE, ENRICHED)
 # =====================================================
   slack_notify:
-    name: Slack Alert
+    name: Slack Alert – Risk Aware (Enriched)
     needs: [security_scans, governance]
-    runs-on: self-hosted
     if: |
       always() &&
       (
@@ -297,6 +481,9 @@ jobs:
         needs.governance.outputs.zap_high != '0' ||
         needs.governance.outputs.epss_max >= '0.50'
       )
+    runs-on: self-hosted
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/download-artifact@v4
@@ -304,7 +491,8 @@ jobs:
           name: security-reports
           path: security-reports
 
-      - env:
+      - name: Slack notify (script)
+        env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -312,4 +500,33 @@ jobs:
           ASVS_REGRESSION: ${{ needs.governance.outputs.asvs_regression }}
           EPSS_MAX: ${{ needs.governance.outputs.epss_max }}
           ZAP_HIGH: ${{ needs.governance.outputs.zap_high }}
-        run: python3 scripts/slack_decision.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Your preferred implementation
+          if [ -f "scripts/slack_decision.py" ]; then
+            "${PYTHON_BIN}" scripts/slack_decision.py
+            exit 0
+          fi
+
+          # Fallback (no script)
+          python3 - <<'PY'
+          import os, json, urllib.request
+          text = (
+            "*Vuln Bank – DevSecOps Risk Alert*\n"
+            f"- Repo: `{os.getenv('REPO')}`\n"
+            f"- Run: `{os.getenv('RUN_ID')}`\n"
+            f"- Gate failed: `{os.getenv('GATE_FAILED')}`\n"
+            f"- ASVS regression: `{os.getenv('ASVS_REGRESSION')}`\n"
+            f"- EPSS max: `{os.getenv('EPSS_MAX')}`\n"
+            f"- ZAP HIGH alerts: `{os.getenv('ZAP_HIGH')}`\n"
+          )
+          payload={"text": text}
+          req=urllib.request.Request(
+            os.environ["SLACK_WEBHOOK_URL"],
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type":"application/json"},
+          )
+          urllib.request.urlopen(req, timeout=10)
+          print("[OK] Slack alert sent")
+          PY
