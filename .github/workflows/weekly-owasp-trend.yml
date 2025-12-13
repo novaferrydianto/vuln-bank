@@ -1,0 +1,74 @@
+name: Vuln Bank – Weekly OWASP Trend
+
+on:
+  schedule:
+    - cron: "0 19 * * 0" # Minggu 02:00 WIB (UTC 19:00)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+jobs:
+  owasp_trend:
+    name: OWASP trend (labels -> metrics)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect OWASP label metrics (last 7 days)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p metrics
+          REPO="${{ github.repository }}"
+          SINCE="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Query PRs updated in last 7 days, pull labels
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${REPO}/pulls?state=all&per_page=100&sort=updated&direction=desc" \
+            > metrics/prs.json
+
+          python3 - <<'PY'
+          import json, re, datetime
+          from collections import Counter
+          prs=json.load(open("metrics/prs.json"))
+          c=Counter()
+          for pr in prs:
+            labels=[l["name"] for l in pr.get("labels",[])]
+            for name in labels:
+              m=re.search(r"\bA0?[1-9]\b|\bA10\b", name)
+              if m:
+                c[m.group(0)] += 1
+          out={
+            "window_days": 7,
+            "generated_utc": datetime.datetime.utcnow().isoformat()+"Z",
+            "counts": dict(sorted(c.items(), key=lambda x:x[0])),
+          }
+          open("metrics/owasp_weekly.json","w").write(json.dumps(out, indent=2))
+          print(json.dumps(out, indent=2))
+          PY
+
+      - name: Upload weekly metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-weekly-metrics
+          path: metrics/owasp_weekly.json
+
+      - name: Commit metrics (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep history in repo (optional). Remove this step if you prefer artifact-only.
+          git config user.name "devsecops-bot"
+          git config user.email "devsecops@vulnbank.local"
+          git add metrics/owasp_weekly.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(metrics): weekly OWASP trend"
+            git push
+          else
+            echo "[INFO] No changes"
+          fi
