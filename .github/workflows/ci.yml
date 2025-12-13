@@ -119,8 +119,33 @@ jobs:
             $REPORT_DIR/gitleaks.sarif
 
       # -------------------------------------------------
-      # SAST – Bandit
+      # SAST – Scan
       # -------------------------------------------------
+      - name: SAST Scan (Semgrep – OWASP/ASVS)
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            returntocorp/semgrep \
+            semgrep scan \
+              --config p/owasp-top-ten \
+              --config p/security-audit \
+              --config p/python \
+              --json \
+              --output $REPORT_DIR/semgrep.json \
+              --error
+
+      - name: Semgrep OWASP Gate
+        run: |
+          python3 scripts/semgrep_owasp_gate.py \
+            $REPORT_DIR/semgrep.json
+
+      - name: ASVS Coverage Report
+        run: |
+          python3 scripts/asvs_coverage.py \
+            $REPORT_DIR/semgrep.json \
+            $REPORT_DIR/bandit_dd.json \
+          | tee $REPORT_DIR/asvs-coverage.txt
+
       - name: SAST Scan (Bandit)
         run: |
           $PYTHON_BIN -m pip install -q bandit

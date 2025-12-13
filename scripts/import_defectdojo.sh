@@ -71,6 +71,9 @@ import_scan \
 
 # ---- SAST (NORMALIZED) ----
 import_scan \
+  "Semgrep Scan" \
+  "security-reports/semgrep.json" \
+  "source:semgrep,type:sast,owasp,asvs,${CI_TAGS}" \
   "Bandit Scan" \
   "security-reports/bandit_dd.json" \
   "source:bandit,type:sast,${CI_TAGS}"
