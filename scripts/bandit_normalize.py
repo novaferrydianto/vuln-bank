@@ -3,77 +3,53 @@ import json
 import sys
 from pathlib import Path
 
-SEVERITY_MAP = {
-    "LOW": "Low",
-    "MEDIUM": "Medium",
-    "HIGH": "High",
+INPUT = Path(sys.argv[1])
+OUTPUT = Path(sys.argv[2])
+
+# -------------------------------
+# Bandit → OWASP / ASVS Mapping
+# -------------------------------
+BANDIT_MAP = {
+    "B102": {"owasp": "A05:2021-Security Misconfiguration", "asvs": ["V14.2"]},
+    "B105": {"owasp": "A02:2021-Cryptographic Failures", "asvs": ["V7.1"]},
+    "B106": {"owasp": "A02:2021-Cryptographic Failures", "asvs": ["V7.1"]},
+    "B107": {"owasp": "A02:2021-Cryptographic Failures", "asvs": ["V7.1"]},
+    "B201": {"owasp": "A03:2021-Injection", "asvs": ["V5.3"]},
+    "B301": {"owasp": "A03:2021-Injection", "asvs": ["V5.3"]},
+    "B501": {"owasp": "A05:2021-Security Misconfiguration", "asvs": ["V14.4"]},
+    "B506": {"owasp": "A02:2021-Cryptographic Failures", "asvs": ["V7.2"]},
+    "B602": {"owasp": "A05:2021-Security Misconfiguration", "asvs": ["V14.1"]},
+    "B605": {"owasp": "A03:2021-Injection", "asvs": ["V5.3"]},
+    "B607": {"owasp": "A03:2021-Injection", "asvs": ["V5.3"]},
 }
 
-BANDIT_TO_OWASP_ASVS = {
-    "B101": ("A09:2021-Security Logging and Monitoring Failures", "ASVS V10"),
-    "B102": ("A03:2021-Injection", "ASVS V5"),
-    "B103": ("A05:2021-Security Misconfiguration", "ASVS V14"),
-    "B104": ("A05:2021-Security Misconfiguration", "ASVS V14"),
-    "B105": ("A02:2021-Cryptographic Failures", "ASVS V2"),
-    "B106": ("A02:2021-Cryptographic Failures", "ASVS V2"),
-    "B107": ("A02:2021-Cryptographic Failures", "ASVS V2"),
-    "B201": ("A05:2021-Security Misconfiguration", "ASVS V14"),
-    "B301": ("A08:2021-Software and Data Integrity Failures", "ASVS V10"),
-    "B302": ("A08:2021-Software and Data Integrity Failures", "ASVS V10"),
-    "B303": ("A02:2021-Cryptographic Failures", "ASVS V2"),
-    "B304": ("A02:2021-Cryptographic Failures", "ASVS V2"),
-    "B305": ("A02:2021-Cryptographic Failures", "ASVS V2"),
-    "B307": ("A03:2021-Injection", "ASVS V5"),
-    "B401": ("A05:2021-Security Misconfiguration", "ASVS V14"),
-    "B402": ("A05:2021-Security Misconfiguration", "ASVS V14"),
-    "B404": ("A03:2021-Injection", "ASVS V5"),
-    "B506": ("A08:2021-Software and Data Integrity Failures", "ASVS V10"),
-}
+# -------------------------------
+# Load Bandit
+# -------------------------------
+data = json.loads(INPUT.read_text())
+results = data.get("results", [])
 
-def main(src, dst):
-    src = Path(src)
-    dst = Path(dst)
+findings = []
 
-    if not src.exists():
-        dst.write_text(json.dumps({"results": []}))
-        return
+for r in results:
+    test_id = r.get("test_id")
+    mapping = BANDIT_MAP.get(test_id, {})
 
-    raw = json.loads(src.read_text())
-    findings = []
+    findings.append({
+        "title": r.get("issue_text"),
+        "severity": r.get("issue_severity", "LOW").upper(),
+        "confidence": r.get("issue_confidence"),
+        "file": r.get("filename"),
+        "line": r.get("line_number"),
+        "tool": "bandit",
+        "test_id": test_id,
+        "owasp": mapping.get("owasp", "A05:2021-Security Misconfiguration"),
+        "asvs": mapping.get("asvs", []),
+    })
 
-    for item in raw.get("results", []):
-        test_id = item.get("test_id", "B000")
-        owasp, asvs = BANDIT_TO_OWASP_ASVS.get(
-            test_id,
-            ("A05:2021-Security Misconfiguration", "ASVS V14")
-        )
+OUTPUT.write_text(json.dumps({
+    "tool": "bandit",
+    "findings": findings
+}, indent=2))
 
-        findings.append({
-            "title": item.get("issue_text", "Bandit finding"),
-            "severity": SEVERITY_MAP.get(item.get("issue_severity"), "Medium"),
-            "confidence": "Medium",
-            "file_path": item.get("filename"),
-            "line": item.get("line_number"),
-            "description": (
-                f"{item.get('issue_text')}\n\n"
-                f"Bandit Test ID: {test_id}\n"
-                f"More Info: {item.get('more_info', '')}"
-            ),
-            "static_finding": True,
-            "dynamic_finding": False,
-            "references": f"{owasp}\n{asvs}",
-            "tags": [
-                "source:bandit",
-                "type:sast",
-                owasp,
-                asvs
-            ]
-        })
-
-    dst.write_text(json.dumps({"results": findings}, indent=2))
-    print(f"[OK] Normalized Bandit findings: {len(findings)}")
-
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit(0)
-    main(sys.argv[1], sys.argv[2])
+print(f"[OK] Bandit normalized → {OUTPUT}")

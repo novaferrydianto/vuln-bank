@@ -159,7 +159,8 @@ jobs:
       - name: Semgrep OWASP Gate
         run: |
           python3 scripts/semgrep_owasp_gate.py \
-            $REPORT_DIR/semgrep.json
+            $REPORT_DIR/semgrep.json \
+            $REPORT_DIR/semgrep-baseline.json
 
       - name: ASVS Coverage Report
         run: |
