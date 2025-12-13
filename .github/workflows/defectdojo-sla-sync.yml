@@ -1,0 +1,28 @@
+name: DefectDojo – SLA Governance Sync
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # 08:00 WIB daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  defectdojo_sla_sync:
+    name: DefectDojo SLA Sync
+    runs-on: self-hosted
+
+    env:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync DefectDojo SLA
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/defectdojo_sla_sync.py
