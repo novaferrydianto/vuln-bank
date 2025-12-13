@@ -30,7 +30,7 @@ try:
         f"{DD_URL}/api/v2/findings/",
         headers=headers,
         params={"engagement": ENGAGEMENT_ID, "limit": 500},
-        timeout=10,   # ⬅️ IMPORTANT
+        timeout=10,
     )
     r.raise_for_status()
 except Exception as e:
@@ -45,7 +45,17 @@ for f in findings:
     if sev in summary:
         summary[sev] += 1
 
+total_findings = sum(summary.values())
+
+status_line = (
+    "✅ **No vulnerabilities detected in this scan**"
+    if total_findings == 0
+    else "⚠️ **Vulnerabilities detected – review required**"
+)
+
 comment = f"""### 🔐 Security Scan Summary (DefectDojo)
+
+{status_line}
 
 | Severity | Count |
 |---------|-------|

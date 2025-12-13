@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ======================================================
-# DefectDojo Import Script (CI-safe)
+# DefectDojo Import Script (CI-safe, Rocky-compatible)
 # ======================================================
 
 REQUIRED_VARS=(
@@ -52,7 +52,7 @@ import_scan () {
 }
 
 # ======================================================
-# Imports (MATCH workflow paths)
+# Imports (MATCH CI OUTPUT PATHS)
 # ======================================================
 
 CI_TAGS="ci:${GITHUB_RUN_ID:-local},repo:${GITHUB_REPOSITORY:-vuln-bank}"
@@ -64,12 +64,12 @@ import_scan \
 
 import_scan \
   "Trivy Scan" \
-  "security-reports/trivy/trivy-sca.json" \
+  "security-reports/trivy-sca.json" \
   "source:trivy,type:sca,${CI_TAGS}"
 
 import_scan \
   "Bandit Scan" \
-  "security-reports/bandit/bandit.json" \
+  "security-reports/bandit.json" \
   "source:bandit,type:sast,${CI_TAGS}"
 
 echo "[DONE] DefectDojo imports completed (CI-safe)"
