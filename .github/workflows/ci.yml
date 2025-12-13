@@ -22,9 +22,49 @@ env:
   ZAP_FAIL_SEVERITY: HIGH
 
 # =====================================================
-# 1️⃣ CONTINUOUS SECURITY ASSURANCE
+# 0️⃣ CREATE DEFECTDOJO ENGAGEMENT (PR-AWARE)
 # =====================================================
 jobs:
+  create_engagement:
+    name: Create DefectDojo Engagement
+    runs-on: self-hosted
+
+    outputs:
+      engagement_id: ${{ steps.export.outputs.engagement_id }}
+
+    env:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+      DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure jq exists
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo yum install -y epel-release
+            sudo yum install -y jq
+          fi
+
+      - name: Create or reuse engagement (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          chmod +x scripts/create_defectdojo_engagement.sh
+          bash scripts/create_defectdojo_engagement.sh
+
+      - name: Export engagement ID (fallback-safe)
+        id: export
+        run: |
+          if [ -z "${DEFECTDOJO_ENGAGEMENT_ID:-}" ]; then
+            echo "engagement_id=" >> "$GITHUB_OUTPUT"
+          else
+            echo "engagement_id=$DEFECTDOJO_ENGAGEMENT_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+# =====================================================
+# 1️⃣ CONTINUOUS SECURITY ASSURANCE
+# =====================================================
   security_scans:
     name: Continuous Security Assurance
     runs-on: self-hosted
@@ -210,7 +250,9 @@ jobs:
 # =====================================================
   import_defectdojo:
     name: Import Security Reports → DefectDojo
-    needs: security_scans
+    needs:
+      - security_scans
+      - create_engagement
     if: always()
     runs-on: self-hosted
 
@@ -218,13 +260,12 @@ jobs:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
       DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
-      DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+      DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id || secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download security reports artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
@@ -233,6 +274,60 @@ jobs:
         run: |
           chmod +x scripts/import_defectdojo.sh
           bash scripts/import_defectdojo.sh
+
+  pr_security_comment:
+    name: PR Comment – DefectDojo Summary
+    needs:
+      - create_engagement
+      - import_defectdojo
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    env:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+      DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Post PR security summary
+        run: |
+          python3 scripts/defectdojo_pr_summary.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  close_engagement:
+    name: Close DefectDojo Engagement (PR merged)
+    needs:
+      - create_engagement
+      - import_defectdojo
+    runs-on: self-hosted
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true
+
+    env:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+      DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
+
+    steps:
+      - name: Close engagement in DefectDojo
+        run: |
+          if [ -z "$DEFECTDOJO_ENGAGEMENT_ID" ]; then
+            echo "[SKIP] No engagement ID"
+            exit 0
+          fi
+
+          curl -sS -X PATCH \
+            "$DEFECTDOJO_URL/api/v2/engagements/$DEFECTDOJO_ENGAGEMENT_ID/" \
+            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"Completed"}'
+
+          echo "[OK] Engagement closed"
 
 # =====================================================
 # 3️⃣ ZAP ALERTS → GITHUB ISSUES
