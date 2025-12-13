@@ -13,6 +13,7 @@ concurrency:
   group: vuln-bank-${{ github.ref }}
   cancel-in-progress: true
 
+# Default least privilege
 permissions:
   contents: read
 
@@ -25,29 +26,36 @@ env:
   ZAP_FAIL_SEVERITY: HIGH
 
 # =====================================================
-# 0) DEFECTDOJO ENGAGEMENT (PR ONLY)
+# 0️⃣ DEFECTDOJO ENGAGEMENT (PR ONLY)
 # =====================================================
 jobs:
   create_engagement:
+    name: Create DefectDojo Engagement
     if: github.event_name == 'pull_request'
     runs-on: self-hosted
     permissions:
       contents: read
     outputs:
-      engagement_id: ${{ steps.out.outputs.id }}
+      engagement_id: ${{ steps.export.outputs.id }}
+
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
       DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+
     steps:
       - uses: actions/checkout@v4
-      - run: chmod +x scripts/create_defectdojo_engagement.sh
-      - run: bash scripts/create_defectdojo_engagement.sh
-      - id: out
+
+      - name: Create / reuse engagement
+        run: |
+          chmod +x scripts/create_defectdojo_engagement.sh
+          bash scripts/create_defectdojo_engagement.sh
+
+      - id: export
         run: echo "id=${DEFECTDOJO_ENGAGEMENT_ID:-}" >> "$GITHUB_OUTPUT"
 
 # =====================================================
-# 1) SECURITY SCANS (AUTHORITATIVE GATE)
+# 1️⃣ SECURITY SCANS (AUTHORITATIVE GATE)
 # =====================================================
   security_scans:
     name: Security Scans & Gates
@@ -57,22 +65,26 @@ jobs:
     permissions:
       contents: read
       security-events: write
+
     outputs:
       gate_failed: ${{ steps.gate.outputs.failed }}
+
     env:
       DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
 
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0, clean: false }
+        with:
+          fetch-depth: 0
+          clean: false
 
       - name: Prepare workspace
         run: |
-          mkdir -p $REPORT_DIR/{zap,governance}
-          mkdir -p $BASELINE_DIR .trivy-cache
-          rm -f $REPORT_DIR/gate_failed || true
+          mkdir -p "$REPORT_DIR/zap" "$REPORT_DIR/governance"
+          mkdir -p "$BASELINE_DIR" ".trivy-cache"
+          rm -f "$REPORT_DIR/gate_failed" || true
 
-      # ---------- Secrets ----------
+      # ---------- SECRETS ----------
       - name: Gitleaks
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
@@ -83,25 +95,30 @@ jobs:
             --exit-code 0
 
       - uses: github/codeql-action/upload-sarif@v4
-        with: { sarif_file: security-reports/gitleaks.sarif }
+        with:
+          sarif_file: security-reports/gitleaks.sarif
 
-      - run: $PYTHON_BIN scripts/gitleaks_gate.py $REPORT_DIR/gitleaks.sarif
+      - run: $PYTHON_BIN scripts/gitleaks_gate.py "$REPORT_DIR/gitleaks.sarif"
 
       # ---------- SAST ----------
       - name: Bandit
         run: |
           $PYTHON_BIN -m pip install -q bandit
           bandit -r app.py database.py auth.py ai_agent_deepseek.py \
-            -f json -o $REPORT_DIR/bandit.json || true
+            -f json -o "$REPORT_DIR/bandit.json" || true
 
-      - run: $PYTHON_BIN scripts/bandit_normalize.py \
-              $REPORT_DIR/bandit.json $REPORT_DIR/bandit_dd.json
+      - name: Normalize Bandit
+        run: |
+          $PYTHON_BIN scripts/bandit_normalize.py \
+            "$REPORT_DIR/bandit.json" \
+            "$REPORT_DIR/bandit_dd.json"
 
       - name: Semgrep (OWASP / ASVS)
         run: |
           if [ -f "$BASELINE_DIR/semgrep-baseline.json" ]; then
             cp "$BASELINE_DIR/semgrep-baseline.json" "$REPORT_DIR/semgrep-baseline.json"
           fi
+
           docker run --rm -v "$PWD:/src" returntocorp/semgrep \
             semgrep scan \
               --config p/owasp-top-ten \
@@ -110,13 +127,14 @@ jobs:
               --json \
               --output /src/$REPORT_DIR/semgrep.json || true
 
-      - run: |
+      - name: Semgrep OWASP Gate
+        run: |
           if [ -f "$REPORT_DIR/semgrep-baseline.json" ]; then
             $PYTHON_BIN scripts/semgrep_owasp_gate.py \
-              $REPORT_DIR/semgrep.json \
-              $REPORT_DIR/semgrep-baseline.json
+              "$REPORT_DIR/semgrep.json" \
+              "$REPORT_DIR/semgrep-baseline.json"
           else
-            $PYTHON_BIN scripts/semgrep_owasp_gate.py $REPORT_DIR/semgrep.json
+            $PYTHON_BIN scripts/semgrep_owasp_gate.py "$REPORT_DIR/semgrep.json"
           fi
 
       # ---------- SCA ----------
@@ -131,11 +149,12 @@ jobs:
             --format json \
             -o /work/$REPORT_DIR/trivy-sca.json
 
-      - run: |
+      - name: EPSS + KEV Gate
+        run: |
           $PYTHON_BIN scripts/epss_gate.py \
-            --input $REPORT_DIR/trivy-sca.json \
-            --output $REPORT_DIR/epss-findings.json \
-            --threshold $EPSS_THRESHOLD
+            --input "$REPORT_DIR/trivy-sca.json" \
+            --output "$REPORT_DIR/epss-findings.json" \
+            --threshold "$EPSS_THRESHOLD"
 
       # ---------- DAST ----------
       - run: docker build -t vuln-bank:ci -f containers/app/Dockerfile .
@@ -143,7 +162,7 @@ jobs:
 
       - name: ZAP Scan
         run: |
-          chmod -R 777 $REPORT_DIR/zap || true
+          chmod -R 777 "$REPORT_DIR/zap" || true
           docker run --rm --network vuln-bank_dastnet \
             -v "$PWD/$REPORT_DIR/zap:/zap/wrk" \
             -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml:ro" \
@@ -152,27 +171,28 @@ jobs:
 
       - run: |
           $PYTHON_BIN scripts/zap_severity_gate.py \
-            $REPORT_DIR/zap/zap_alerts.json $ZAP_FAIL_SEVERITY
+            "$REPORT_DIR/zap/zap_alerts.json" "$ZAP_FAIL_SEVERITY"
 
       - if: always()
         run: docker compose -f docker-compose.dast.yml down || true
 
-      # ---------- Governance Outputs ----------
-      - run: |
+      # ---------- GOVERNANCE OUTPUT ----------
+      - name: ASVS Export
+        run: |
           $PYTHON_BIN scripts/asvs_export.py \
-            --semgrep $REPORT_DIR/semgrep.json \
-            --bandit $REPORT_DIR/bandit_dd.json \
-            --out-json $REPORT_DIR/governance/asvs-coverage.json \
-            --out-md $REPORT_DIR/governance/asvs-coverage.md
+            --semgrep "$REPORT_DIR/semgrep.json" \
+            --bandit "$REPORT_DIR/bandit_dd.json" \
+            --out-json "$REPORT_DIR/governance/asvs-coverage.json" \
+            --out-md "$REPORT_DIR/governance/asvs-coverage.md"
 
       - name: Final Gate
         id: gate
         run: |
           if [ -f "$REPORT_DIR/gate_failed" ]; then
-            echo "failed=true" >> $GITHUB_OUTPUT
+            echo "failed=true" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          echo "failed=false" >> $GITHUB_OUTPUT
+          echo "failed=false" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -181,77 +201,92 @@ jobs:
           path: security-reports
 
 # =====================================================
-# 2) GOVERNANCE (PR SUMMARY + LABELS + REGRESSION)
+# 2️⃣ GOVERNANCE (PR LABELS + REGRESSION + METRICS)
 # =====================================================
   governance:
-    name: Governance (Summary / Labels / Regression)
+    name: Governance
     needs: [security_scans]
-    if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
       issues: write
 
+    outputs:
+      asvs_regression: ${{ steps.asvs.outputs.regression }}
+      epss_max:        ${{ steps.epss.outputs.max }}
+      zap_high:        ${{ steps.zap.outputs.high }}
+
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
+      - id: epss
+        run: |
+          python3 - <<'PY'
+          import json
+          p="security-reports/epss-findings.json"
+          mx=0.0
+          try:
+            d=json.load(open(p))
+            hr=d.get("high_risk",[])
+            if hr:
+              mx=max(float(v.get("epss",0)) for v in hr)
+          except Exception: pass
+          print(f"max={mx:.2f}")
+          PY | tee -a "$GITHUB_OUTPUT"
+
+      - id: zap
+        run: |
+          python3 - <<'PY'
+          import json
+          high=0
+          try:
+            d=json.load(open("security-reports/zap/zap_alerts.json"))
+            for s in d.get("site",[]):
+              for a in s.get("alerts",[]):
+                if str(a.get("riskcode"))=="3": high+=1
+          except Exception: pass
+          print(f"high={high}")
+          PY | tee -a "$GITHUB_OUTPUT"
+
+      - id: asvs
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          cur=pathlib.Path("security-reports/governance/asvs-coverage.json")
+          base=pathlib.Path("security-baselines/asvs-baseline.json")
+          reg=False
+          if cur.exists() and base.exists():
+            c=json.load(open(cur)).get("counts",{})
+            b=json.load(open(base)).get("counts",{})
+            for k in b:
+              if c.get(k,0) < b.get(k,0): reg=True
+          print(f"regression={'true' if reg else 'false'}")
+          PY | tee -a "$GITHUB_OUTPUT"
+
       - name: ASVS → OWASP Labels
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 scripts/asvs_to_labels.py
+        run: python3 scripts/asvs_to_labels.py
 
       - name: Block PR on ASVS regression
         if: github.event_name == 'pull_request'
-        env:
-          BASELINE_DIR: security-baselines
         run: |
-          python3 scripts/asvs_regression_gate.py \
-            security-reports/governance/asvs-coverage.json \
-            $BASELINE_DIR/asvs-baseline.json
+          if [ "${{ steps.asvs.outputs.regression }}" = "true" ]; then
+            echo "[GATE] ASVS regression detected"
+            exit 1
+          fi
 
 # =====================================================
-# 3) BASELINE UPDATE (MAIN ONLY, CLEAN RUN)
-# =====================================================
-  update_baselines:
-    needs: [security_scans, governance]
-    if: |
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
-      needs.security_scans.outputs.gate_failed == 'false'
-    runs-on: self-hosted
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: security-reports, path: security-reports }
-
-      - run: |
-          cp $REPORT_DIR/semgrep.json $BASELINE_DIR/semgrep-baseline.json
-          cp $REPORT_DIR/governance/asvs-coverage.json \
-             $BASELINE_DIR/asvs-baseline.json
-
-      - run: |
-          git config user.name "devsecops-bot"
-          git config user.email "devsecops@vulnbank.local"
-          git add $BASELINE_DIR || true
-          git diff --cached --quiet || \
-            git commit -m "chore(security): update baselines [auto]" && git push
-
-# =====================================================
-# 4) SLACK (RISK-AWARE, ENRICHED)
+# 3️⃣ SLACK (RISK-AWARE, ENRICHED)
 # =====================================================
   slack_notify:
-    name: Slack Alert – Risk Aware
+    name: Slack Alert
     needs: [security_scans, governance]
     runs-on: self-hosted
     if: |
@@ -269,8 +304,7 @@ jobs:
           name: security-reports
           path: security-reports
 
-      - name: Send Slack Alert
-        env:
+      - env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -278,29 +312,4 @@ jobs:
           ASVS_REGRESSION: ${{ needs.governance.outputs.asvs_regression }}
           EPSS_MAX: ${{ needs.governance.outputs.epss_max }}
           ZAP_HIGH: ${{ needs.governance.outputs.zap_high }}
-        run: |
-          python3 - <<'PY'
-          import os, json, urllib.request
-
-          text = (
-            "*🚨 Vuln Bank – DevSecOps Risk Alert*\n"
-            f"• Repo: `{os.getenv('REPO')}`\n"
-            f"• Run: `{os.getenv('RUN_ID')}`\n\n"
-            f"*Signals*\n"
-            f"• Gate failed: `{os.getenv('GATE_FAILED')}`\n"
-            f"• ASVS regression: `{os.getenv('ASVS_REGRESSION')}`\n"
-            f"• EPSS max: `{os.getenv('EPSS_MAX')}`\n"
-            f"• ZAP HIGH alerts: `{os.getenv('ZAP_HIGH')}`\n"
-          )
-
-          payload = {"text": text}
-
-          req = urllib.request.Request(
-            os.environ["SLACK_WEBHOOK_URL"],
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-          )
-          urllib.request.urlopen(req, timeout=10)
-          print("[OK] Slack alert sent")
-          PY
-  
+        run: python3 scripts/slack_decision.py
