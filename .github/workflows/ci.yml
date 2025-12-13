@@ -20,6 +20,7 @@ env:
   EPSS_THRESHOLD: "0.5"
   DAST_URL: http://vuln-bank-dast:5000
   ZAP_FAIL_SEVERITY: HIGH
+  ZAP_DEFECTDOJO_REPORT: security-reports/zap/zap_defectdojo.json
 
 # =====================================================
 # 0️⃣ CREATE DEFECTDOJO ENGAGEMENT (PR-AWARE)
@@ -27,6 +28,7 @@ env:
 jobs:
   create_engagement:
     name: Create DefectDojo Engagement
+    if: github.event_name == 'pull_request'
     runs-on: self-hosted
 
     outputs:
@@ -40,31 +42,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure jq exists
-        run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo yum install -y epel-release
-            sudo yum install -y jq
-          fi
-
-      - name: Create or reuse engagement (PR only)
-        if: github.event_name == 'pull_request'
+      - name: Create or reuse engagement
         run: |
           chmod +x scripts/create_defectdojo_engagement.sh
           bash scripts/create_defectdojo_engagement.sh
 
-      - name: Debug engagement output
-        run: |
-          echo "DEFECTDOJO_ENGAGEMENT_ID=${DEFECTDOJO_ENGAGEMENT_ID:-<empty>}"
-
-      - name: Export engagement ID (fallback-safe)
+      - name: Export engagement ID
         id: export
         run: |
-          if [ -z "${DEFECTDOJO_ENGAGEMENT_ID:-}" ]; then
-            echo "engagement_id=" >> "$GITHUB_OUTPUT"
-          else
-            echo "engagement_id=$DEFECTDOJO_ENGAGEMENT_ID" >> "$GITHUB_OUTPUT"
-          fi
+          echo "engagement_id=${DEFECTDOJO_ENGAGEMENT_ID:-}" >> "$GITHUB_OUTPUT"
 
 # =====================================================
 # 1️⃣ CONTINUOUS SECURITY ASSURANCE
@@ -72,6 +58,7 @@ jobs:
   security_scans:
     name: Continuous Security Assurance
     runs-on: self-hosted
+    needs: create_engagement
 
     outputs:
       gate_failed: ${{ steps.gate_decision.outputs.failed }}
@@ -88,10 +75,11 @@ jobs:
       - name: Prepare directories
         run: |
           mkdir -p $REPORT_DIR/zap
+          mkdir -p $REPORT_DIR/bandit
           mkdir -p .trivy-cache
 
       # -------------------------------------------------
-      # IaC – Checkov (non-root)
+      # IaC – Checkov 
       # -------------------------------------------------
       - name: IaC Scan (Checkov)
         run: |
@@ -105,7 +93,7 @@ jobs:
             > "$REPORT_DIR/checkov.json" || true
 
       # -------------------------------------------------
-      # Secrets – Gitleaks (SARIF + Gate)
+      # Secrets – Gitleaks
       # -------------------------------------------------
       - name: Secret Scan (Gitleaks)
         run: |
@@ -131,7 +119,7 @@ jobs:
             $REPORT_DIR/gitleaks.sarif
 
       # -------------------------------------------------
-      # SAST – Bandit → Sonar
+      # SAST – Bandit
       # -------------------------------------------------
       - name: SAST Scan (Bandit)
         run: |
@@ -142,6 +130,12 @@ jobs:
       - name: Merge SAST → Sonar
         run: |
           $PYTHON_BIN scripts/merge_security_to_sonar.py
+
+      - name: Bandit (DefectDojo)
+        run: |
+          $PYTHON_BIN scripts/bandit_normalize.py \
+            "$REPORT_DIR/bandit.json" \
+            "$REPORT_DIR/bandit_dd.json"
 
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@v2

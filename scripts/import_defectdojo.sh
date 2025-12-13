@@ -57,19 +57,22 @@ import_scan () {
 
 CI_TAGS="ci:${GITHUB_RUN_ID:-local},repo:${GITHUB_REPOSITORY:-vuln-bank}"
 
+# ---- DAST ----
 import_scan \
   "ZAP Scan" \
   "security-reports/zap/zap_alerts.json" \
   "source:zap,type:dast,${CI_TAGS}"
 
+# ---- SCA ----
 import_scan \
   "Trivy Scan" \
   "security-reports/trivy-sca.json" \
   "source:trivy,type:sca,${CI_TAGS}"
 
+# ---- SAST (NORMALIZED) ----
 import_scan \
   "Bandit Scan" \
-  "security-reports/bandit.json" \
+  "security-reports/bandit_dd.json" \
   "source:bandit,type:sast,${CI_TAGS}"
 
 echo "[DONE] DefectDojo imports completed (CI-safe)"
