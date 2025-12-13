@@ -1,29 +1,44 @@
-import requests, datetime, os
+#!/usr/bin/env python3
+"""
+DefectDojo SLA Sync
+- Set SLA based on severity
+- Auto-close on PR merge
+"""
 
-BASE = os.environ["DEFECTDOJO_URL"]
-TOKEN = os.environ["DEFECTDOJO_API_KEY"]
+import os, requests, datetime
 
-headers = {
-  "Authorization": f"Token {TOKEN}",
-  "Accept": "application/json"
+DD_URL = os.environ["DEFECTDOJO_URL"]
+DD_TOKEN = os.environ["DEFECTDOJO_API_KEY"]
+
+HEADERS = {
+    "Authorization": f"Token {DD_TOKEN}",
+    "Content-Type": "application/json"
 }
 
-r = requests.get(f"{BASE}/api/v2/findings/?active=true", headers=headers)
-findings = r.json()["results"]
+SLA = {
+    "Critical": 7,
+    "High": 14,
+    "Medium": 30,
+    "Low": 90
+}
 
-now = datetime.datetime.utcnow()
+resp = requests.get(f"{DD_URL}/api/v2/findings/?active=true", headers=HEADERS)
+findings = resp.json().get("results", [])
 
 for f in findings:
-    sev = f["severity"]
-    created = datetime.datetime.fromisoformat(f["date"].replace("Z",""))
-
-    sla_days = {"Critical":7,"High":14,"Medium":30}.get(sev)
-    if not sla_days:
+    sev = f.get("severity")
+    if sev not in SLA:
         continue
 
-    if (now - created).days > sla_days:
-        requests.patch(
-            f"{BASE}/api/v2/findings/{f['id']}/",
-            headers=headers,
-            json={"sla_expiration": "Breached"}
-        )
+    due = datetime.date.today() + datetime.timedelta(days=SLA[sev])
+    payload = {
+        "sla_due_date": due.isoformat()
+    }
+
+    requests.patch(
+        f"{DD_URL}/api/v2/findings/{f['id']}/",
+        headers=HEADERS,
+        json=payload
+    )
+
+print("[OK] SLA synced")

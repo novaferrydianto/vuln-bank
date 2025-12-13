@@ -1,36 +1,73 @@
-import os, json, datetime, urllib.request
+#!/usr/bin/env python3
+import os, json, datetime, urllib.request, urllib.parse
 
-repo = os.environ["REPO"]
-token = os.environ["GITHUB_TOKEN"]
+REPO = os.environ["REPO"]
+TOKEN = os.environ["GITHUB_TOKEN"]
 
-headers = {
-    "Authorization": f"Bearer {token}",
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
     "Accept": "application/vnd.github+json",
     "User-Agent": "vuln-bank-weekly-trend"
 }
 
-OWASP = {f"A{i:02}": 0 for i in range(1, 11)}
+NOW = datetime.datetime.utcnow()
+SINCE = (NOW - datetime.timedelta(days=7)).isoformat() + "Z"
 
-url = f"https://api.github.com/repos/{repo}/issues?state=all&per_page=100"
-req = urllib.request.Request(url, headers=headers)
-issues = json.load(urllib.request.urlopen(req))
+OWASP_KEYS = [f"A{i:02}" for i in range(1, 11)]
+counts = {k: 0 for k in OWASP_KEYS}
 
-for issue in issues:
-    for lbl in issue.get("labels", []):
-        name = lbl["name"].upper()
-        if name.startswith("OWASP:A"):
-            key = name.replace("OWASP:", "")
-            if key in OWASP:
-                OWASP[key] += 1
+def fetch_issues(page: int):
+    q = {
+        "state": "all",
+        "per_page": 100,
+        "page": page,
+        "since": SINCE
+    }
+    url = f"https://api.github.com/repos/{REPO}/issues?" + urllib.parse.urlencode(q)
+    req = urllib.request.Request(url, headers=HEADERS)
+    return json.load(urllib.request.urlopen(req))
 
-out = {
-    "repo": repo,
-    "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-    "owasp_counts": OWASP
+# --- paginate issues ---
+page = 1
+while True:
+    issues = fetch_issues(page)
+    if not issues:
+        break
+
+    for issue in issues:
+        for lbl in issue.get("labels", []):
+            name = (lbl.get("name") or "").upper()
+            if name.startswith("OWASP:A"):
+                key = name.replace("OWASP:", "")
+                if key in counts:
+                    counts[key] += 1
+    page += 1
+
+# --- output object ---
+result = {
+    "repo": REPO,
+    "window": "7d",
+    "generated_at": NOW.isoformat() + "Z",
+    "counts": counts
 }
 
-os.makedirs("security-metrics", exist_ok=True)
-with open("security-metrics/weekly-owasp.json", "w") as f:
-    json.dump(out, f, indent=2)
+# --- paths ---
+os.makedirs("security-metrics/weekly", exist_ok=True)
+os.makedirs("docs/data", exist_ok=True)
+
+latest_path = "docs/data/owasp-latest.json"
+history_path = "docs/data/owasp-history.jsonl"
+
+# --- write latest ---
+with open(latest_path, "w") as f:
+    json.dump(result, f, indent=2)
+
+# --- append history ---
+with open(history_path, "a") as f:
+    f.write(json.dumps(result) + "\n")
+
+# --- also keep raw copy ---
+with open("security-metrics/weekly/owasp-latest.json", "w") as f:
+    json.dump(result, f, indent=2)
 
 print("[OK] Weekly OWASP trend generated")
