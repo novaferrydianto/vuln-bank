@@ -212,7 +212,7 @@ jobs:
     name: Import Security Reports → DefectDojo
     needs: security_scans
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
@@ -221,64 +221,18 @@ jobs:
       DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download security reports artifact
         uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
-      # -----------------------------
-      # ZAP
-      # -----------------------------
-      - name: Import ZAP to DefectDojo
+      - name: Import all findings to DefectDojo
         run: |
-          if [ ! -f security-reports/zap/zap_alerts.json ]; then
-            echo "[SKIP] No ZAP report"
-            exit 0
-          fi
-
-          curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
-            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
-            -F "scan_type=ZAP Scan" \
-            -F "file=@security-reports/zap/zap_alerts.json" \
-            -F "product=$DEFECTDOJO_PRODUCT_ID" \
-            -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID" \
-            -F "active=true" \
-            -F "verified=true"
-
-      # -----------------------------
-      # Trivy
-      # -----------------------------
-      - name: Import Trivy to DefectDojo
-        run: |
-          if [ ! -f security-reports/trivy-sca.json ]; then
-            echo "[SKIP] No Trivy report"
-            exit 0
-          fi
-
-          curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
-            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
-            -F "scan_type=Trivy Scan" \
-            -F "file=@security-reports/trivy-sca.json" \
-            -F "product=$DEFECTDOJO_PRODUCT_ID" \
-            -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID"
-
-      # -----------------------------
-      # Bandit
-      # -----------------------------
-      - name: Import Bandit to DefectDojo
-        run: |
-          if [ ! -f security-reports/bandit.json ]; then
-            echo "[SKIP] No Bandit report"
-            exit 0
-          fi
-
-          curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
-            -H "Authorization: Token $DEFECTDOJO_API_KEY" \
-            -F "scan_type=Bandit Scan" \
-            -F "file=@security-reports/bandit.json" \
-            -F "product=$DEFECTDOJO_PRODUCT_ID" \
-            -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID"
+          chmod +x scripts/import_defectdojo.sh
+          bash scripts/import_defectdojo.sh
 
 # =====================================================
 # 3️⃣ ZAP ALERTS → GITHUB ISSUES
@@ -313,7 +267,7 @@ jobs:
     name: Slack Alert (Gate Failed)
     needs: security_scans
     if: needs.security_scans.outputs.gate_failed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Send Slack Alert
