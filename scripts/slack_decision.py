@@ -1,34 +1,123 @@
 #!/usr/bin/env python3
-import json, os
+"""
+Slack Notification – Governance Enriched
+
+Sources:
+- asvs-labels.json
+- epss-findings.json (optional)
+- zap_alerts.json (optional)
+- gate_failed marker
+
+Outputs:
+- Structured Slack message
+"""
+
+import json
+import os
 from pathlib import Path
+import urllib.request
 
-REPORT_DIR = os.environ.get("REPORT_DIR", "security-reports")
-EPSS_FILE = Path(REPORT_DIR) / "epss-findings.json"
+SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
+REPO = os.getenv("GITHUB_REPOSITORY", "unknown")
+RUN_ID = os.getenv("GITHUB_RUN_ID", "manual")
+PR = os.getenv("PR_NUMBER")
 
-data = {}
-if EPSS_FILE.exists():
-    data = json.load(open(EPSS_FILE))
+BASE = Path("security-reports")
+ASVS = BASE / "governance/asvs-labels.json"
+EPSS = BASE / "epss-findings.json"
+ZAP = BASE / "zap/zap_alerts.json"
+GATE = BASE / "gate_failed"
 
-high_risk = data.get("high_risk", [])
-total = data.get("total_trivy_high_crit", 0)
+def load(p):
+    return json.loads(p.read_text()) if p.exists() else {}
 
-should_notify = len(high_risk) > 0
+def main():
+    if not SLACK_WEBHOOK:
+        print("[SKIP] No Slack webhook")
+        return
 
-summary = {
-    "should_notify": should_notify,
-    "total_trivy_high_crit": total,
-    "high_risk_count": len(high_risk),
-    "top_findings": high_risk[:5],
-}
+    asvs = load(ASVS)
+    epss = load(EPSS)
+    zap = load(ZAP)
 
-(Path(REPORT_DIR) / "notify_slack.json").write_text(
-    json.dumps(summary, indent=2)
-)
+    risk_labels = asvs.get("risk_labels", [])
+    owasp = asvs.get("owasp_labels", [])
+    asvs_delta = asvs.get("asvs_delta", [])
 
-# GitHub output
-gh = os.environ.get("GITHUB_OUTPUT")
-if gh:
-    with open(gh, "a") as f:
-        f.write(f"should_notify={'true' if should_notify else 'false'}\n")
+    # --------------------------------------------------
+    # Headline
+    # --------------------------------------------------
+    if GATE.exists():
+        status = "🚨 *SECURITY GATE FAILED*"
+    elif "risk:high" in risk_labels:
+        status = "🔴 *HIGH RISK DETECTED*"
+    elif "risk:medium" in risk_labels:
+        status = "🟠 *MEDIUM RISK DETECTED*"
+    else:
+        status = "🟢 *SECURITY CHECK PASSED*"
 
-print(json.dumps(summary, indent=2))
+    lines = [
+        status,
+        f"*Repository:* `{REPO}`",
+        f"*Run ID:* `{RUN_ID}`",
+    ]
+
+    if PR:
+        lines.append(f"*PR:* `#{PR}`")
+
+    lines.append("")
+
+    # --------------------------------------------------
+    # ASVS / OWASP
+    # --------------------------------------------------
+    if asvs_delta:
+        lines.append("*ASVS Delta:*")
+        for a in asvs_delta[:6]:
+            lines.append(f"• `{a}`")
+
+    if owasp:
+        lines.append("")
+        lines.append("*OWASP Categories:*")
+        for o in owasp:
+            lines.append(f"• `{o}`")
+
+    # --------------------------------------------------
+    # EPSS
+    # --------------------------------------------------
+    high_risk = epss.get("high_risk", [])
+    if high_risk:
+        max_epss = max(v.get("epss", 0) for v in high_risk)
+        lines.append("")
+        lines.append(f"*EPSS Max:* `{max_epss:.2f}`")
+        for v in high_risk[:3]:
+            lines.append(
+                f"• `{v.get('cve')}` EPSS `{v.get('epss'):.2f}` ({', '.join(v.get('reasons', []))})"
+            )
+
+    # --------------------------------------------------
+    # ZAP Summary
+    # --------------------------------------------------
+    if zap:
+        alerts = zap.get("site", [{}])[0].get("alerts", [])
+        if alerts:
+            sev = {}
+            for a in alerts:
+                s = a.get("riskdesc", "unknown")
+                sev[s] = sev.get(s, 0) + 1
+            lines.append("")
+            lines.append("*ZAP Alerts:*")
+            for k, v in sev.items():
+                lines.append(f"• {k}: `{v}`")
+
+    payload = {"text": "\n".join(lines)}
+
+    req = urllib.request.Request(
+        SLACK_WEBHOOK,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    urllib.request.urlopen(req, timeout=10)
+    print("[OK] Slack notification sent")
+
+if __name__ == "__main__":
+    main()
