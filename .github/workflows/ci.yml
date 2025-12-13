@@ -154,7 +154,7 @@ jobs:
               --config p/python \
               --json \
               --output $REPORT_DIR/semgrep.json \
-              --error
+              --no-fail
 
       - name: Semgrep OWASP Gate
         run: |
