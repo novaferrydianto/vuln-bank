@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, sys, hashlib
+import json, sys, os, hashlib
 
 BLOCK_OWASP = {"A02", "A03"}
 BLOCK_SEVERITY = {"ERROR"}
@@ -10,11 +10,12 @@ def fingerprint(r):
 
 current = json.load(open(sys.argv[1]))
 
-baseline_file = "security-reports/semgrep-baseline.json"
 baseline = {"results": []}
-
 if len(sys.argv) == 3:
-    baseline = json.load(open(sys.argv[2]))
+    if os.path.exists(sys.argv[2]):
+        baseline = json.load(open(sys.argv[2]))
+    else:
+        print("[INFO] No baseline found – first run")
 
 baseline_fp = {fingerprint(r) for r in baseline.get("results", [])}
 
@@ -36,4 +37,4 @@ if violations:
         print(v)
     sys.exit(1)
 
-print("✅ No new OWASP A02/A03 issues")
+print("✅ Semgrep OWASP delta gate passed")
