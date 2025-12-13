@@ -1,0 +1,18 @@
+{
+  "threshold": 0.5,
+  "total_trivy_high_crit": 7,
+  "high_risk": [
+    {
+      "cve": "CVE-2024-12345",
+      "pkg_name": "openssl",
+      "installed_version": "1.1.1",
+      "fixed_version": "1.1.1u",
+      "severity": "CRITICAL",
+      "cvss": 9.8,
+      "epss": 0.91,
+      "percentile": 0.99,
+      "is_kev": true,
+      "reasons": ["EPSS>=0.5", "CISA_KEV"]
+    }
+  ]
+}

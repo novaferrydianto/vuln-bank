@@ -10,29 +10,29 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  issues: write
-  security-events: write
+  contents: write          # needed for baseline update on main
+  issues: write            # zap->issues
+  pull-requests: write     # PR comments + labels
+  security-events: write   # SARIF upload
 
 env:
   REPORT_DIR: security-reports
+  BASELINE_DIR: security-baselines
   PYTHON_BIN: python3.11
   EPSS_THRESHOLD: "0.5"
   DAST_URL: http://vuln-bank-dast:5000
   ZAP_FAIL_SEVERITY: HIGH
-  ZAP_DEFECTDOJO_REPORT: security-reports/zap/zap_defectdojo.json
 
 # =====================================================
-# 0️⃣ CREATE DEFECTDOJO ENGAGEMENT (PR-AWARE)
+# 0️⃣ DEFECTDOJO ENGAGEMENT (PR ONLY)
 # =====================================================
 jobs:
   create_engagement:
-    name: Create DefectDojo Engagement
+    name: Create DefectDojo Engagement (PR)
     if: github.event_name == 'pull_request'
     runs-on: self-hosted
-
     outputs:
-      engagement_id: ${{ steps.export.outputs.engagement_id }}
+      engagement_id: ${{ steps.out.outputs.id }}
 
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
@@ -47,26 +47,28 @@ jobs:
           chmod +x scripts/create_defectdojo_engagement.sh
           bash scripts/create_defectdojo_engagement.sh
 
-      - name: Export engagement ID
-        id: export
+      - id: out
+        name: Export engagement ID
         run: |
-          echo "engagement_id=${DEFECTDOJO_ENGAGEMENT_ID:-}" >> "$GITHUB_OUTPUT"
+          echo "id=${DEFECTDOJO_ENGAGEMENT_ID:-}" >> "$GITHUB_OUTPUT"
 
 # =====================================================
-# 1️⃣ CONTINUOUS SECURITY ASSURANCE
+# 1️⃣ SECURITY SCANS (ALWAYS)
 # =====================================================
   security_scans:
-    name: Continuous Security Assurance
+    name: Security Scans (SAST/SCA/DAST)
     runs-on: self-hosted
-    needs: create_engagement
+    needs: [create_engagement]
+    if: always()
+
+    env:
+      # will be empty on non-PR runs
+      DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
 
     outputs:
-      gate_failed: ${{ steps.gate_decision.outputs.failed }}
+      gate_failed: ${{ steps.gate.outputs.failed }}
 
     steps:
-      # -------------------------------------------------
-      # Checkout
-      # -------------------------------------------------
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -74,12 +76,14 @@ jobs:
 
       - name: Prepare directories
         run: |
-          mkdir -p $REPORT_DIR/zap
-          mkdir -p $REPORT_DIR/bandit
-          mkdir -p .trivy-cache
+          mkdir -p "$REPORT_DIR/zap"
+          mkdir -p "$BASELINE_DIR"
+          mkdir -p ".trivy-cache"
+          # ensure gate marker clean each run
+          rm -f "$REPORT_DIR/gate_failed" || true
 
       # -------------------------------------------------
-      # IaC – Checkov 
+      # IaC – Checkov
       # -------------------------------------------------
       - name: IaC Scan (Checkov)
         run: |
@@ -115,11 +119,10 @@ jobs:
 
       - name: Gitleaks Severity Gate
         run: |
-          $PYTHON_BIN scripts/gitleaks_gate.py \
-            $REPORT_DIR/gitleaks.sarif
+          $PYTHON_BIN scripts/gitleaks_gate.py "$REPORT_DIR/gitleaks.sarif"
 
       # -------------------------------------------------
-      # SAST – Scan
+      # SAST – Bandit + Sonar + Semgrep
       # -------------------------------------------------
       - name: SAST Scan (Bandit)
         run: |
@@ -131,7 +134,7 @@ jobs:
         run: |
           $PYTHON_BIN scripts/merge_security_to_sonar.py
 
-      - name: Bandit (DefectDojo)
+      - name: Bandit Normalize (DefectDojo-compatible)
         run: |
           $PYTHON_BIN scripts/bandit_normalize.py \
             "$REPORT_DIR/bandit.json" \
@@ -143,6 +146,16 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
+      - name: Load Semgrep baseline (repo)
+        run: |
+          # baseline file lives in repo under BASELINE_DIR
+          if [ -f "$BASELINE_DIR/semgrep-baseline.json" ]; then
+            cp "$BASELINE_DIR/semgrep-baseline.json" "$REPORT_DIR/semgrep-baseline.json"
+            echo "[INFO] Semgrep baseline loaded"
+          else
+            echo "[INFO] No Semgrep baseline in repo yet (first run)"
+          fi
+
       - name: SAST Scan (Semgrep – OWASP/ASVS)
         run: |
           docker run --rm \
@@ -153,27 +166,32 @@ jobs:
               --config p/security-audit \
               --config p/python \
               --json \
-              --output $REPORT_DIR/semgrep.json \
+              --output /src/$REPORT_DIR/semgrep.json \
             || true
 
-      - name: Semgrep OWASP Gate
+      - name: Semgrep OWASP Delta Gate (A02/A03 ERROR)
         run: |
-          python3 scripts/semgrep_owasp_gate.py \
-            $REPORT_DIR/semgrep.json \
-            $REPORT_DIR/semgrep-baseline.json
+          if [ -f "$REPORT_DIR/semgrep-baseline.json" ]; then
+            $PYTHON_BIN scripts/semgrep_owasp_gate.py \
+            "$REPORT_DIR/semgrep.json" \
+            "$REPORT_DIR/semgrep-baseline.json"
+          else
+            $PYTHON_BIN scripts/semgrep_owasp_gate.py \
+            "$REPORT_DIR/semgrep.json"
+          fi
 
       - name: ASVS Coverage Report
         run: |
-          python3 scripts/asvs_coverage.py \
-            $REPORT_DIR/semgrep.json \
-            $REPORT_DIR/bandit_dd.json \
-          | tee $REPORT_DIR/asvs-coverage.txt
+          $PYTHON_BIN scripts/asvs_coverage.py \
+            "$REPORT_DIR/semgrep.json" \
+            "$REPORT_DIR/bandit_dd.json" \
+          | tee "$REPORT_DIR/asvs-coverage.txt"
 
-      - name: PR Risk Score
+      - name: PR Risk Score (SAST)
         run: |
-          python3 scripts/pr_risk_score.py \
-            $REPORT_DIR/bandit_dd.json \
-            $REPORT_DIR/semgrep.json
+          $PYTHON_BIN scripts/pr_risk_score.py \
+            "$REPORT_DIR/bandit_dd.json" \
+            "$REPORT_DIR/semgrep.json"
 
       # -------------------------------------------------
       # SCA – Trivy FS (non-root)
@@ -197,9 +215,7 @@ jobs:
       # -------------------------------------------------
       - name: Build Application Image
         run: |
-          docker build \
-            -f containers/app/Dockerfile \
-            -t vuln-bank:ci .
+          docker build -f containers/app/Dockerfile -t vuln-bank:ci .
 
       - name: Start DAST Stack
         run: |
@@ -219,7 +235,8 @@ jobs:
 
       - name: ZAP Automation Scan
         run: |
-          chmod -R 777 $REPORT_DIR/zap
+          # avoid chmod failures on self-hosted: best-effort only
+          chmod -R 777 "$REPORT_DIR/zap" || true
 
           docker run --rm \
             --network vuln-bank_dastnet \
@@ -229,20 +246,21 @@ jobs:
             ghcr.io/zaproxy/zaproxy:stable \
             zap.sh -cmd -autorun /zap/automation.yml
 
-          test -f $REPORT_DIR/zap/zap_alerts.json
+          test -f "$REPORT_DIR/zap/zap_alerts.json"
 
       - name: ZAP Severity Gate
         run: |
           $PYTHON_BIN scripts/zap_severity_gate.py \
-            $REPORT_DIR/zap/zap_alerts.json \
-            $ZAP_FAIL_SEVERITY
+            "$REPORT_DIR/zap/zap_alerts.json" \
+            "$ZAP_FAIL_SEVERITY"
 
       - name: Stop DAST Stack
         if: always()
-        run: docker compose -f docker-compose.dast.yml down || true
+        run: |
+          docker compose -f docker-compose.dast.yml down || true
 
       # -------------------------------------------------
-      # EPSS + CISA KEV Gate
+      # EPSS + CISA KEV Gate (writes epss-findings.json + may create gate_failed)
       # -------------------------------------------------
       - name: EPSS + CISA KEV Gate
         run: |
@@ -256,7 +274,7 @@ jobs:
       # Final Gate Decision
       # -------------------------------------------------
       - name: Gate Decision
-        id: gate_decision
+        id: gate
         run: |
           if [ -f "$REPORT_DIR/gate_failed" ]; then
             echo "failed=true" >> "$GITHUB_OUTPUT"
@@ -266,7 +284,30 @@ jobs:
           fi
 
       # -------------------------------------------------
-      # Artifacts (ONE TIME)
+      # Persist Semgrep baseline on main (auto-write)
+      # -------------------------------------------------
+      - name: Update Semgrep baseline (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          # Store current scan output as new baseline
+          mkdir -p "$BASELINE_DIR"
+          cp "$REPORT_DIR/semgrep.json" "$BASELINE_DIR/semgrep-baseline.json"
+
+          # Commit baseline back to repo (idempotent)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "[INFO] Baseline unchanged"
+            exit 0
+          fi
+
+          git add "$BASELINE_DIR/semgrep-baseline.json"
+          git commit -m "chore(security): update semgrep baseline [skip ci]" || true
+          git push || true
+
+      # -------------------------------------------------
+      # Artifacts
       # -------------------------------------------------
       - name: Upload Security Reports
         if: always()
@@ -280,9 +321,7 @@ jobs:
 # =====================================================
   import_defectdojo:
     name: Import Security Reports → DefectDojo
-    needs:
-      - security_scans
-      - create_engagement
+    needs: [security_scans, create_engagement]
     if: always()
     runs-on: self-hosted
 
@@ -290,7 +329,6 @@ jobs:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
       DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
-      DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id || secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -300,16 +338,25 @@ jobs:
           name: security-reports
           path: security-reports
 
+      - name: Resolve engagement ID
+        run: |
+          if [ -n "${{ needs.create_engagement.outputs.engagement_id }}" ]; then
+            echo "DEFECTDOJO_ENGAGEMENT_ID=${{ needs.create_engagement.outputs.engagement_id }}" >> "$GITHUB_ENV"
+          else
+            echo "DEFECTDOJO_ENGAGEMENT_ID=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" >> "$GITHUB_ENV"
+          fi
+
       - name: Import all findings to DefectDojo
         run: |
           chmod +x scripts/import_defectdojo.sh
           bash scripts/import_defectdojo.sh
 
+# =====================================================
+# 3️⃣ PR COMMENT – DEFECTDOJO SUMMARY (PR ONLY)
+# =====================================================
   pr_security_comment:
     name: PR Comment – DefectDojo Summary
-    needs:
-      - create_engagement
-      - import_defectdojo
+    needs: [create_engagement, import_defectdojo]
     if: github.event_name == 'pull_request'
     runs-on: self-hosted
     continue-on-error: true
@@ -319,21 +366,23 @@ jobs:
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
       DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Post PR security summary
         run: |
-          python3 scripts/defectdojo_pr_summary.py
+          $PYTHON_BIN scripts/defectdojo_pr_summary.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+# =====================================================
+# 4️⃣ CLOSE ENGAGEMENT ON PR MERGE
+# =====================================================
   close_engagement:
     name: Close DefectDojo Engagement (PR merged)
-    needs:
-      - create_engagement
-      - import_defectdojo
+    needs: [create_engagement, import_defectdojo]
     runs-on: self-hosted
     if: >
       github.event_name == 'pull_request' &&
@@ -361,7 +410,7 @@ jobs:
           echo "[OK] Engagement closed"
 
 # =====================================================
-# 3️⃣ ZAP ALERTS → GITHUB ISSUES
+# 5️⃣ ZAP ALERTS → GITHUB ISSUES
 # =====================================================
   zap_create_issues:
     name: ZAP Alerts → GitHub Issues
@@ -370,7 +419,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ✅ REQUIRED: bring scripts into workspace
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
@@ -387,19 +435,60 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
 # =====================================================
-# SLACK NOTIFICATION
+# 6️⃣ SLACK NOTIFICATION (Critical OR EPSS/KEV risk)
 # =====================================================
   slack_notify:
-    name: Slack Alert (Gate Failed)
-    needs: security_scans
-    if: needs.security_scans.outputs.gate_failed == 'true'
+    name: Slack Alert (Critical / EPSS High-Risk)
+    needs: [security_scans]
+    if: always()
     runs-on: self-hosted
 
     steps:
-      - name: Send Slack Alert
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      - name: Send Slack Alert (based on gate_failed / epss-findings.json)
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          curl -X POST -H "Content-Type: application/json" \
-            --data "{
-              \"text\": \"🚨 *Vuln Bank Security Gate FAILED*\\nRepo: ${{ github.repository }}\\nRun: ${{ github.run_id }}\"
-            }" \
-            "${{ secrets.SLACK_WEBHOOK_URL }}"
+          # Preferred: use a script if you have it
+          if [ -f "scripts/slack_decision.py" ]; then
+            python3 scripts/slack_decision.py
+            exit 0
+          fi
+
+          # Fallback: minimal logic (no extra scripts)
+          if [ -f "security-reports/gate_failed" ]; then
+            curl -X POST -H "Content-Type: application/json" \
+              --data "{
+                \"text\": \"🚨 *Vuln Bank Security Gate FAILED*\\nRepo: ${{ github.repository }}\\nRun: ${{ github.run_id }}\"
+              }" \
+              "$SLACK_WEBHOOK_URL"
+            exit 0
+          fi
+
+          if [ -f "security-reports/epss-findings.json" ]; then
+            python3 - <<'PY'
+              import json, os
+              p="security-reports/epss-findings.json"
+              d=json.load(open(p))
+              hr=d.get("high_risk",[])
+              if not hr:
+                print("[OK] No EPSS high-risk")
+                raise SystemExit(0)
+              msg = ["🚨 *EPSS / KEV HIGH-RISK DETECTED*",
+                     f"Threshold: `{d.get('threshold')}`",
+                     f"Findings: `{len(hr)}`", ""]
+              for v in hr[:5]:
+                msg.append(f"- `{v.get('cve')}` | EPSS `{float(v.get('epss',0)):.2f}` | {', '.join(v.get('reasons',[]))}")
+              payload={"text":"\n".join(msg)}
+              import urllib.request
+              req=urllib.request.Request(os.environ["SLACK_WEBHOOK_URL"],
+                           data=json.dumps(payload).encode(),
+                           headers={"Content-Type":"application/json"})
+              urllib.request.urlopen(req, timeout=10)
+              print("[ALERT] Slack sent")
+            PY
+          fi
