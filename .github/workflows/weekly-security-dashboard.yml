@@ -21,14 +21,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      # --------------------------------------------------------
+      # Setup runtime
+      # --------------------------------------------------------
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install jsonschema requests
+
+      # --------------------------------------------------------
+      # 1) Generate OWASP weekly trend
+      # --------------------------------------------------------
       - name: Generate OWASP weekly trend (GitHub labels)
         env:
           REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          python3 scripts/owasp_weekly_trend.py
+          python scripts/owasp_weekly_trend.py
 
+      # --------------------------------------------------------
+      # 2) Generate DefectDojo SLA weekly report
+      # --------------------------------------------------------
       - name: Generate DefectDojo SLA weekly breach report
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
@@ -36,33 +55,80 @@ jobs:
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
         run: |
           set -euo pipefail
-          python3 scripts/defectdojo_sla_weekly.py
+          python scripts/defectdojo_sla_weekly.py
 
+      # --------------------------------------------------------
+      # 3) Validate SLA weekly JSON (contract)
+      # --------------------------------------------------------
+      - name: Validate DefectDojo SLA weekly schema
+        run: |
+          set -euo pipefail
+          python - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          with open("schemas/defectdojo-sla-weekly.schema.json") as s:
+              schema = json.load(s)
+          with open("docs/data/defectdojo-sla-weekly.json") as d:
+              data = json.load(d)
+
+          validate(instance=data, schema=schema)
+          print("✅ defectdojo-sla-weekly.json schema valid")
+          EOF
+
+      # --------------------------------------------------------
+      # 4) Generate Security Scorecard
+      # --------------------------------------------------------
       - name: Generate Security Scorecard (OWASP × EPSS × SLA)
         env:
           EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
         run: |
           set -euo pipefail
-          python3 scripts/security_scorecard.py
+          python scripts/security_scorecard.py
 
+      # --------------------------------------------------------
+      # 5) Validate Security Scorecard JSON (contract)
+      # --------------------------------------------------------
+      - name: Validate Security Scorecard schema
+        run: |
+          set -euo pipefail
+          python - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          with open("schemas/security-scorecard.schema.json") as s:
+              schema = json.load(s)
+          with open("docs/data/security-scorecard.json") as d:
+              data = json.load(d)
+
+          validate(instance=data, schema=schema)
+          print("✅ security-scorecard.json schema valid")
+          EOF
+
+      # --------------------------------------------------------
+      # 6) Upload artifacts
+      # --------------------------------------------------------
       - name: Upload weekly metrics artifact
         uses: actions/upload-artifact@v4
         with:
           name: weekly-security-dashboard
           path: |
-            security-metrics/weekly
             docs/data
+            security-metrics/weekly
 
-      - name: Commit docs/data + security-metrics
+      # --------------------------------------------------------
+      # 7) Commit results (only if changed)
+      # --------------------------------------------------------
+      - name: Commit weekly security dashboard data
         run: |
           set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
 
-          git add docs/data security-metrics/weekly security-assets.json || true
+          git add docs/data security-metrics/weekly
 
           if ! git diff --cached --quiet; then
-            git commit -m "chore(security): weekly dashboard data update"
+            git commit -m "chore(security): weekly security dashboard update"
             git push
           else
             echo "[INFO] No weekly data changes"
