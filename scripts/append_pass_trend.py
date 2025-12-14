@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-Append weekly ASVS PASS% trend (executive sparkline)
+Append weekly ASVS PASS percentage to trend history.
 
 Input:
   - docs/data/governance/asvs-coverage.json
 
 Output:
-  - docs/data/trends/asvs-pass-trend.json
+  - docs/data/trends/asvs-pass-weekly.json
 
-Behavior:
-  - Append once per ISO week (YYYY-WW)
-  - Idempotent (won't duplicate same week)
-  - Audit-friendly, append-only
+Safe to run weekly (idempotent per week).
 """
 
 from __future__ import annotations
@@ -19,65 +16,61 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
-ASVS_PATH = Path("docs/data/governance/asvs-coverage.json")
-OUT_PATH = Path("docs/data/trends/asvs-pass-trend.json")
+
+ASVS_INPUT = Path("docs/data/governance/asvs-coverage.json")
+TREND_OUT  = Path("docs/data/trends/asvs-pass-weekly.json")
 
 
-def iso_week_now() -> str:
+def current_week() -> str:
+    # ISO week anchor (Monday)
     now = datetime.now(timezone.utc)
     year, week, _ = now.isocalendar()
     return f"{year}-W{week:02d}"
 
 
-def read_json(path: Path, default):
-    if not path.exists():
+def load_json(p: Path, default):
+    if not p.exists():
         return default
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return default
 
 
-def main() -> None:
-    if not ASVS_PATH.exists():
-        raise SystemExit(f"[ERROR] Missing ASVS coverage: {ASVS_PATH}")
+def main():
+    if not ASVS_INPUT.exists():
+        raise SystemExit(f"[ERROR] Missing {ASVS_INPUT}")
 
-    asvs = read_json(ASVS_PATH, {})
+    asvs = load_json(ASVS_INPUT, {})
     summary = asvs.get("summary", {})
 
     pass_pct = summary.get("coverage_percent")
-    total = summary.get("total")
-
     if pass_pct is None:
-        raise SystemExit("[ERROR] coverage_percent missing in ASVS summary")
+        raise SystemExit("[ERROR] coverage_percent not found in ASVS summary")
 
-    week = iso_week_now()
+    week = current_week()
 
-    trend = read_json(OUT_PATH, {
-        "meta": {
-            "metric": "asvs_pass_percent",
-            "unit": "%",
-            "source": "OWASP ASVS",
-        },
-        "data": []
-    })
+    trend = load_json(TREND_OUT, {"series": []})
+    series = trend.get("series", [])
 
-    # Prevent duplicate week
-    if any(row.get("week") == week for row in trend["data"]):
-        print(f"[INFO] Week {week} already recorded, skipping")
-        return
+    # remove existing entry for same week (idempotent)
+    series = [x for x in series if x.get("week") != week]
 
-    trend["data"].append({
+    series.append({
         "week": week,
-        "pass_percent": round(float(pass_pct), 2),
-        "controls": total,
-        "recorded_at": datetime.now(timezone.utc).isoformat()
+        "pass_percent": int(round(pass_pct))
     })
 
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(json.dumps(trend, indent=2), encoding="utf-8")
+    # keep sorted
+    series = sorted(series, key=lambda x: x["week"])
 
-    print(f"[OK] Appended ASVS PASS% trend for {week}: {pass_pct}%")
+    TREND_OUT.parent.mkdir(parents=True, exist_ok=True)
+    TREND_OUT.write_text(
+        json.dumps({"series": series}, indent=2),
+        encoding="utf-8"
+    )
+
+    print(f"[OK] ASVS PASS trend appended: week={week}, pass={pass_pct}%")
 
 
 if __name__ == "__main__":

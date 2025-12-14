@@ -25,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # required for weekly append history
 
       # =================================================
       # Runtime
@@ -78,6 +78,7 @@ jobs:
           python3 - << 'EOF'
           import json
           from jsonschema import validate
+
           validate(
             json.load(open("docs/data/defectdojo-sla-weekly.json")),
             json.load(open("schemas/defectdojo-sla-weekly.schema.json"))
@@ -104,6 +105,7 @@ jobs:
           python3 - << 'EOF'
           import json
           from jsonschema import validate
+
           validate(
             json.load(open("docs/data/security-scorecard.json")),
             json.load(open("schemas/security-scorecard.schema.json"))
