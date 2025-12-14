@@ -67,6 +67,7 @@ def trivy_findings(data):
 def evaluate_control(control, signals):
     decision = control.get("decision", {})
     hits = []
+    owners = set()
 
     for tool in control.get("tools", []):
         tool_name = tool["tool"]
@@ -77,26 +78,28 @@ def evaluate_control(control, signals):
         if tool_name == "trivy":
             for v in findings:
                 if v.get("Severity") in tool.get("severity_fail", []):
+                    owners.add("trivy")
                     if tool.get("kev_block") and v.get("KEV", False):
-                        return "FAIL", ["KEV detected"]
+                        return "FAIL", ["KEV detected"], sorted(owners)
         else:
             matched = rule_ids & findings
             if matched:
                 hits.extend(sorted(matched))
+                owners.add(tool_name)
 
     if decision.get("immediate_fail") and hits:
-        return "FAIL", hits
+        return "FAIL", hits, sorted(owners)
 
     if decision.get("fail_if_any") and hits:
-        return "FAIL", hits
+        return "FAIL", hits, sorted(owners)
 
     if hits:
-        return "PARTIAL", hits
+        return "PARTIAL", hits, sorted(owners)
 
     if control.get("automation") == "manual":
-        return "MANUAL", []
+        return "MANUAL", [], []
 
-    return "PASS", []
+    return "PASS", [], []
 
 # --------------------------------------------------
 # Main
@@ -113,21 +116,25 @@ def main(args):
     }
 
     results = []
-    summary_counts = defaultdict(int)
+    status_counts = defaultdict(int)
+    family_summary = defaultdict(lambda: defaultdict(int))
 
+    scoring = tool_map.get("scoring", {})
     score = 0
     max_score = 0
 
-    scoring = tool_map.get("scoring", {})
-
     for ctrl in tool_map.get("controls", []):
-        status, evidence = evaluate_control(ctrl, signals)
+        status, evidence, owners = evaluate_control(ctrl, signals)
 
-        summary_counts[status] += 1
+        status_counts[status] += 1
 
         if status != "MANUAL":
             max_score += 1
             score += scoring.get(status.lower(), 0)
+
+        family = ctrl["id"].split(".")[0]  # V1, V2, ...
+
+        family_summary[family][status] += 1
 
         results.append({
             "id": ctrl["id"],
@@ -135,10 +142,14 @@ def main(args):
             "level": ctrl["level"],
             "owasp": ctrl.get("owasp", []),
             "status": status,
-            "evidence": evidence
+            "evidence": evidence,
+            "owners": owners,  # 🔑 tool ownership
         })
 
-    pass_percent = round((score / max_score) * 100, 2) if max_score else 0
+    total = len(results)
+    passed = status_counts.get("PASS", 0)
+    failed = status_counts.get("FAIL", 0)
+    coverage_percent = round((passed / total) * 100, 2) if total else 0
 
     output = {
         "meta": {
@@ -147,12 +158,16 @@ def main(args):
             "repo": os.getenv("GITHUB_REPOSITORY", "local"),
         },
         "summary": {
-            "total": len(results),
-            "pass": summary_counts.get("PASS", 0),
-            "fail": summary_counts.get("FAIL", 0),
-            "partial": summary_counts.get("PARTIAL", 0),
-            "manual": summary_counts.get("MANUAL", 0),
-            "pass_percent": pass_percent,
+            # ✅ REQUIRED by schema
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "coverage_percent": coverage_percent,
+
+            # ➕ Allowed extensions
+            "partial": status_counts.get("PARTIAL", 0),
+            "manual": status_counts.get("MANUAL", 0),
+            "families": family_summary,
         },
         "controls": results,
     }
