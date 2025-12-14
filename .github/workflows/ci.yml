@@ -277,10 +277,14 @@ jobs:
         run: |
           set -euo pipefail
           "${PYTHON_BIN}" scripts/asvs_export.py \
+            --tool-map schemas/asvs-tool-map.json \
             --semgrep "${REPORT_DIR}/semgrep.json" \
             --bandit "${REPORT_DIR}/bandit_dd.json" \
-            --out-json "${REPORT_DIR}/governance/asvs-coverage.json" \
-            --out-md "${REPORT_DIR}/governance/asvs-coverage.md"
+            --zap "${REPORT_DIR}/zap/zap_alerts.json" \
+            --trivy "${REPORT_DIR}/trivy-sca.json" \
+            --gitleaks "${REPORT_DIR}/gitleaks.sarif" \
+            --out-json "${REPORT_DIR}/governance/asvs-coverage.json"
+
           test -f "${REPORT_DIR}/governance/asvs-coverage.json"
 
       - name: Validate ASVS coverage schema
