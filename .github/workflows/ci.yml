@@ -272,7 +272,7 @@ jobs:
           docker compose -f docker-compose.dast.yml down || true
 
 # ---------------- ASVS ----------------
-      - name: ASVS export (JSON + MD)
+      - name: ASVS export (JSON)
         shell: bash
         run: |
           set -euo pipefail

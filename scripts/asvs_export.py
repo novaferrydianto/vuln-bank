@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """
-ASVS Export – Tool-Mapped (Deterministic)
+ASVS Export – Tool-Mapped (Deterministic, Schema-Compliant)
 
 Consumes:
 - schemas/asvs-tool-map.json
 - Semgrep / Bandit / ZAP / Trivy / Gitleaks outputs
 
 Produces:
-- governance/asvs-coverage.json
-- governance/asvs-coverage.md
+- security-reports/governance/asvs-coverage.json
+
+Design:
+- Schema-first (audit-ready)
+- Deterministic scoring
+- CI / Slack / Pages compatible
 """
 
 import json
 import argparse
+import os
 from pathlib import Path
+from datetime import datetime
 from collections import defaultdict
 
 # --------------------------------------------------
-# Loaders
+# Utils
 # --------------------------------------------------
 def load_json(path):
-    if not path or not Path(path).exists():
+    if not path:
         return {}
-    return json.loads(Path(path).read_text())
+    p = Path(path)
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
 
 # --------------------------------------------------
 # Tool adapters (normalize signals)
@@ -41,7 +50,10 @@ def zap_findings(data):
     return rules
 
 def gitleaks_findings(data):
-    return {r.get("ruleId") for r in data.get("runs", [{}])[0].get("results", [])}
+    runs = data.get("runs", [])
+    if not runs:
+        return set()
+    return {r.get("ruleId") for r in runs[0].get("results", [])}
 
 def trivy_findings(data):
     vulns = []
@@ -50,7 +62,7 @@ def trivy_findings(data):
     return vulns
 
 # --------------------------------------------------
-# ASVS Evaluation
+# ASVS evaluation logic
 # --------------------------------------------------
 def evaluate_control(control, signals):
     decision = control.get("decision", {})
@@ -61,6 +73,7 @@ def evaluate_control(control, signals):
         rule_ids = set(tool.get("rules", []))
         findings = signals.get(tool_name, set())
 
+        # Trivy special handling (severity + KEV)
         if tool_name == "trivy":
             for v in findings:
                 if v.get("Severity") in tool.get("severity_fail", []):
@@ -69,7 +82,7 @@ def evaluate_control(control, signals):
         else:
             matched = rule_ids & findings
             if matched:
-                hits.extend(list(matched))
+                hits.extend(sorted(matched))
 
     if decision.get("immediate_fail") and hits:
         return "FAIL", hits
@@ -96,23 +109,25 @@ def main(args):
         "bandit": bandit_findings(load_json(args.bandit)),
         "zap": zap_findings(load_json(args.zap)),
         "gitleaks": gitleaks_findings(load_json(args.gitleaks)),
-        "trivy": trivy_findings(load_json(args.trivy))
+        "trivy": trivy_findings(load_json(args.trivy)),
     }
 
     results = []
+    summary_counts = defaultdict(int)
+
     score = 0
     max_score = 0
 
-    for ctrl in tool_map["controls"]:
+    scoring = tool_map.get("scoring", {})
+
+    for ctrl in tool_map.get("controls", []):
         status, evidence = evaluate_control(ctrl, signals)
 
-        weight = tool_map["scoring"].get(
-            status.lower(), 0
-        )
+        summary_counts[status] += 1
 
         if status != "MANUAL":
             max_score += 1
-            score += weight
+            score += scoring.get(status.lower(), 0)
 
         results.append({
             "id": ctrl["id"],
@@ -123,16 +138,30 @@ def main(args):
             "evidence": evidence
         })
 
-    coverage = {
-        "summary": {
-            "controls": len(results),
-            "pass_percent": round((score / max_score) * 100, 2) if max_score else 0
+    pass_percent = round((score / max_score) * 100, 2) if max_score else 0
+
+    output = {
+        "meta": {
+            "asvs_version": tool_map.get("asvs_version", "4.x"),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "repo": os.getenv("GITHUB_REPOSITORY", "local"),
         },
-        "controls": results
+        "summary": {
+            "total": len(results),
+            "pass": summary_counts.get("PASS", 0),
+            "fail": summary_counts.get("FAIL", 0),
+            "partial": summary_counts.get("PARTIAL", 0),
+            "manual": summary_counts.get("MANUAL", 0),
+            "pass_percent": pass_percent,
+        },
+        "controls": results,
     }
 
-    Path(args.out_json).write_text(json.dumps(coverage, indent=2))
-    print(f"[OK] ASVS coverage written → {args.out_json}")
+    out = Path(args.out_json)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(output, indent=2), encoding="utf-8")
+
+    print(f"[OK] ASVS coverage written → {out}")
 
 # --------------------------------------------------
 if __name__ == "__main__":
