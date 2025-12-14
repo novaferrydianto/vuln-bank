@@ -4,7 +4,7 @@ title = "Vuln Bank Enterprise Gitleaks Policy"
 useDefault = true
 
 [allowlist]
-description = "Ignore CI artifacts, caches, documentation"
+description = "Ignore CI artifacts, caches, generated files, documentation"
 paths = [
   '''^security-reports/''',
   '''^\.scannerwork/''',
@@ -13,10 +13,11 @@ paths = [
   '''^__pycache__/''',
   '''^\.venv/''',
   '''^venv/''',
+  '''^scripts/''',
+  '''^tools/''',
   '''^docs/'''
 ]
 
-# Example: custom detector
 [[rules]]
 id = "custom-gcp-api-key"
 description = "Google Cloud API Key"
