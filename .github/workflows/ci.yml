@@ -195,14 +195,12 @@ jobs:
             --threshold "${EPSS_THRESHOLD}"
           test -f "${REPORT_DIR}/epss-findings.json" || echo '{"high_risk":[],"threshold":"'"${EPSS_THRESHOLD}"'"}' > "${REPORT_DIR}/epss-findings.json"
 
-      - name: Ensure jsonschema available
+      - name: Install jsonschema
         shell: bash
         run: |
           set -euo pipefail
-          python3 - << 'EOF'
-          import jsonschema
-          print("jsonschema OK")
-          EOF
+          python3 -m pip install -q --upgrade pip
+          python3 -m pip install -q jsonschema
 
       - name: Validate EPSS findings schema
         shell: bash
