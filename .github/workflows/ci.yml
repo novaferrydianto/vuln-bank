@@ -528,4 +528,65 @@ jobs:
           set -euo pipefail
           python3 scripts/defectdojo_autoclose_on_merge.py
 
+# =====================================================
+# X) PUBLISH DATA FOR GITHUB PAGES (MAIN ONLY)
+# =====================================================
+  publish_pages_data:
+    name: Publish Pages Data (main only)
+    needs: [security_scans, governance]
+    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.gate_failed == 'false'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download security-reports artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      - name: Prepare Pages data directory
+        run: |
+          set -euo pipefail
+          mkdir -p docs/data/trends
+
+      # 1️⃣ Append weekly PASS% trend
+      - name: Append PASS% weekly trend
+        run: |
+          set -euo pipefail
+          python3 scripts/append_pass_trend.py \
+            --asvs security-reports/governance/asvs-coverage.json \
+            --out docs/data/trends/pass-trend.json
+
+      # 2️⃣ Append KEV / EPSS trend (future-safe)
+      - name: Append KEV trend
+        run: |
+          set -euo pipefail
+          python3 scripts/append_kev_trend.py \
+            --epss security-reports/epss-findings.json \
+            --out docs/data/trends/kev-trend.json || true
+
+      # 3️⃣ Commit Pages data
+      - name: Commit Pages data
+        run: |
+          set -euo pipefail
+          git config user.name "pages-bot"
+          git config user.email "pages-bot@users.noreply.github.com"
+
+          git add docs/data/trends || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(pages): update security trend data"
+            git push
+          else
+            echo "[INFO] No Pages data changes"
+          fi
+
 
