@@ -1,84 +1,154 @@
+/* ====================================================
+   Utilities
+   ==================================================== */
+
 async function loadJSON(path) {
-  const res = await fetch(path);
-  if (!res.ok) throw new Error("Failed to load " + path);
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Failed to load ${path} (${res.status})`);
+  }
   return res.json();
 }
 
-function setDonut(circle, percent) {
+function byId(id) {
+  return document.getElementById(id);
+}
+
+function clamp(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(value, max));
+}
+
+/* ====================================================
+   Donut Chart
+   ==================================================== */
+
+function renderDonut(circle, percent) {
   const radius = 90;
   const circumference = 2 * Math.PI * radius;
-  const value = Math.max(0, Math.min(percent, 100));
+  const value = clamp(percent);
 
   const offset = circumference * (1 - value / 100);
   circle.style.strokeDasharray = `${circumference}`;
   circle.style.strokeDashoffset = offset;
 }
 
-(async () => {
-  const asvs = await loadJSON("../../data/governance/asvs-coverage.json");
-  const scorecard = await loadJSON("../../data/security-scorecard.json");
+/* ====================================================
+   KPI Rendering
+   ==================================================== */
 
-  // ===============================
-  // KPI SUMMARY
-  // ===============================
-  document.getElementById("maturity-score").textContent =
-    scorecard.score.overall;
+function renderKpis(scorecard, asvs) {
+  byId("maturity-score").textContent =
+    scorecard?.score?.overall ?? "–";
 
-  document.getElementById("coverage-percent").textContent =
-    asvs.summary.coverage_percent + "%";
+  byId("coverage-percent").textContent =
+    asvs?.summary?.coverage_percent != null
+      ? `${asvs.summary.coverage_percent}%`
+      : "–";
 
-  document.getElementById("control-count").textContent =
-    asvs.summary.total;
+  byId("control-count").textContent =
+    asvs?.summary?.total ?? "–";
+}
 
-  // ===============================
-  // STATUS COUNTS
-  // ===============================
-  const controls = asvs.controls || [];
+/* ====================================================
+   Status Breakdown + Donut
+   ==================================================== */
 
-  const pass = controls.filter(c => c.status === "PASS").length;
-  const fail = controls.filter(c => c.status === "FAIL").length;
-  const na   = controls.filter(c => c.status === "NOT_APPLICABLE").length;
-  const total = pass + fail + na || 1;
+function renderStatus(asvs) {
+  const controls = Array.isArray(asvs?.controls) ? asvs.controls : [];
 
-  document.getElementById("pass-count").textContent = pass;
-  document.getElementById("fail-count").textContent = fail;
-  document.getElementById("na-count").textContent = na;
+  const counts = {
+    PASS: 0,
+    FAIL: 0,
+    NOT_APPLICABLE: 0
+  };
 
-  // ===============================
-  // DONUT CHART (PASS vs FAIL)
-  // ===============================
-  const passPct = Math.round((pass / total) * 100);
-  const failPct = Math.round((fail / total) * 100);
+  controls.forEach(c => {
+    if (counts[c.status] !== undefined) {
+      counts[c.status]++;
+    }
+  });
 
-  document.getElementById("donut-percent").textContent = `${passPct}%`;
+  const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
 
-  const donutPass = document.getElementById("donut-pass");
-  const donutFail = document.getElementById("donut-fail");
+  byId("pass-count").textContent = counts.PASS;
+  byId("fail-count").textContent = counts.FAIL;
+  byId("na-count").textContent   = counts.NOT_APPLICABLE;
 
-  setDonut(donutPass, passPct);
-  setDonut(donutFail, failPct);
+  const passPct = Math.round((counts.PASS / total) * 100);
+  const failPct = Math.round((counts.FAIL / total) * 100);
 
-  // ===============================
-  // CONTROLS TABLE (Risk-First)
-  // ===============================
-  const tbody = document.getElementById("controls-table");
+  byId("donut-percent").textContent = `${passPct}%`;
 
-  const priority = { "FAIL": 0, "PASS": 1, "NOT_APPLICABLE": 2 };
+  renderDonut(byId("donut-pass"), passPct);
+  renderDonut(byId("donut-fail"), failPct);
+
+  return controls;
+}
+
+/* ====================================================
+   Controls Table (Risk-First)
+   ==================================================== */
+
+function renderControlsTable(controls) {
+  const tbody = byId("controls-table");
+  if (!tbody) return;
+
+  const priority = {
+    FAIL: 0,
+    PASS: 1,
+    NOT_APPLICABLE: 2
+  };
+
   controls
+    .slice() // avoid mutating original
     .sort((a, b) =>
       (priority[a.status] ?? 9) - (priority[b.status] ?? 9) ||
-      a.id.localeCompare(b.id)
+      String(a.id).localeCompare(String(b.id))
     )
-    .forEach(c => {
+    .forEach(control => {
       const tr = document.createElement("tr");
-      tr.className = c.status.toLowerCase();
+      tr.className = control.status?.toLowerCase() || "";
 
       tr.innerHTML = `
-        <td>${c.id}</td>
-        <td>L${c.level}</td>
-        <td>${c.status}</td>
-        <td>${(c.evidence || []).join(", ")}</td>
+        <td>${control.id ?? "–"}</td>
+        <td>${control.level != null ? `L${control.level}` : "–"}</td>
+        <td>${control.status ?? "–"}</td>
+        <td>${Array.isArray(control.evidence)
+          ? control.evidence.join(", ")
+          : ""}</td>
       `;
+
       tbody.appendChild(tr);
     });
+}
+
+/* ====================================================
+   Main Bootstrap
+   ==================================================== */
+
+(async function bootstrap() {
+  try {
+    const [asvs, scorecard] = await Promise.all([
+      loadJSON("../../data/governance/asvs-coverage.json"),
+      loadJSON("../../data/security-scorecard.json")
+    ]);
+
+    renderKpis(scorecard, asvs);
+
+    const controls = renderStatus(asvs);
+
+    renderControlsTable(controls);
+
+  } catch (err) {
+    console.error("Dashboard initialization failed:", err);
+
+    const body = document.body;
+    const error = document.createElement("div");
+    error.style.padding = "2rem";
+    error.style.color = "#b42318";
+    error.textContent =
+      "Failed to load security dashboard data. Check CI artifacts or schema compatibility.";
+
+    body.prepend(error);
+  }
 })();

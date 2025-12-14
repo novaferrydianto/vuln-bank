@@ -34,124 +34,98 @@ jobs:
           pip install reportlab requests jsonschema
 
       # -------------------------------------------------
-      # 1) OWASP weekly trend
+      # 1) OWASP Weekly Trend
       # -------------------------------------------------
-      - name: OWASP weekly trend (labels)
+      - name: OWASP weekly trend
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          python3 scripts/owasp_weekly_trend.py
+        run: python3 scripts/owasp_weekly_trend.py
 
-      - name: OWASP per-asset (labels + fallback)
+      - name: OWASP per-asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          python3 scripts/owasp_by_asset_weekly.py
+        run: python3 scripts/owasp_by_asset_weekly.py
 
       # -------------------------------------------------
-      # 2) DefectDojo SLA weekly breaches
+      # 2) DefectDojo SLA
       # -------------------------------------------------
-      - name: DefectDojo SLA weekly breaches (finding aging)
+      - name: DefectDojo SLA weekly
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
-        run: |
-          set -euo pipefail
-          python3 scripts/defectdojo_sla_weekly.py
+        run: python3 scripts/defectdojo_sla_weekly.py
 
-      # -------------------------------------------------
-      # 3) Validate SLA weekly JSON (CONTRACT)
-      # -------------------------------------------------
-      - name: Validate SLA weekly schema
+      - name: Validate SLA schema
         run: |
-          set -euo pipefail
-          python - << 'EOF'
+          python3 - << 'EOF'
           import json
           from jsonschema import validate
-
-          with open("schemas/defectdojo-sla-weekly.schema.json") as s:
-              schema = json.load(s)
-          with open("docs/data/defectdojo-sla-weekly.json") as d:
-              data = json.load(d)
-
-          validate(instance=data, schema=schema)
-          print("✅ defectdojo-sla-weekly.json valid")
+          validate(
+            json.load(open("docs/data/defectdojo-sla-weekly.json")),
+            json.load(open("schemas/defectdojo-sla-weekly.schema.json"))
+          )
+          print("✅ SLA schema valid")
           EOF
 
       # -------------------------------------------------
-      # 4) Security scorecard
+      # 3) Security Scorecard + Maturity
       # -------------------------------------------------
       - name: Security scorecard
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          python3 scripts/security_scorecard.py
+        run: python3 scripts/security_scorecard.py
 
-      # -------------------------------------------------
-      # 5) Validate security scorecard (CONTRACT)
-      # -------------------------------------------------
-      - name: Validate security scorecard schema
+      - name: Add maturity score (0–100)
+        run: python3 scripts/maturity_score.py
+
+      - name: Validate scorecard schema
         run: |
-          set -euo pipefail
-          python - << 'EOF'
+          python3 - << 'EOF'
           import json
           from jsonschema import validate
-
-          with open("schemas/security-scorecard.schema.json") as s:
-              schema = json.load(s)
-          with open("docs/data/security-scorecard.json") as d:
-              data = json.load(d)
-
-          validate(instance=data, schema=schema)
-          print("✅ security-scorecard.json valid")
+          validate(
+            json.load(open("docs/data/security-scorecard.json")),
+            json.load(open("schemas/security-scorecard.schema.json"))
+          )
+          print("✅ Scorecard schema valid")
           EOF
 
       # -------------------------------------------------
-      # 6) Executive one-page
+      # 4) Dashboards & Executive Outputs
       # -------------------------------------------------
+      - name: ASVS dashboard (HTML → Pages)
+        run: |
+          mkdir -p docs/dashboards/asvs
+          python3 scripts/asvs_dashboard.py \
+            --scorecard docs/data/security-scorecard.json \
+            --outdir docs/dashboards/asvs
+
+      - name: Board report (PDF with charts)
+        run: python3 scripts/generate_board_report.py
+
       - name: Executive summary (MD + PDF)
         run: |
-          set -euo pipefail
           python3 scripts/generate_executive_summary.py
+          python3 scripts/render_executive_pdf.py
 
       # -------------------------------------------------
-      # 7) Slack notification (ONLY AFTER VALIDATION)
+      # 5) Slack (post-validation only)
       # -------------------------------------------------
       - name: Slack weekly breach report
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          set -euo pipefail
-          python3 scripts/slack_weekly_breach.py
+        run: python3 scripts/slack_weekly_breach.py
 
       # -------------------------------------------------
-      # 8) Persist weekly data
+      # 6) Persist artifacts
       # -------------------------------------------------
-      - name: Commit weekly data
+      - name: Commit weekly outputs
         run: |
-          set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
-
-          git add docs/data security-metrics/weekly
-
+          git add docs/data docs/dashboards docs/executive security-metrics/weekly
           if ! git diff --cached --quiet; then
             git commit -m "chore(security): weekly security trend update"
             git push
-          else
-            echo "[INFO] No changes"
           fi
-
-      - name: Upload weekly artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: weekly-security-trend
-          path: |
-            docs/data
-            security-metrics/weekly
