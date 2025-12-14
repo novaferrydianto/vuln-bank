@@ -66,3 +66,8 @@ jobs:
           else
             echo "[INFO] No changes"
           fi
+
+      - name: Generate executive summary PDF
+        run: |
+          set -euo pipefail
+          python3 scripts/render_exec_summary_pdf.py
