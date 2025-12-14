@@ -35,12 +35,15 @@ while True:
         break
 
     for issue in issues:
-        for lbl in issue.get("labels", []):
-            name = (lbl.get("name") or "").upper()
-            if name.startswith("OWASP:A"):
-                key = name.replace("OWASP:", "")
-                if key in counts:
-                    counts[key] += 1
+      if "pull_request" in issue:
+        continue
+
+    for lbl in issue.get("labels", []):
+        name = (lbl.get("name") or "").upper()
+        if name.startswith("OWASP:A") and len(name) >= 8:
+            key = name.replace("OWASP:", "")
+            if key in counts:
+                counts[key] += 1
     page += 1
 
 # --- output object ---

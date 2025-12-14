@@ -1,0 +1,34 @@
+<h2>Security Scorecard</h2>
+<canvas id="scoreChart" width="400"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+fetch("data/security-scorecard.json")
+  .then(r => r.json())
+  .then(d => {
+    new Chart(document.getElementById("scoreChart"), {
+      type: "radar",
+      data: {
+        labels: ["OWASP", "EPSS", "SLA"],
+        datasets: [{
+          label: "Security Scorecard",
+          data: [
+            d.components.owasp,
+            d.components.epss,
+            d.components.sla
+          ],
+          backgroundColor: "rgba(54,162,235,0.2)",
+          borderColor: "rgba(54,162,235,1)"
+        }]
+      },
+      options: {
+        scales: {
+          r: {
+            suggestedMin: 0,
+            suggestedMax: 100
+          }
+        }
+      }
+    });
+  });
+</script>
