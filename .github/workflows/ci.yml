@@ -471,3 +471,36 @@ jobs:
           set -euo pipefail
           python3 scripts/slack_sca_alert.py
 
+# =====================================================
+# 6) DEFECTDOJO – AUTO CLOSE FINDINGS ON PR MERGE
+# =====================================================
+  defectdojo_autoclose_on_merge:
+    name: DefectDojo – Auto-close findings on PR merge
+    runs-on: ubuntu-latest
+
+    # 🔒 ONLY when PR is merged
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true
+
+    needs:
+      - create_engagement
+
+    permissions:
+      contents: read
+
+    env:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+      DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auto-close DefectDojo findings + complete engagement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/defectdojo_autoclose_on_merge.py
+
+
