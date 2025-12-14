@@ -1,12 +1,12 @@
 /* ====================================================
-   Executive Sparkline – Weekly PASS% Trend
+   Executive Sparkline – Weekly PASS% Trend (Pages-safe)
    ==================================================== */
 
-const BASE = location.pathname.includes("/dashboards/")
-  ? "../../"
-  : "./";
+const BASE = location.pathname.includes("/vuln-bank/")
+  ? "/vuln-bank/"
+  : "/";
 
-const TREND_PATH = `${BASE}security-metrics/weekly/pass-trend.json`;
+const TREND_PATH = `${BASE}docs/data/trends/asvs-pass-trend.json`;
 
 /* ----------------------------------------------------
    Utils
@@ -32,66 +32,59 @@ async function loadTrend() {
    Render sparkline
 ---------------------------------------------------- */
 function renderSparkline(svg, values) {
-  if (!svg || values.length === 0) return;
+  if (!svg || values.length < 2) return;
 
   const width = 300;
   const height = 60;
   const padding = 6;
 
-  const min = Math.min(...values, 0);
-  const max = Math.max(...values, 100);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
 
   const scaleX = (i) =>
-    padding + (i / (values.length - 1 || 1)) * (width - padding * 2);
+    padding + (i / (values.length - 1)) * (width - padding * 2);
 
   const scaleY = (v) =>
     height - padding - ((v - min) / (max - min || 1)) * (height - padding * 2);
 
-  // Line path
   const path = values
     .map((v, i) => `${i === 0 ? "M" : "L"} ${scaleX(i)} ${scaleY(v)}`)
     .join(" ");
 
-  // Clear
   svg.innerHTML = "";
 
-  // Polyline
+  const delta = values[values.length - 1] - values[values.length - 2];
+
+  const stroke =
+    delta > 0 ? "var(--color-pass)" :
+    delta < 0 ? "var(--color-fail)" :
+    "#8c959f";
+
   const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
   line.setAttribute("d", path);
   line.setAttribute("fill", "none");
+  line.setAttribute("stroke", stroke);
   line.setAttribute("stroke-width", "2.5");
   line.setAttribute("stroke-linecap", "round");
-
-  // Color by delta
-  const delta = values.at(-1) - values.at(-2 || 0);
-  if (delta > 0) {
-    line.setAttribute("stroke", "var(--color-pass)");
-  } else if (delta < 0) {
-    line.setAttribute("stroke", "var(--color-fail)");
-  } else {
-    line.setAttribute("stroke", "#8c959f");
-  }
-
   svg.appendChild(line);
 
-  // Last point dot
   const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
   dot.setAttribute("cx", scaleX(values.length - 1));
   dot.setAttribute("cy", scaleY(values.at(-1)));
   dot.setAttribute("r", "3.5");
-  dot.setAttribute("fill", line.getAttribute("stroke"));
+  dot.setAttribute("fill", stroke);
   svg.appendChild(dot);
+
+  return delta;
 }
 
 /* ----------------------------------------------------
    Delta badge (+4%)
 ---------------------------------------------------- */
-function renderDeltaBadge(container, current, previous) {
-  if (!container || previous == null) return;
+function renderDeltaBadge(container, delta) {
+  if (!container || delta == null) return;
 
-  const delta = current - previous;
   const badge = document.createElement("span");
-
   badge.className = "meta-badge";
   badge.style.marginLeft = "0.6rem";
 
@@ -117,26 +110,17 @@ function renderDeltaBadge(container, current, previous) {
   try {
     const trend = await loadTrend();
 
-    const points = (trend.points || [])
-      .slice(-12) // last 12 weeks
-      .map(p => clamp(p.pass_percent));
+    const points = trend
+      .slice(-12)
+      .map(p => clamp(p.pass_pct));
 
-    if (points.length === 0) return;
+    if (points.length < 2) return;
 
     const svg = document.getElementById("sparkline");
-    renderSparkline(svg, points);
+    const delta = renderSparkline(svg, points);
 
-    // Delta badge
-    const sectionTitle = document
-      .querySelector("section.card h2");
-
-    if (points.length >= 2) {
-      renderDeltaBadge(
-        sectionTitle,
-        points.at(-1),
-        points.at(-2)
-      );
-    }
+    const title = document.querySelector("section.card h2");
+    renderDeltaBadge(title, delta);
 
   } catch (err) {
     console.warn("Sparkline unavailable:", err);
