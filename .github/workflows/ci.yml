@@ -222,7 +222,7 @@ jobs:
                 "type": ["number", "string"]
               }
             },
-            "additionalProperties": true
+            "additionalProperties": True
           }
 
           with open("security-reports/epss-findings.json") as f:
