@@ -1,0 +1,69 @@
+name: Vuln Bank – Weekly Security Dashboard
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"   # Monday 09:00 WIB
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+
+env:
+  EPSS_THRESHOLD: "0.5"
+
+jobs:
+  weekly_dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate OWASP weekly trend (GitHub labels)
+        env:
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/owasp_weekly_trend.py
+
+      - name: Generate DefectDojo SLA weekly breach report
+        env:
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+        run: |
+          set -euo pipefail
+          python3 scripts/defectdojo_sla_weekly.py
+
+      - name: Generate Security Scorecard (OWASP × EPSS × SLA)
+        env:
+          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
+        run: |
+          set -euo pipefail
+          python3 scripts/security_scorecard.py
+
+      - name: Upload weekly metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-security-dashboard
+          path: |
+            security-metrics/weekly
+            docs/data
+
+      - name: Commit docs/data + security-metrics
+        run: |
+          set -euo pipefail
+          git config user.name "security-bot"
+          git config user.email "security-bot@users.noreply.github.com"
+
+          git add docs/data security-metrics/weekly security-assets.json || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(security): weekly dashboard data update"
+            git push
+          else
+            echo "[INFO] No weekly data changes"
+          fi

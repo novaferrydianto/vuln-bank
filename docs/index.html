@@ -1,34 +1,116 @@
-<h2>Security Scorecard</h2>
-<canvas id="scoreChart" width="400"></canvas>
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Vuln Bank Security Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, Arial; margin: 24px; }
+    .grid { display: grid; gap: 18px; grid-template-columns: 1fr; }
+    @media (min-width: 1100px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
+    .kpi { display:flex; gap:18px; flex-wrap: wrap; }
+    .kpi .box { border: 1px solid #eee; border-radius: 10px; padding: 10px 12px; min-width: 160px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; font-size: 13px; }
+    .muted { color:#666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Vuln Bank – Security Dashboard</h1>
+  <div class="muted" id="meta">Loading...</div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-fetch("data/security-scorecard.json")
-  .then(r => r.json())
-  .then(d => {
-    new Chart(document.getElementById("scoreChart"), {
-      type: "radar",
-      data: {
-        labels: ["OWASP", "EPSS", "SLA"],
-        datasets: [{
-          label: "Security Scorecard",
-          data: [
-            d.components.owasp,
-            d.components.epss,
-            d.components.sla
-          ],
-          backgroundColor: "rgba(54,162,235,0.2)",
-          borderColor: "rgba(54,162,235,1)"
-        }]
-      },
-      options: {
-        scales: {
-          r: {
-            suggestedMin: 0,
-            suggestedMax: 100
-          }
-        }
+  <div class="grid">
+    <div class="card">
+      <h2>OWASP Weekly Trend</h2>
+      <canvas id="owaspChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Security Scorecard</h2>
+      <div class="kpi">
+        <div class="box"><div class="muted">Score</div><div id="scoreVal" style="font-size:28px;font-weight:700">-</div></div>
+        <div class="box"><div class="muted">Risk total</div><div id="riskVal" style="font-size:28px;font-weight:700">-</div></div>
+        <div class="box"><div class="muted">SLA breaches</div><div id="breachVal" style="font-size:28px;font-weight:700">-</div></div>
+      </div>
+      <canvas id="assetChart" style="margin-top:14px"></canvas>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>DefectDojo SLA Breaches (Top)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Severity</th><th>Age</th><th>SLA</th><th>Title</th><th>Link</th>
+          </tr>
+        </thead>
+        <tbody id="slaTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function getJson(path) {
+      const r = await fetch(path, { cache: "no-store" });
+      if (!r.ok) throw new Error("Failed to load " + path);
+      return r.json();
+    }
+
+    (async () => {
+      const [owasp, sla, scorecard] = await Promise.all([
+        getJson("./data/owasp-latest.json"),
+        getJson("./data/sla-latest.json"),
+        getJson("./data/scorecard-latest.json")
+      ]);
+
+      const gen = scorecard.generated_at || sla.generated_at || owasp.generated_at || "-";
+      document.getElementById("meta").textContent = "Generated at: " + gen;
+
+      // OWASP bar
+      const counts = (owasp.counts || owasp.owasp_counts || {});
+      const labels = ["A01","A02","A03","A04","A05","A06","A07","A08","A09","A10"];
+      const data = labels.map(k => Number(counts[k] || 0));
+      new Chart(document.getElementById("owaspChart"), {
+        type: "bar",
+        data: { labels, datasets: [{ label: "Count", data }] },
+        options: { responsive: true, plugins: { legend: { display: false } } }
+      });
+
+      // Score KPIs
+      document.getElementById("scoreVal").textContent = scorecard.score ?? "-";
+      document.getElementById("riskVal").textContent = (scorecard.risk && scorecard.risk.risk_total) ?? "-";
+      document.getElementById("breachVal").textContent = (sla.breach_count ?? "-");
+
+      // Asset chart (breach risk)
+      const assets = scorecard.assets || {};
+      const assetNames = Object.keys(assets);
+      const breachRisk = assetNames.map(a => Number(assets[a].breach_risk || 0));
+      new Chart(document.getElementById("assetChart"), {
+        type: "bar",
+        data: { labels: assetNames, datasets: [{ label: "Breach risk", data: breachRisk }] },
+        options: { responsive: true }
+      });
+
+      // SLA table
+      const rows = (sla.breaches_top || []).slice(0, 25);
+      const tb = document.getElementById("slaTable");
+      tb.innerHTML = "";
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.severity}</td>
+          <td>${r.age_days}d</td>
+          <td>${r.sla_days}d</td>
+          <td>${(r.title || "").slice(0, 120)}</td>
+          <td><a href="${r.url}" target="_blank">open</a></td>
+        `;
+        tb.appendChild(tr);
       }
+    })().catch(err => {
+      document.getElementById("meta").textContent = "ERROR: " + err.message;
+      console.error(err);
     });
-  });
-</script>
+  </script>
+</body>
+</html>
