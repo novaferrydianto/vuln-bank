@@ -1,156 +1,264 @@
 #!/usr/bin/env python3
-import os, json, datetime, pathlib, re
+import os
+import json
+import datetime
+from typing import Dict, Any, List
 
-NOW = datetime.datetime.utcnow()
+# -----------------------------
+# Helpers
+# -----------------------------
+def utc_now_iso() -> str:
+    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-def load_json(path, default=None):
-  p = pathlib.Path(path)
-  if not p.exists():
-    return default
-  return json.loads(p.read_text(encoding="utf-8"))
+def safe_read_json(path: str, default: Any) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
 
-def append_jsonl(path, obj):
-  pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-  with open(path, "a", encoding="utf-8") as f:
-    f.write(json.dumps(obj) + "\n")
+def safe_write_json(path: str, obj: Any) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
 
-# Inputs
-owasp = load_json("docs/data/owasp-latest.json", {"counts": {}})
-sla = load_json("docs/data/sla-latest.json", {"summary": {}, "breaches_top": [], "breach_count": 0})
-assets_cfg = load_json("security-assets.json", {"assets": {}})
+def append_jsonl(path: str, obj: Any) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj) + "\n")
 
-assets = assets_cfg.get("assets", {}) or {}
-if not assets:
-  # fallback weights
-  assets = {
-    "frontend": {"weight": 0.35, "tags_any": [], "title_keywords_any": []},
-    "backend": {"weight": 0.45, "tags_any": [], "title_keywords_any": []},
-    "db": {"weight": 0.20, "tags_any": [], "title_keywords_any": []},
-  }
+def clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
 
-# --- scoring knobs (editable) ---
-SEV_POINTS = {"Critical": 10, "High": 7, "Medium": 4, "Low": 2, "Info": 1}
-
-# EPSS points: if epss >= threshold => extra risk
-EPSS_THRESHOLD = float(os.environ.get("EPSS_THRESHOLD", "0.50"))
-def epss_points(epss):
-  try:
-    e = float(epss or 0.0)
-  except Exception:
-    e = 0.0
-  if e >= 0.90: return 6
-  if e >= 0.70: return 4
-  if e >= EPSS_THRESHOLD: return 2
-  return 0
-
-# SLA breach multiplier
-def sla_multiplier(is_breach: bool):
-  return 1.5 if is_breach else 1.0
-
-# Asset classification heuristic (title keywords)
-def classify_asset(title: str):
-  t = (title or "").lower()
-  hits = {}
-  for aname, acfg in assets.items():
-    kws = [k.lower() for k in (acfg.get("title_keywords_any") or [])]
-    score = 0
-    for k in kws:
-      if k and k in t:
-        score += 1
-    hits[aname] = score
-  # pick max hit; if all zero => backend default
-  best = max(hits.items(), key=lambda x: x[1])[0] if hits else "backend"
-  if hits.get(best, 0) == 0:
-    return "backend"
-  return best
-
-# --- compute SLA-based risk per asset ---
-breaches = sla.get("breaches_top", []) or []
-asset_risk = {a: {"open_risk": 0.0, "breach_risk": 0.0, "breach_count": 0, "top": []} for a in assets.keys()}
-total_open_risk = 0.0
-
-for b in breaches:
-  title = b.get("title","")
-  sev = b.get("severity","Medium")
-  age_days = int(b.get("age_days", 0) or 0)
-  sla_days = int(b.get("sla_days", 30) or 30)
-  is_breach = age_days > sla_days
-
-  a = classify_asset(title)
-  base = float(SEV_POINTS.get(sev, 4))
-  extra = float(epss_points(b.get("epss")))
-  risk = (base + extra) * sla_multiplier(is_breach)
-
-  asset_risk[a]["open_risk"] += (base + extra)
-  if is_breach:
-    asset_risk[a]["breach_risk"] += risk
-    asset_risk[a]["breach_count"] += 1
-    asset_risk[a]["top"].append({
-      "title": title,
-      "severity": sev,
-      "age_days": age_days,
-      "sla_days": sla_days,
-      "epss": b.get("epss"),
-      "url": b.get("url"),
-      "risk": round(risk, 2),
-    })
-
-  total_open_risk += (base + extra)
-
-for a in asset_risk:
-  asset_risk[a]["top"] = sorted(asset_risk[a]["top"], key=lambda x: -x["risk"])[:10]
-  asset_risk[a]["open_risk"] = round(asset_risk[a]["open_risk"], 2)
-  asset_risk[a]["breach_risk"] = round(asset_risk[a]["breach_risk"], 2)
-
-# --- OWASP label pressure (global) ---
-owasp_counts = (owasp.get("counts") or owasp.get("owasp_counts") or {})
-owasp_pressure = 0.0
-# simple: A01/A02 heavier
-for k, v in (owasp_counts or {}).items():
-  k = str(k)
-  n = int(v or 0)
-  if k in ("A01","A02"): owasp_pressure += n * 2.0
-  elif k in ("A03","A04","A05"): owasp_pressure += n * 1.5
-  else: owasp_pressure += n * 1.0
-
-# --- score normalization ---
-# Score = 100 - normalized_risk (clamped)
-# risk = weighted(asset breach risk + open risk) + owasp pressure
-weighted_asset_risk = 0.0
-for a, acfg in assets.items():
-  w = float(acfg.get("weight", 0.0))
-  weighted_asset_risk += w * (asset_risk[a]["breach_risk"] + 0.25 * asset_risk[a]["open_risk"])
-
-risk_total = weighted_asset_risk + 0.5 * owasp_pressure
-score = max(0.0, 100.0 - min(100.0, risk_total))  # clamp
-
-result = {
-  "generated_at": NOW.isoformat() + "Z",
-  "inputs": {
-    "owasp_counts": owasp_counts,
-    "sla_breach_count": int(sla.get("breach_count", 0) or 0),
-    "epss_threshold": EPSS_THRESHOLD,
-  },
-  "weights": {
-    "assets": {a: float(assets[a].get("weight",0.0)) for a in assets},
-    "owasp_pressure_factor": 0.5,
-    "open_risk_factor": 0.25,
-    "sla_breach_multiplier": 1.5,
-  },
-  "risk": {
-    "owasp_pressure": round(owasp_pressure, 2),
-    "weighted_asset_risk": round(weighted_asset_risk, 2),
-    "risk_total": round(risk_total, 2)
-  },
-  "score": round(score, 2),
-  "assets": asset_risk,
+# -----------------------------
+# Scoring model (bank-grade)
+# -----------------------------
+OWASP_PENALTIES = {
+    # heavier penalty for A01/A02
+    "A01": 15,
+    "A02": 12,
+    "A03": 10,
+    "A04": 9,
+    "A05": 8,
+    "A06": 8,
+    "A07": 7,
+    "A08": 7,
+    "A09": 6,
+    "A10": 6,
 }
 
-pathlib.Path("docs/data").mkdir(parents=True, exist_ok=True)
-pathlib.Path("security-metrics/weekly").mkdir(parents=True, exist_ok=True)
+SLA_PENALTIES = {
+    "Critical": 30,
+    "High": 15,
+    "Medium": 7,
+    "Low": 3,
+}
 
-pathlib.Path("docs/data/scorecard-latest.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-append_jsonl("docs/data/scorecard-history.jsonl", result)
-pathlib.Path("security-metrics/weekly/scorecard-latest.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+WEIGHTS = {
+    "owasp": 0.4,
+    "epss": 0.4,
+    "sla": 0.2,
+}
 
-print("[OK] Scorecard generated. Score:", result["score"])
+def score_owasp(owasp_counts: Dict[str, int]) -> int:
+    penalty = 0
+    for k, c in owasp_counts.items():
+        p = OWASP_PENALTIES.get(k, 5)
+        penalty += int(c) * int(p)
+    return int(clamp(100 - penalty, 0, 100))
+
+def score_epss(high_risk_count: int) -> int:
+    # strong penalty per high-risk EPSS/KEV finding
+    return int(clamp(100 - (high_risk_count * 15), 0, 100))
+
+def score_sla(breaches: Dict[str, int]) -> int:
+    penalty = 0
+    for sev, c in breaches.items():
+        penalty += int(c) * int(SLA_PENALTIES.get(sev, 5))
+    return int(clamp(100 - penalty, 0, 100))
+
+def overall_score(s_owasp: int, s_epss: int, s_sla: int) -> int:
+    v = (
+        s_owasp * WEIGHTS["owasp"] +
+        s_epss  * WEIGHTS["epss"] +
+        s_sla   * WEIGHTS["sla"]
+    )
+    return int(round(clamp(v, 0, 100)))
+
+def grade_from_score(score: int) -> str:
+    if score >= 90: return "A"
+    if score >= 80: return "B"
+    if score >= 65: return "C"
+    if score >= 50: return "D"
+    return "F"
+
+# -----------------------------
+# Per-asset logic
+# -----------------------------
+DEFAULT_ASSETS = {
+    "frontend": {
+        "label": "asset:frontend",
+        # optional: package hints if you later enrich epss-findings with package paths
+        "package_hints": ["nuxt", "next", "react", "vue", "webpack", "vite"],
+    },
+    "backend": {
+        "label": "asset:backend",
+        "package_hints": ["flask", "django", "fastapi", "requests", "gunicorn"],
+    },
+    "db": {
+        "label": "asset:db",
+        "package_hints": ["postgres", "psql", "pg", "mysql", "sqlite"],
+    },
+}
+
+def split_owasp_by_asset(issue_rows: List[Dict[str, Any]], assets_cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    # issue_rows = [{"labels": ["OWASP:A01", "asset:backend", ...]}, ...]
+    keys = [f"A{i:02}" for i in range(1, 11)]
+    out = {a: {k: 0 for k in keys} for a in assets_cfg.keys()}
+
+    for row in issue_rows:
+        labels = [str(x).lower() for x in row.get("labels", [])]
+        for asset, cfg in assets_cfg.items():
+            if cfg["label"].lower() in labels:
+                for l in labels:
+                    u = l.upper()
+                    if u.startswith("OWASP:A"):
+                        k = u.replace("OWASP:", "")
+                        if k in out[asset]:
+                            out[asset][k] += 1
+    return out
+
+def split_epss_by_asset(epss_findings: Dict[str, Any], assets_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Expect epss_findings.json format similar to:
+      { "high_risk": [ {"cve": "...", "epss": 0.92, "package": "xz-utils", ...}, ... ] }
+    If no explicit asset field exists, we infer by package keywords (best effort).
+    """
+    high = epss_findings.get("high_risk", []) or []
+    out = {a: {"high_risk_count": 0, "top_cves": []} for a in assets_cfg.keys()}
+
+    for item in high:
+        pkg = str(item.get("package") or "").lower()
+        cve = item.get("cve")
+        epss = item.get("epss", 0)
+        placed = False
+
+        for asset, cfg in assets_cfg.items():
+            hints = [h.lower() for h in cfg.get("package_hints", [])]
+            if any(h in pkg for h in hints):
+                out[asset]["high_risk_count"] += 1
+                out[asset]["top_cves"].append({"cve": cve, "epss": epss, "package": item.get("package")})
+                placed = True
+                break
+
+        # if we can't infer, keep unassigned (ignored) to avoid lying
+        if not placed:
+            pass
+
+    # cap top_cves length
+    for a in out:
+        out[a]["top_cves"] = out[a]["top_cves"][:5]
+    return out
+
+def split_sla_by_asset(sla_weekly: Dict[str, Any], assets_cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """
+    If your DefectDojo SLA weekly output includes components/engagement tags per asset,
+    you can populate this properly later.
+    For now: fallback to global breaches for every asset = 0 (safe, not misleading).
+    """
+    return {a: {"Critical": 0, "High": 0, "Medium": 0, "Low": 0} for a in assets_cfg.keys()}
+
+# -----------------------------
+# Main
+# -----------------------------
+def main():
+    repo = os.environ.get("GITHUB_REPOSITORY") or os.environ.get("REPO") or "unknown/unknown"
+    generated_at = utc_now_iso()
+
+    # Inputs
+    owasp_latest = safe_read_json("docs/data/owasp-latest.json", {})
+    owasp_counts = (owasp_latest.get("counts") or owasp_latest.get("owasp_counts") or {}) if isinstance(owasp_latest, dict) else {}
+    # normalize keys to A01..A10
+    norm_owasp = {f"A{i:02}": int(owasp_counts.get(f"A{i:02}", 0)) for i in range(1, 11)}
+
+    epss_in = safe_read_json("security-reports/epss-findings.json", safe_read_json("docs/data/epss-weekly.json", {}))
+    high_risk = epss_in.get("high_risk", []) if isinstance(epss_in, dict) else []
+    high_risk_count = int(len(high_risk))
+    top_cves = []
+    for it in (high_risk[:5] if isinstance(high_risk, list) else []):
+        top_cves.append({
+            "cve": it.get("cve"),
+            "epss": it.get("epss"),
+            "package": it.get("package"),
+        })
+
+    sla_weekly = safe_read_json("docs/data/defectdojo-sla-weekly.json", {})
+    breaches = ((sla_weekly.get("breaches") or {}) if isinstance(sla_weekly, dict) else {})
+    norm_breaches = {k: int(breaches.get(k, 0)) for k in ["Critical", "High", "Medium", "Low"]}
+
+    # Scores
+    s_owasp = score_owasp(norm_owasp)
+    s_epss  = score_epss(high_risk_count)
+    s_sla   = score_sla(norm_breaches)
+    overall = overall_score(s_owasp, s_epss, s_sla)
+    grade = grade_from_score(overall)
+
+    # Per-asset (requires issue label export file; optional)
+    # If you want true per-asset OWASP counts, generate docs/data/issues-labels.json in your weekly job.
+    issue_rows = safe_read_json("docs/data/issues-labels.json", [])
+    assets_cfg = DEFAULT_ASSETS
+    owasp_by_asset = split_owasp_by_asset(issue_rows if isinstance(issue_rows, list) else [], assets_cfg)
+    epss_by_asset = split_epss_by_asset(epss_in if isinstance(epss_in, dict) else {}, assets_cfg)
+    sla_by_asset = split_sla_by_asset(sla_weekly if isinstance(sla_weekly, dict) else {}, assets_cfg)
+
+    assets_scorecard = {}
+    for asset in assets_cfg.keys():
+        a_owasp = score_owasp(owasp_by_asset.get(asset, {}))
+        a_epss  = score_epss(int(epss_by_asset.get(asset, {}).get("high_risk_count", 0)))
+        a_sla   = score_sla(sla_by_asset.get(asset, {}))
+        a_overall = overall_score(a_owasp, a_epss, a_sla)
+        assets_scorecard[asset] = {
+            "owasp": a_owasp,
+            "epss": a_epss,
+            "sla": a_sla,
+            "overall": a_overall,
+            "grade": grade_from_score(a_overall),
+            "raw": {
+                "owasp_counts": owasp_by_asset.get(asset, {}),
+                "epss": epss_by_asset.get(asset, {"high_risk_count": 0, "top_cves": []}),
+                "sla_breaches": sla_by_asset.get(asset, {}),
+            }
+        }
+
+    # Output (matches your sample JSON)
+    out = {
+        "repo": repo,
+        "generated_at": generated_at,
+        "owasp": {k: v for k, v in norm_owasp.items() if v > 0},
+        "epss": {
+            "high_risk_count": high_risk_count,
+            "top_cves": top_cves,
+        },
+        "sla": {
+            "breaches": {k: v for k, v in norm_breaches.items() if v > 0},
+        },
+        "score": {
+            "owasp": s_owasp,
+            "epss": s_epss,
+            "sla": s_sla,
+            "overall": overall,
+        },
+        "grade": grade,
+    }
+
+    safe_write_json("docs/data/security-scorecard.json", out)
+    append_jsonl("docs/data/security-scorecard-history.jsonl", out)
+    safe_write_json("docs/data/security-scorecard-assets.json", {"repo": repo, "generated_at": generated_at, "assets": assets_scorecard})
+
+    print("[OK] security scorecard generated:")
+    print(" - docs/data/security-scorecard.json")
+    print(" - docs/data/security-scorecard-history.jsonl")
+    print(" - docs/data/security-scorecard-assets.json")
+
+if __name__ == "__main__":
+    main()

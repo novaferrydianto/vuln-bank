@@ -1,124 +1,101 @@
-name: Vuln Bank – Weekly Security Posture
+name: Vuln Bank – Weekly Security Trend
 
 on:
   schedule:
     - cron: "0 2 * * 1"   # Monday 09:00 WIB
   workflow_dispatch:
 
-concurrency:
-  group: weekly-security-posture
-  cancel-in-progress: true
-
 permissions:
-  contents: write        # commit metrics + publish pages
-  issues: read           # read OWASP labels
-  pull-requests: read
-
-env:
-  PYTHON_BIN: python3
+  contents: write
+  issues: read
 
 jobs:
-  weekly_security_posture:
-    name: Weekly OWASP + EPSS + SLA + Scorecard
+  weekly_trend:
     runs-on: ubuntu-latest
 
     steps:
-      # --------------------------------------------------
-      # Checkout repo (full history for Pages + metrics)
-      # --------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # --------------------------------------------------
-      # Prepare directories (idempotent)
-      # --------------------------------------------------
-      - name: Prepare metrics directories
-        shell: bash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (PDF)
         run: |
           set -euo pipefail
-          mkdir -p security-metrics/weekly
-          mkdir -p docs/data
+          python3 -m pip install -q --upgrade pip
+          python3 -m pip install -q reportlab
 
-      # --------------------------------------------------
-      # 1️⃣ OWASP weekly trend (GitHub Issues labels)
-      # --------------------------------------------------
-      - name: Collect OWASP weekly trend
+      # 1) OWASP weekly (latest + history)
+      - name: OWASP weekly trend (labels)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        shell: bash
         run: |
           set -euo pipefail
-          ${PYTHON_BIN} scripts/owasp_weekly_trend.py
+          python3 scripts/owasp_weekly_trend.py
 
-      # --------------------------------------------------
-      # 2️⃣ EPSS weekly aggregation (from CI artifacts / history)
-      # --------------------------------------------------
-      - name: Collect EPSS weekly summary
-        shell: bash
+      # 1b) OWASP per-asset
+      - name: OWASP per-asset (labels + fallback)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          ${PYTHON_BIN} scripts/epss_weekly_summary.py
+          python3 scripts/owasp_by_asset_weekly.py
 
-      # --------------------------------------------------
-      # 3️⃣ DefectDojo SLA weekly sync
-      # --------------------------------------------------
-      - name: Collect DefectDojo SLA weekly report
+      # 2) DefectDojo SLA weekly breaches
+      - name: DefectDojo SLA weekly breaches (Finding aging)
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
-        shell: bash
+          DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
         run: |
           set -euo pipefail
-          ${PYTHON_BIN} scripts/defectdojo_sla_weekly.py
+          python3 scripts/defectdojo_sla_weekly.py
 
-      # --------------------------------------------------
-      # 4️⃣ Security Scorecard (OWASP × EPSS × SLA)
-      # --------------------------------------------------
-      - name: Generate security scorecard
-        shell: bash
+      # 3) Security scorecard JSON
+      - name: Security scorecard
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          ${PYTHON_BIN} scripts/security_scorecard.py
+          python3 scripts/security_scorecard.py
 
-      # --------------------------------------------------
-      # Persist metrics into repo (history + Pages data)
-      # --------------------------------------------------
-      - name: Commit weekly security metrics
-        shell: bash
+      # 3b) Executive one-page (MD + PDF)
+      - name: Executive summary (MD + PDF)
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_executive_summary.py
+
+      # Slack: weekly SLA breach message
+      - name: Slack weekly breach report
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          python3 scripts/slack_weekly_breach.py
+
+      # Persist for Pages + history
+      - name: Commit weekly data
         run: |
           set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
-
-          git add security-metrics docs/data || true
-
+          git add docs/data security-metrics/weekly || true
           if ! git diff --cached --quiet; then
-            git commit -m "chore(security): weekly security posture update"
+            git commit -m "chore(security): weekly security trend update"
             git push
           else
-            echo "[INFO] No security posture changes"
+            echo "[INFO] No changes"
           fi
 
-      # --------------------------------------------------
-      # Upload artifact (audit trail)
-      # --------------------------------------------------
-      - name: Upload weekly security metrics artifact
+      - name: Upload weekly artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: weekly-security-posture
-          path: security-metrics/weekly
-
-      # --------------------------------------------------
-      # Slack weekly executive summary
-      # --------------------------------------------------
-      - name: Slack weekly security summary
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          ${PYTHON_BIN} scripts/slack_weekly_trend.py
+          name: weekly-security-trend
+          path: |
+            docs/data
+            security-metrics/weekly

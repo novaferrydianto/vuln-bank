@@ -1,116 +1,131 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Vuln Bank Security Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vuln Bank – Security Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body { font-family: system-ui, Arial; margin: 24px; }
-    .grid { display: grid; gap: 18px; grid-template-columns: 1fr; }
-    @media (min-width: 1100px) { .grid { grid-template-columns: 1fr 1fr; } }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
-    .kpi { display:flex; gap:18px; flex-wrap: wrap; }
-    .kpi .box { border: 1px solid #eee; border-radius: 10px; padding: 10px 12px; min-width: 160px; }
-    table { width:100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; font-size: 13px; }
-    .muted { color:#666; font-size: 12px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .card { border: 1px solid #2222; border-radius: 14px; padding: 16px; }
+    .kpi { font-size: 28px; font-weight: 700; }
+    .muted { opacity: 0.75; }
+    code { background: #00000010; padding: 2px 6px; border-radius: 8px; }
   </style>
 </head>
 <body>
   <h1>Vuln Bank – Security Dashboard</h1>
-  <div class="muted" id="meta">Loading...</div>
+  <p class="muted">Data source: <code>docs/data/*.json</code> (auto-updated weekly by GitHub Actions)</p>
 
   <div class="grid">
     <div class="card">
-      <h2>OWASP Weekly Trend</h2>
-      <canvas id="owaspChart"></canvas>
+      <div class="kpi" id="overallScore">—</div>
+      <div id="overallMeta" class="muted">—</div>
     </div>
-
     <div class="card">
-      <h2>Security Scorecard</h2>
-      <div class="kpi">
-        <div class="box"><div class="muted">Score</div><div id="scoreVal" style="font-size:28px;font-weight:700">-</div></div>
-        <div class="box"><div class="muted">Risk total</div><div id="riskVal" style="font-size:28px;font-weight:700">-</div></div>
-        <div class="box"><div class="muted">SLA breaches</div><div id="breachVal" style="font-size:28px;font-weight:700">-</div></div>
-      </div>
-      <canvas id="assetChart" style="margin-top:14px"></canvas>
+      <canvas id="scoreBreakdown"></canvas>
     </div>
-
-    <div class="card" style="grid-column: 1 / -1;">
-      <h2>DefectDojo SLA Breaches (Top)</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Severity</th><th>Age</th><th>SLA</th><th>Title</th><th>Link</th>
-          </tr>
-        </thead>
-        <tbody id="slaTable"></tbody>
-      </table>
+    <div class="card">
+      <canvas id="owaspBar"></canvas>
+    </div>
+    <div class="card">
+      <canvas id="trendLine"></canvas>
     </div>
   </div>
 
-  <script>
-    async function getJson(path) {
-      const r = await fetch(path, { cache: "no-store" });
-      if (!r.ok) throw new Error("Failed to load " + path);
-      return r.json();
-    }
+  <h2>Per-Asset Scorecard</h2>
+  <div class="grid" id="assetCards"></div>
 
-    (async () => {
-      const [owasp, sla, scorecard] = await Promise.all([
-        getJson("./data/owasp-latest.json"),
-        getJson("./data/sla-latest.json"),
-        getJson("./data/scorecard-latest.json")
-      ]);
+<script>
+async function fetchJson(path) {
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to fetch ${path}: ${res.status}`);
+  return await res.json();
+}
 
-      const gen = scorecard.generated_at || sla.generated_at || owasp.generated_at || "-";
-      document.getElementById("meta").textContent = "Generated at: " + gen;
+function jsonlToSeries(text) {
+  const lines = text.trim().split("\n").filter(Boolean);
+  return lines.map(l => JSON.parse(l));
+}
 
-      // OWASP bar
-      const counts = (owasp.counts || owasp.owasp_counts || {});
-      const labels = ["A01","A02","A03","A04","A05","A06","A07","A08","A09","A10"];
-      const data = labels.map(k => Number(counts[k] || 0));
-      new Chart(document.getElementById("owaspChart"), {
-        type: "bar",
-        data: { labels, datasets: [{ label: "Count", data }] },
-        options: { responsive: true, plugins: { legend: { display: false } } }
-      });
+async function fetchJsonl(path) {
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to fetch ${path}: ${res.status}`);
+  return jsonlToSeries(await res.text());
+}
 
-      // Score KPIs
-      document.getElementById("scoreVal").textContent = scorecard.score ?? "-";
-      document.getElementById("riskVal").textContent = (scorecard.risk && scorecard.risk.risk_total) ?? "-";
-      document.getElementById("breachVal").textContent = (sla.breach_count ?? "-");
+function owaspKeys() {
+  return Array.from({length: 10}, (_,i) => `A${String(i+1).padStart(2,"0")}`);
+}
 
-      // Asset chart (breach risk)
-      const assets = scorecard.assets || {};
-      const assetNames = Object.keys(assets);
-      const breachRisk = assetNames.map(a => Number(assets[a].breach_risk || 0));
-      new Chart(document.getElementById("assetChart"), {
-        type: "bar",
-        data: { labels: assetNames, datasets: [{ label: "Breach risk", data: breachRisk }] },
-        options: { responsive: true }
-      });
+function renderAssetCards(assets) {
+  const root = document.getElementById("assetCards");
+  root.innerHTML = "";
+  Object.entries(assets).forEach(([name, v]) => {
+    const el = document.createElement("div");
+    el.className = "card";
+    el.innerHTML = `
+      <div class="kpi">${name.toUpperCase()} – ${v.overall} (${v.grade})</div>
+      <div class="muted">OWASP ${v.owasp} • EPSS ${v.epss} • SLA ${v.sla}</div>
+      <div class="muted">High-risk EPSS: ${v.raw?.epss?.high_risk_count ?? 0}</div>
+    `;
+    root.appendChild(el);
+  });
+}
 
-      // SLA table
-      const rows = (sla.breaches_top || []).slice(0, 25);
-      const tb = document.getElementById("slaTable");
-      tb.innerHTML = "";
-      for (const r of rows) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${r.severity}</td>
-          <td>${r.age_days}d</td>
-          <td>${r.sla_days}d</td>
-          <td>${(r.title || "").slice(0, 120)}</td>
-          <td><a href="${r.url}" target="_blank">open</a></td>
-        `;
-        tb.appendChild(tr);
-      }
-    })().catch(err => {
-      document.getElementById("meta").textContent = "ERROR: " + err.message;
-      console.error(err);
+(async () => {
+  const scorecard = await fetchJson("./data/security-scorecard.json");
+  const assets = await fetchJson("./data/security-scorecard-assets.json");
+  const owaspLatest = await fetchJson("./data/owasp-latest.json");
+  const trend = await fetchJsonl("./data/security-scorecard-history.jsonl").catch(() => []);
+
+  // KPI
+  document.getElementById("overallScore").textContent =
+    `${scorecard.score.overall} / 100 (Grade ${scorecard.grade})`;
+  document.getElementById("overallMeta").textContent =
+    `Repo: ${scorecard.repo} • Generated: ${scorecard.generated_at}`;
+
+  // Score breakdown (radar)
+  new Chart(document.getElementById("scoreBreakdown"), {
+    type: "radar",
+    data: {
+      labels: ["OWASP", "EPSS", "SLA"],
+      datasets: [{
+        label: "Score",
+        data: [scorecard.score.owasp, scorecard.score.epss, scorecard.score.sla]
+      }]
+    },
+    options: { responsive: true, scales: { r: { suggestedMin: 0, suggestedMax: 100 } } }
+  });
+
+  // OWASP bar
+  const keys = owaspKeys();
+  const counts = keys.map(k => (owaspLatest.counts?.[k] ?? 0));
+  new Chart(document.getElementById("owaspBar"), {
+    type: "bar",
+    data: { labels: keys, datasets: [{ label: "OWASP findings (7d)", data: counts }] },
+    options: { responsive: true }
+  });
+
+  // Trend line (overall)
+  if (trend.length > 0) {
+    const labels = trend.map(x => (x.generated_at || "").slice(0, 10));
+    const overall = trend.map(x => x.score?.overall ?? null);
+    new Chart(document.getElementById("trendLine"), {
+      type: "line",
+      data: { labels, datasets: [{ label: "Overall score (weekly)", data: overall }] },
+      options: { responsive: true }
     });
-  </script>
+  } else {
+    document.getElementById("trendLine").replaceWith(
+      Object.assign(document.createElement("div"), { className: "card", textContent: "Trend will appear after 2+ weekly runs." })
+    );
+  }
+
+  // Assets
+  renderAssetCards(assets.assets || {});
+})();
+</script>
 </body>
 </html>
