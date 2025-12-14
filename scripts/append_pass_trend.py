@@ -1,77 +1,59 @@
 #!/usr/bin/env python3
 """
-Append weekly ASVS PASS percentage to trend history.
-
-Input:
-  - docs/data/governance/asvs-coverage.json
+Append weekly ASVS PASS / FAIL / KEV trend (append-only)
 
 Output:
-  - docs/data/trends/asvs-pass-weekly.json
-
-Safe to run weekly (idempotent per week).
+security-metrics/weekly/pass-trend.json
 """
 
-from __future__ import annotations
 import json
 from pathlib import Path
 from datetime import datetime, timezone
 
+COVERAGE = Path("docs/data/governance/asvs-coverage.json")
+EPSS = Path("docs/data/epss-findings.json")
+OUT = Path("security-metrics/weekly/pass-trend.json")
 
-ASVS_INPUT = Path("docs/data/governance/asvs-coverage.json")
-TREND_OUT  = Path("docs/data/trends/asvs-pass-weekly.json")
+OUT.parent.mkdir(parents=True, exist_ok=True)
 
-
-def current_week() -> str:
-    # ISO week anchor (Monday)
-    now = datetime.now(timezone.utc)
-    year, week, _ = now.isocalendar()
-    return f"{year}-W{week:02d}"
-
-
-def load_json(p: Path, default):
-    if not p.exists():
-        return default
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
+def utc_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 def main():
-    if not ASVS_INPUT.exists():
-        raise SystemExit(f"[ERROR] Missing {ASVS_INPUT}")
+    cov = json.loads(COVERAGE.read_text())
+    summ = cov["summary"]
 
-    asvs = load_json(ASVS_INPUT, {})
-    summary = asvs.get("summary", {})
+    total = summ.get("total", 0)
+    passed = summ.get("passed", 0)
+    na = summ.get("not_applicable", 0)
+    failed = max(total - passed - na, 0)
 
-    pass_pct = summary.get("coverage_percent")
-    if pass_pct is None:
-        raise SystemExit("[ERROR] coverage_percent not found in ASVS summary")
+    pass_pct = round((passed / total) * 100) if total else 0
 
-    week = current_week()
+    kev_count = 0
+    if EPSS.exists():
+        epss = json.loads(EPSS.read_text())
+        kev_count = sum(1 for v in epss.get("high_risk", []) if v.get("is_kev"))
 
-    trend = load_json(TREND_OUT, {"series": []})
-    series = trend.get("series", [])
+    record = {
+        "date": utc_now(),
+        "pass_percent": pass_pct,
+        "fail_count": failed,
+        "kev_count": kev_count,
+    }
 
-    # remove existing entry for same week (idempotent)
-    series = [x for x in series if x.get("week") != week]
+    history = []
+    if OUT.exists():
+        history = json.loads(OUT.read_text())
 
-    series.append({
-        "week": week,
-        "pass_percent": int(round(pass_pct))
-    })
+        # avoid duplicate week
+        if history and history[-1]["date"] == record["date"]:
+            print("[INFO] Trend already recorded for this week")
+            return
 
-    # keep sorted
-    series = sorted(series, key=lambda x: x["week"])
-
-    TREND_OUT.parent.mkdir(parents=True, exist_ok=True)
-    TREND_OUT.write_text(
-        json.dumps({"series": series}, indent=2),
-        encoding="utf-8"
-    )
-
-    print(f"[OK] ASVS PASS trend appended: week={week}, pass={pass_pct}%")
-
+    history.append(record)
+    OUT.write_text(json.dumps(history, indent=2))
+    print(f"[OK] Weekly trend appended: {record}")
 
 if __name__ == "__main__":
     main()
