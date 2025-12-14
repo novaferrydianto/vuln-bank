@@ -1,74 +1,75 @@
 /* ====================================================
-   Executive PASS% Sparkline
+   Executive Sparkline (Weekly PASS %)
+   - No dependencies
+   - GitHub Pages safe
+   - Direction > snapshot
    ==================================================== */
 
-async function loadTrend() {
-  const res = await fetch("./data/trends/asvs-pass-trend.json", { cache: "no-store" });
-  if (!res.ok) throw new Error("Trend data not available");
-  return res.json();
-}
+(async function renderSparkline() {
+  const svg = document.getElementById("sparkline");
+  if (!svg) return;
 
-function renderSparkline(svg, values) {
-  const width = 300;
-  const height = 60;
-  const padding = 6;
-
-  const min = Math.min(...values, 0);
-  const max = Math.max(...values, 100);
-  const range = max - min || 1;
-
-  const points = values.map((v, i) => {
-    const x = padding + (i / (values.length - 1)) * (width - padding * 2);
-    const y = height - padding - ((v - min) / range) * (height - padding * 2);
-    return `${x},${y}`;
-  });
-
-  const delta = values.at(-1) - values.at(-2);
-  const color = delta >= 0 ? "#067647" : "#b42318";
-
-  svg.innerHTML = `
-    <polyline
-      fill="none"
-      stroke="${color}"
-      stroke-width="2"
-      points="${points.join(" ")}"
-    />
-  `;
-
-  return delta;
-}
-
-function renderDeltaBadge(delta) {
-  const badge = document.createElement("span");
-  badge.className = "meta-badge";
-  badge.style.marginLeft = "0.6rem";
-
-  if (delta >= 0) {
-    badge.style.background = "#e6fffa";
-    badge.style.color = "#067647";
-    badge.textContent = `▲ +${delta.toFixed(1)}%`;
-  } else {
-    badge.style.background = "#ffeaea";
-    badge.style.color = "#b42318";
-    badge.textContent = `▼ ${delta.toFixed(1)}%`;
-  }
-
-  document.querySelector("h2")?.appendChild(badge);
-}
-
-(async function initSparkline() {
   try {
-    const trend = await loadTrend();
-    const rows = trend.data.slice(-12); // last 12 weeks
-    if (rows.length < 2) return;
+    const res = await fetch("./data/trends/asvs-pass-trend.json", {
+      cache: "no-store"
+    });
 
-    const values = rows.map(r => r.pass_percent);
-    const svg = document.getElementById("sparkline");
+    if (!res.ok) {
+      console.warn("[sparkline] trend data not found");
+      return;
+    }
 
-    const delta = renderSparkline(svg, values);
-    renderDeltaBadge(delta);
+    const json = await res.json();
+    const points = (json.data || []).slice(-8); // last 8 weeks
+    if (points.length < 2) return;
+
+    const values = points.map(p => Number(p.value) || 0);
+
+    const width = 300;
+    const height = 60;
+    const pad = 6;
+
+    const min = Math.min(...values, 0);
+    const max = Math.max(...values, 100);
+    const range = max - min || 1;
+
+    const scaleX = i =>
+      pad + (i / (values.length - 1)) * (width - pad * 2);
+
+    const scaleY = v =>
+      height - pad - ((v - min) / range) * (height - pad * 2);
+
+    const path = values
+      .map((v, i) => `${scaleX(i)},${scaleY(v)}`)
+      .join(" ");
+
+    const last = values[values.length - 1];
+    const prev = values[values.length - 2];
+    const delta = last - prev;
+
+    const color =
+      delta >= 0
+        ? getComputedStyle(document.documentElement)
+            .getPropertyValue("--color-pass") || "#067647"
+        : getComputedStyle(document.documentElement)
+            .getPropertyValue("--color-fail") || "#b42318";
+
+    svg.innerHTML = `
+      <polyline
+        fill="none"
+        stroke="${color.trim()}"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        points="${path}" />
+      <circle
+        cx="${scaleX(values.length - 1)}"
+        cy="${scaleY(last)}"
+        r="3"
+        fill="${color.trim()}" />
+    `;
 
   } catch (err) {
-    console.warn("Sparkline unavailable:", err.message);
+    console.error("[sparkline] render failed:", err);
   }
 })();
