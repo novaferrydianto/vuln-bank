@@ -50,6 +50,21 @@ function renderKpis(scorecard, asvs) {
 }
 
 /* ====================================================
+   Header Meta
+   ==================================================== */
+
+function renderHeaderMeta(scorecard) {
+  byId("meta-version").textContent =
+    scorecard?.meta?.version ?? "–";
+
+  const generated = scorecard?.meta?.generated_at;
+  byId("meta-generated").textContent =
+    generated
+      ? new Date(generated).toLocaleString()
+      : "–";
+}
+
+/* ====================================================
    Status Breakdown + Donut
    ==================================================== */
 
@@ -129,26 +144,25 @@ function renderControlsTable(controls) {
 (async function bootstrap() {
   try {
     const [asvs, scorecard] = await Promise.all([
-      loadJSON("../../data/governance/asvs-coverage.json"),
-      loadJSON("../../data/security-scorecard.json")
+      loadJSON(`${BASE}data/governance/asvs-coverage.json`),
+      loadJSON(`${BASE}data/security-scorecard.json`)
     ]);
 
+    renderHeaderMeta(scorecard);
     renderKpis(scorecard, asvs);
 
     const controls = renderStatus(asvs);
-
     renderControlsTable(controls);
 
   } catch (err) {
     console.error("Dashboard initialization failed:", err);
 
-    const body = document.body;
     const error = document.createElement("div");
     error.style.padding = "2rem";
     error.style.color = "#b42318";
     error.textContent =
       "Failed to load security dashboard data. Check CI artifacts or schema compatibility.";
 
-    body.prepend(error);
+    document.body.prepend(error);
   }
 })();
