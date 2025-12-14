@@ -1,9 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/security-scorecard.schema.json",
+  "$id": "https://example.com/schemas/security-scorecard.schema.json",
   "title": "Security Scorecard",
   "type": "object",
-  "required": ["meta", "weights", "score", "grade_policy", "management_summary", "owasp", "epss", "sla", "assets"],
+  "required": [
+    "meta",
+    "weights",
+    "score",
+    "grade_policy",
+    "management_summary",
+    "owasp",
+    "epss",
+    "sla",
+    "assets"
+  ],
   "properties": {
     "meta": {
       "type": "object",
@@ -69,7 +79,12 @@
 
     "management_summary": {
       "type": "object",
-      "required": ["grade_rationale", "deployment_posture", "key_risks", "recommended_actions"],
+      "required": [
+        "grade_rationale",
+        "deployment_posture",
+        "key_risks",
+        "recommended_actions"
+      ],
       "properties": {
         "grade_rationale": { "type": "string" },
         "deployment_posture": { "type": "string" },
@@ -111,7 +126,9 @@
             "properties": {
               "cve": { "type": "string" },
               "epss": { "type": "number" },
-              "package": { "type": "string" }
+              "package": { "type": "string" },
+              "risk_level": { "type": "string" },
+              "note": { "type": "string" }
             }
           }
         }

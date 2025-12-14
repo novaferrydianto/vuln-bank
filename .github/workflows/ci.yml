@@ -195,6 +195,13 @@ jobs:
             --threshold "${EPSS_THRESHOLD}"
           test -f "${REPORT_DIR}/epss-findings.json" || echo '{"high_risk":[],"threshold":"'"${EPSS_THRESHOLD}"'"}' > "${REPORT_DIR}/epss-findings.json"
 
+      - name: Install jsonschema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q --upgrade pip
+          python3 -m pip install -q jsonschema
+
 # ---------------- DAST ----------------
       - name: Build app image (for DAST)
         shell: bash
@@ -272,6 +279,24 @@ jobs:
             --out-json "${REPORT_DIR}/governance/asvs-coverage.json" \
             --out-md "${REPORT_DIR}/governance/asvs-coverage.md"
           test -f "${REPORT_DIR}/governance/asvs-coverage.json"
+
+      - name: Validate ASVS coverage schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          with open("schemas/asvs-coverage.schema.json") as f:
+              schema = json.load(f)
+
+          with open("security-reports/governance/asvs-coverage.json") as f:
+              data = json.load(f)
+
+          validate(instance=data, schema=schema)
+          print("✅ ASVS coverage schema valid")
+          EOF
 
 # ---------------- FINAL GATE ----------------
       - name: Final Gate

@@ -14,21 +14,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      # -------------------------------------------------
+      # Runtime
+      # -------------------------------------------------
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps (PDF)
+      - name: Install dependencies
         run: |
           set -euo pipefail
-          python3 -m pip install -q --upgrade pip
-          python3 -m pip install -q reportlab
+          python3 -m pip install --upgrade pip
+          pip install reportlab requests jsonschema
 
-      # 1) OWASP weekly (latest + history)
+      # -------------------------------------------------
+      # 1) OWASP weekly trend
+      # -------------------------------------------------
       - name: OWASP weekly trend (labels)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,7 +44,6 @@ jobs:
           set -euo pipefail
           python3 scripts/owasp_weekly_trend.py
 
-      # 1b) OWASP per-asset
       - name: OWASP per-asset (labels + fallback)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -46,8 +52,10 @@ jobs:
           set -euo pipefail
           python3 scripts/owasp_by_asset_weekly.py
 
+      # -------------------------------------------------
       # 2) DefectDojo SLA weekly breaches
-      - name: DefectDojo SLA weekly breaches (Finding aging)
+      # -------------------------------------------------
+      - name: DefectDojo SLA weekly breaches (finding aging)
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
@@ -56,7 +64,28 @@ jobs:
           set -euo pipefail
           python3 scripts/defectdojo_sla_weekly.py
 
-      # 3) Security scorecard JSON
+      # -------------------------------------------------
+      # 3) Validate SLA weekly JSON (CONTRACT)
+      # -------------------------------------------------
+      - name: Validate SLA weekly schema
+        run: |
+          set -euo pipefail
+          python - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          with open("schemas/defectdojo-sla-weekly.schema.json") as s:
+              schema = json.load(s)
+          with open("docs/data/defectdojo-sla-weekly.json") as d:
+              data = json.load(d)
+
+          validate(instance=data, schema=schema)
+          print("✅ defectdojo-sla-weekly.json valid")
+          EOF
+
+      # -------------------------------------------------
+      # 4) Security scorecard
+      # -------------------------------------------------
       - name: Security scorecard
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -64,13 +93,36 @@ jobs:
           set -euo pipefail
           python3 scripts/security_scorecard.py
 
-      # 3b) Executive one-page (MD + PDF)
+      # -------------------------------------------------
+      # 5) Validate security scorecard (CONTRACT)
+      # -------------------------------------------------
+      - name: Validate security scorecard schema
+        run: |
+          set -euo pipefail
+          python - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          with open("schemas/security-scorecard.schema.json") as s:
+              schema = json.load(s)
+          with open("docs/data/security-scorecard.json") as d:
+              data = json.load(d)
+
+          validate(instance=data, schema=schema)
+          print("✅ security-scorecard.json valid")
+          EOF
+
+      # -------------------------------------------------
+      # 6) Executive one-page
+      # -------------------------------------------------
       - name: Executive summary (MD + PDF)
         run: |
           set -euo pipefail
           python3 scripts/generate_executive_summary.py
 
-      # Slack: weekly SLA breach message
+      # -------------------------------------------------
+      # 7) Slack notification (ONLY AFTER VALIDATION)
+      # -------------------------------------------------
       - name: Slack weekly breach report
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -78,13 +130,17 @@ jobs:
           set -euo pipefail
           python3 scripts/slack_weekly_breach.py
 
-      # Persist for Pages + history
+      # -------------------------------------------------
+      # 8) Persist weekly data
+      # -------------------------------------------------
       - name: Commit weekly data
         run: |
           set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
-          git add docs/data security-metrics/weekly || true
+
+          git add docs/data security-metrics/weekly
+
           if ! git diff --cached --quiet; then
             git commit -m "chore(security): weekly security trend update"
             git push

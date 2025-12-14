@@ -1,9 +1,12 @@
 name: Publish EPSS / KEV Dashboard
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-  workflow_dispatch:
+    paths:
+      - "scripts/epss_dashboard.py"
+      - ".github/workflows/epss-dashboard.yml"
 
 permissions:
   contents: read
@@ -40,15 +43,17 @@ jobs:
           check_artifacts: true
           if_no_artifact_found: fail
 
-      - name: Debug artifact contents
+      - name: Verify EPSS findings exist
         run: |
-          echo "=== security-reports ==="
-          ls -R security-reports
+          set -euo pipefail
+          test -f security-reports/epss-findings.json
+          jq . security-reports/epss-findings.json >/dev/null
+          echo "✅ epss-findings.json valid"
 
       # -------------------------------------------------
-      # Setup Python (NO extra deps needed)
+      # Setup Python
       # -------------------------------------------------
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -57,7 +62,12 @@ jobs:
       # Generate Dashboard (STATIC HTML)
       # -------------------------------------------------
       - name: Generate EPSS Dashboard
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          GENERATED_AT: ${{ github.run_id }}
         run: |
+          set -euo pipefail
           mkdir -p site
           python scripts/epss_dashboard.py \
             --input security-reports/epss-findings.json \

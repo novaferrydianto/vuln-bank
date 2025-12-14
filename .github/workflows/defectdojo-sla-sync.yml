@@ -13,16 +13,43 @@ jobs:
     name: DefectDojo SLA Sync
     runs-on: self-hosted
 
+    timeout-minutes: 10
+
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Sync DefectDojo SLA
-        timeout-minutes: 5
+      # -------------------------------------------------
+      # Guard rails – fail fast if env missing
+      # -------------------------------------------------
+      - name: Validate environment
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/defectdojo_sla_sync.py
+          : "${DEFECTDOJO_URL:?Missing DEFECTDOJO_URL}"
+          : "${DEFECTDOJO_API_KEY:?Missing DEFECTDOJO_API_KEY}"
+          echo "✅ DefectDojo environment OK"
+
+      # -------------------------------------------------
+      # Setup Python (explicit)
+      # -------------------------------------------------
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # -------------------------------------------------
+      # Run SLA sync (governance logic)
+      # -------------------------------------------------
+      - name: Sync DefectDojo SLA governance
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          python scripts/defectdojo_sla_sync.py

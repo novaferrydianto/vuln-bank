@@ -7,17 +7,19 @@ Inputs:
 - Bandit DefectDojo-normalized JSON
 
 Outputs:
-- JSON coverage (counts + summary)
+- JSON coverage (schema-compliant: meta + summary + controls)
 - Markdown coverage (PR-friendly)
 - ASVS history (jsonl) for trending
 """
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, Any, Iterable
+from datetime import datetime, timezone
+from typing import Dict, Any, Iterable, Tuple
 
 
 # ----------------------------
@@ -29,19 +31,24 @@ def load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def normalize_asvs_id(x: str) -> str:
+    # Keep stable formatting; avoid accidental whitespace / casing issues
+    return str(x).strip()
+
+
 def extract_asvs_from_semgrep(data: Dict[str, Any]) -> Iterable[str]:
     for r in data.get("results", []):
         md = (r.get("extra", {}) or {}).get("metadata", {}) or {}
         asvs = md.get("asvs")
         if isinstance(asvs, list):
             for x in asvs:
-                yield str(x).strip()
+                yield normalize_asvs_id(x)
         elif isinstance(asvs, str):
-            yield asvs.strip()
+            yield normalize_asvs_id(asvs)
         elif isinstance(asvs, dict):
             for k in ("id", "code", "control"):
                 if k in asvs:
-                    yield str(asvs[k]).strip()
+                    yield normalize_asvs_id(asvs[k])
 
 
 def extract_asvs_from_bandit(bandit_dd: Dict[str, Any]) -> Iterable[str]:
@@ -51,13 +58,27 @@ def extract_asvs_from_bandit(bandit_dd: Dict[str, Any]) -> Iterable[str]:
         asvs = md.get("asvs")
         if isinstance(asvs, list):
             for x in asvs:
-                yield str(x).strip()
+                yield normalize_asvs_id(x)
         elif isinstance(asvs, str):
-            yield asvs.strip()
+            yield normalize_asvs_id(asvs)
         elif isinstance(asvs, dict):
             for k in ("id", "code", "control"):
                 if k in asvs:
-                    yield str(asvs[k]).strip()
+                    yield normalize_asvs_id(asvs[k])
+
+
+def guess_level(asvs_id: str, default_level: int = 1) -> int:
+    """
+    Schema requires level in {1,2,3}. If you later encode level in tags (e.g. "V2.1.1:L2"),
+    you can parse it here. For now, we keep deterministic safe default: 1.
+    """
+    # Example future-proof parsing:
+    # if ":L2" in asvs_id.upper(): return 2
+    return default_level
+
+
+def now_iso_z() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # ----------------------------
@@ -71,44 +92,67 @@ def main():
     ap.add_argument("--out-md", required=True)
     ap.add_argument("--baseline", default="security-baselines/asvs-baseline.json")
     ap.add_argument("--history", default="security-reports/governance/asvs-history.jsonl")
+    ap.add_argument("--asvs-version", default=os.getenv("ASVS_VERSION", "4.0.3"))
     args = ap.parse_args()
 
     semgrep = load_json(Path(args.semgrep))
     bandit = load_json(Path(args.bandit))
     baseline = load_json(Path(args.baseline))
 
+    # counts per ASVS control
     counts = defaultdict(int)
+
+    # evidence sources per ASVS control (stable list)
+    evidence = defaultdict(set)
 
     for tag in extract_asvs_from_semgrep(semgrep):
         if tag:
             counts[tag] += 1
+            evidence[tag].add("semgrep")
 
     for tag in extract_asvs_from_bandit(bandit):
         if tag:
             counts[tag] += 1
+            evidence[tag].add("bandit")
 
     counts = dict(sorted(counts.items()))
     total_signals = sum(counts.values())
+    unique_controls = len(counts)
 
-    summary = {
-        "total_signals": total_signals,
-        "unique_controls": len(counts),
-    }
+    # ----------------------------
+    # Build schema-required controls[]
+    # IMPORTANT: With only "signals", we can safely mark discovered controls as FAIL
+    # (signal == finding evidence). PASS coverage requires a full ASVS catalog,
+    # which we don't have yet.
+    # ----------------------------
+    controls = []
+    for control_id, cnt in counts.items():
+        controls.append({
+            "id": control_id,
+            "level": guess_level(control_id, default_level=1),
+            "status": "FAIL" if cnt > 0 else "PASS",
+            "evidence": sorted(list(evidence.get(control_id, set()))),
+            # keep extra fields (allowed by schema.additionalProperties)
+            "count": cnt,
+        })
 
-    current = {
-        "summary": summary,
-        "counts": counts,
+    # Schema summary contract
+    # Here: total = discovered controls; failed = discovered (signals imply findings); passed = 0
+    passed = sum(1 for c in controls if c["status"] == "PASS")
+    failed = sum(1 for c in controls if c["status"] == "FAIL")
+    total = len(controls)
+    coverage_percent = round((passed / total) * 100, 2) if total else 0.0
+
+    meta = {
+        "asvs_version": str(args.asvs_version),
+        "generated_at": now_iso_z(),
+        "repo": os.getenv("GITHUB_REPOSITORY", "unknown"),
     }
 
     # ----------------------------
-    # Delta vs baseline
+    # Delta vs baseline (preserve your existing model)
     # ----------------------------
-    delta = {
-        "added": [],
-        "removed": [],
-        "changed": {},
-    }
-
+    delta = {"added": [], "removed": [], "changed": {}}
     base_counts = baseline.get("counts", {}) if isinstance(baseline, dict) else {}
 
     cur_keys = set(counts.keys())
@@ -125,14 +169,33 @@ def main():
                 "delta": counts[k] - base_counts.get(k, 0),
             }
 
-    current["delta"] = delta
+    # ----------------------------
+    # Final output (schema-compliant + extra analytics)
+    # ----------------------------
+    out_obj = {
+        "meta": meta,
+        "summary": {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "coverage_percent": coverage_percent,
+            # extra analytics (allowed)
+            "total_signals": total_signals,
+            "unique_controls": unique_controls,
+        },
+        "controls": controls,
+
+        # extra fields (allowed by schema.additionalProperties)
+        "counts": counts,
+        "delta": delta,
+    }
 
     # ----------------------------
     # Write JSON
     # ----------------------------
     out_json = Path(args.out_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    out_json.write_text(json.dumps(out_obj, indent=2), encoding="utf-8")
 
     # ----------------------------
     # Write Markdown
@@ -140,17 +203,27 @@ def main():
     lines = [
         "## ASVS Coverage Report",
         "",
-        f"- **Total signals:** `{summary['total_signals']}`",
-        f"- **Unique ASVS controls:** `{summary['unique_controls']}`",
+        f"- **ASVS version:** `{meta['asvs_version']}`",
+        f"- **Generated at:** `{meta['generated_at']}`",
+        f"- **Repo:** `{meta.get('repo','unknown')}`",
         "",
-        "### Coverage",
+        "### Summary",
         "",
-        "| ASVS Control | Count |",
-        "|--------------|-------|",
+        f"- **Total controls (discovered):** `{total}`",
+        f"- **Passed:** `{passed}`",
+        f"- **Failed:** `{failed}`",
+        f"- **Coverage:** `{coverage_percent}%`",
+        f"- **Total signals:** `{total_signals}`",
+        "",
+        "### Controls (discovered)",
+        "",
+        "| ASVS Control | Level | Status | Evidence | Count |",
+        "|--------------|-------|--------|----------|-------|",
     ]
 
-    for k, v in counts.items():
-        lines.append(f"| `{k}` | `{v}` |")
+    for c in controls:
+        ev = ", ".join(c.get("evidence", []))
+        lines.append(f"| `{c['id']}` | `{c['level']}` | `{c['status']}` | `{ev}` | `{c.get('count',0)}` |")
 
     lines += [
         "",
@@ -176,7 +249,15 @@ def main():
     hist.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": int(time.time()),
-        "summary": summary,
+        "meta": meta,
+        "summary": {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "coverage_percent": coverage_percent,
+            "total_signals": total_signals,
+            "unique_controls": unique_controls,
+        },
     }
     with hist.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")

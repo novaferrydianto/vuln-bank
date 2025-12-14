@@ -4,6 +4,8 @@ name: Deploy GitHub Pages
 on:
   push:
     branches: ["main"]
+    paths:
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       # Upload /docs as Pages artifact
       - name: Upload Pages artifact
