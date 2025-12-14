@@ -1,55 +1,76 @@
 #!/usr/bin/env python3
-"""
-Weekly OWASP Trend Report from PR Labels
+import os, json, datetime, urllib.request, urllib.parse
 
-- Queries merged PRs in the last 7 days
-- Aggregates OWASP labels
-- Writes owasp-weekly.json (dashboard & Slack ready)
-"""
-
-import os
-import json
-import datetime
-import requests
-from collections import Counter
-
-GITHUB_API = "https://api.github.com"
-REPO = os.getenv("GITHUB_REPOSITORY")
-TOKEN = os.getenv("GITHUB_TOKEN")
+REPO = os.environ["REPO"]
+TOKEN = os.environ["GITHUB_TOKEN"]
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
     "Accept": "application/vnd.github+json",
+    "User-Agent": "vuln-bank-weekly-trend"
 }
 
-def fetch_merged_prs():
-    since = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat() + "Z"
-    url = f"{GITHUB_API}/repos/{REPO}/pulls?state=closed&per_page=100"
-    prs = requests.get(url, headers=HEADERS, timeout=10).json()
-    return [pr for pr in prs if pr.get("merged_at") and pr["merged_at"] >= since]
+NOW = datetime.datetime.utcnow()
+SINCE = (NOW - datetime.timedelta(days=7)).isoformat() + "Z"
 
-def main():
-    prs = fetch_merged_prs()
-    counter = Counter()
+OWASP_KEYS = [f"A{i:02}" for i in range(1, 11)]
+counts = {k: 0 for k in OWASP_KEYS}
 
-    for pr in prs:
-        issue = requests.get(pr["issue_url"], headers=HEADERS, timeout=10).json()
-        for l in issue.get("labels", []):
-            name = l["name"]
-            if name.startswith("OWASP-"):
-                counter[name] += 1
-
-    report = {
-        "week": datetime.date.today().isoformat(),
-        "total_prs": len(prs),
-        "owasp_counts": dict(counter),
+def fetch_issues(page: int):
+    q = {
+        "state": "all",
+        "per_page": 100,
+        "page": page,
+        "since": SINCE
     }
+    url = f"https://api.github.com/repos/{REPO}/issues?" + urllib.parse.urlencode(q)
+    req = urllib.request.Request(url, headers=HEADERS)
+    return json.load(urllib.request.urlopen(req))
 
-    out = "security-reports/governance/owasp-weekly.json"
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    json.dump(report, open(out, "w"), indent=2)
+# --- paginate issues ---
+page = 1
+while True:
+    issues = fetch_issues(page)
+    if not issues:
+        break
 
-    print("[OK] OWASP weekly trend generated")
+    for issue in issues:
+      if "pull_request" in issue:
+        continue
 
-if __name__ == "__main__":
-    main()
+    for lbl in issue.get("labels", []):
+        name = (lbl.get("name") or "").upper()
+        if name.startswith("OWASP:A") and len(name) >= 8:
+            key = name.replace("OWASP:", "")
+            if key in counts:
+                counts[key] += 1
+    page += 1
+
+# --- output object ---
+result = {
+    "repo": REPO,
+    "window": "7d",
+    "generated_at": NOW.isoformat() + "Z",
+    "counts": counts
+}
+
+# --- paths ---
+os.makedirs("security-metrics/weekly", exist_ok=True)
+os.makedirs("docs/data", exist_ok=True)
+
+latest_path = "docs/data/owasp-latest.json"
+history_path = "docs/data/owasp-history.jsonl"
+
+# --- write latest ---
+with open(latest_path, "w") as f:
+    json.dump(result, f, indent=2)
+
+# --- append history ---
+with open(history_path, "a") as f:
+    f.write(json.dumps(result) + "\n")
+
+# --- also keep raw copy ---
+with open("security-metrics/weekly/owasp-latest.json", "w") as f:
+    json.dump(result, f, indent=2)
+
+print("[OK] Weekly OWASP trend generated")

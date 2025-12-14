@@ -1,74 +1,124 @@
-name: Vuln Bank – Weekly OWASP Trend
+name: Vuln Bank – Weekly Security Posture
 
 on:
   schedule:
-    - cron: "0 19 * * 0" # Minggu 02:00 WIB (UTC 19:00)
+    - cron: "0 2 * * 1"   # Monday 09:00 WIB
   workflow_dispatch:
 
+concurrency:
+  group: weekly-security-posture
+  cancel-in-progress: true
+
 permissions:
-  contents: write
-  issues: read
+  contents: write        # commit metrics + publish pages
+  issues: read           # read OWASP labels
   pull-requests: read
 
+env:
+  PYTHON_BIN: python3
+
 jobs:
-  owasp_trend:
-    name: OWASP trend (labels -> metrics)
+  weekly_security_posture:
+    name: Weekly OWASP + EPSS + SLA + Scorecard
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Collect OWASP label metrics (last 7 days)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p metrics
-          REPO="${{ github.repository }}"
-          SINCE="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
-
-          # Query PRs updated in last 7 days, pull labels
-          gh api -H "Accept: application/vnd.github+json" \
-            "/repos/${REPO}/pulls?state=all&per_page=100&sort=updated&direction=desc" \
-            > metrics/prs.json
-
-          python3 - <<'PY'
-          import json, re, datetime
-          from collections import Counter
-          prs=json.load(open("metrics/prs.json"))
-          c=Counter()
-          for pr in prs:
-            labels=[l["name"] for l in pr.get("labels",[])]
-            for name in labels:
-              m=re.search(r"\bA0?[1-9]\b|\bA10\b", name)
-              if m:
-                c[m.group(0)] += 1
-          out={
-            "window_days": 7,
-            "generated_utc": datetime.datetime.utcnow().isoformat()+"Z",
-            "counts": dict(sorted(c.items(), key=lambda x:x[0])),
-          }
-          open("metrics/owasp_weekly.json","w").write(json.dumps(out, indent=2))
-          print(json.dumps(out, indent=2))
-          PY
-
-      - name: Upload weekly metrics artifact
-        uses: actions/upload-artifact@v4
+      # --------------------------------------------------
+      # Checkout repo (full history for Pages + metrics)
+      # --------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          name: owasp-weekly-metrics
-          path: metrics/owasp_weekly.json
+          fetch-depth: 0
 
-      - name: Commit metrics (optional)
+      # --------------------------------------------------
+      # Prepare directories (idempotent)
+      # --------------------------------------------------
+      - name: Prepare metrics directories
         shell: bash
         run: |
           set -euo pipefail
-          # Keep history in repo (optional). Remove this step if you prefer artifact-only.
-          git config user.name "devsecops-bot"
-          git config user.email "devsecops@vulnbank.local"
-          git add metrics/owasp_weekly.json
+          mkdir -p security-metrics/weekly
+          mkdir -p docs/data
+
+      # --------------------------------------------------
+      # 1️⃣ OWASP weekly trend (GitHub Issues labels)
+      # --------------------------------------------------
+      - name: Collect OWASP weekly trend
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${PYTHON_BIN} scripts/owasp_weekly_trend.py
+
+      # --------------------------------------------------
+      # 2️⃣ EPSS weekly aggregation (from CI artifacts / history)
+      # --------------------------------------------------
+      - name: Collect EPSS weekly summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${PYTHON_BIN} scripts/epss_weekly_summary.py
+
+      # --------------------------------------------------
+      # 3️⃣ DefectDojo SLA weekly sync
+      # --------------------------------------------------
+      - name: Collect DefectDojo SLA weekly report
+        env:
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${PYTHON_BIN} scripts/defectdojo_sla_weekly.py
+
+      # --------------------------------------------------
+      # 4️⃣ Security Scorecard (OWASP × EPSS × SLA)
+      # --------------------------------------------------
+      - name: Generate security scorecard
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${PYTHON_BIN} scripts/security_scorecard.py
+
+      # --------------------------------------------------
+      # Persist metrics into repo (history + Pages data)
+      # --------------------------------------------------
+      - name: Commit weekly security metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "security-bot"
+          git config user.email "security-bot@users.noreply.github.com"
+
+          git add security-metrics docs/data || true
+
           if ! git diff --cached --quiet; then
-            git commit -m "chore(metrics): weekly OWASP trend"
+            git commit -m "chore(security): weekly security posture update"
             git push
           else
-            echo "[INFO] No changes"
+            echo "[INFO] No security posture changes"
           fi
+
+      # --------------------------------------------------
+      # Upload artifact (audit trail)
+      # --------------------------------------------------
+      - name: Upload weekly security metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-security-posture
+          path: security-metrics/weekly
+
+      # --------------------------------------------------
+      # Slack weekly executive summary
+      # --------------------------------------------------
+      - name: Slack weekly security summary
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${PYTHON_BIN} scripts/slack_weekly_trend.py

@@ -1,0 +1,38 @@
+{
+  "repo": "novaferrydianto/vuln-bank",
+  "generated_at": "2025-01-13T02:00:00Z",
+
+  "owasp": {
+    "A01": 3,
+    "A02": 1,
+    "A03": 0,
+    "A05": 2
+  },
+
+  "epss": {
+    "high_risk_count": 4,
+    "top_cves": [
+      {
+        "cve": "CVE-2024-3094",
+        "epss": 0.92,
+        "package": "xz-utils"
+      }
+    ]
+  },
+
+  "sla": {
+    "breaches": {
+      "Critical": 1,
+      "High": 2
+    }
+  },
+
+  "score": {
+    "owasp": 65,
+    "epss": 40,
+    "sla": 50,
+    "overall": 52
+  },
+
+  "grade": "C"
+}
