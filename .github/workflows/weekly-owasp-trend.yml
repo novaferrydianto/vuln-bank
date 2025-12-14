@@ -1,4 +1,4 @@
-name: Vuln Bank – Weekly Security Metrics
+name: Vuln Bank – Weekly Security Trend
 
 on:
   schedule:
@@ -10,64 +10,92 @@ permissions:
   issues: read
 
 jobs:
-  weekly_metrics:
-    name: Weekly Metrics (OWASP + SLA + Scorecard)
+  weekly_trend:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 1) OWASP weekly trend (writes docs/data/owasp-latest.json + docs/data/owasp-history.jsonl)
-      - name: Generate OWASP weekly trend
+      - name: Install deps (PDF)
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q --upgrade pip
+          python3 -m pip install -q reportlab
+
+      # 1) OWASP weekly (latest + history)
+      - name: OWASP weekly trend (labels)
         env:
-          REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           python3 scripts/owasp_weekly_trend.py
 
-      # 2) DefectDojo SLA weekly (writes docs/data/defectdojo-sla-weekly.json)
-      - name: DefectDojo SLA weekly sync
+      # 1b) OWASP per-asset
+      - name: OWASP per-asset (labels + fallback)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/owasp_by_asset_weekly.py
+
+      # 2) DefectDojo SLA weekly breaches
+      - name: DefectDojo SLA weekly breaches (Finding aging)
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
-          # Optional: product / engagement scoping if your script supports it
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
         run: |
           set -euo pipefail
           python3 scripts/defectdojo_sla_weekly.py
 
-      # 3) Security scorecard (reads OWASP+SLA+EPSS inputs; writes docs/data/security-scorecard*.json*)
-      - name: Generate security scorecard
+      # 3) Security scorecard JSON
+      - name: Security scorecard
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           python3 scripts/security_scorecard.py
 
-      # 4) Commit docs/data + optional security-metrics folder
-      - name: Commit weekly metrics
+      # 3b) Executive one-page (MD + PDF)
+      - name: Executive summary (MD + PDF)
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_executive_summary.py
+
+      # Slack: weekly SLA breach message
+      - name: Slack weekly breach report
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          python3 scripts/slack_weekly_breach.py
+
+      # Persist for Pages + history
+      - name: Commit weekly data
         run: |
           set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
-
-          git add docs/data || true
-
+          git add docs/data security-metrics/weekly || true
           if ! git diff --cached --quiet; then
-            git commit -m "chore(security): weekly metrics update"
+            git commit -m "chore(security): weekly security trend update"
             git push
           else
             echo "[INFO] No changes"
           fi
 
-      - name: Generate executive summary PDF
-        run: |
-          set -euo pipefail
-          python3 scripts/render_exec_summary_pdf.py
+      - name: Upload weekly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-security-trend
+          path: |
+            docs/data
+            security-metrics/weekly
