@@ -1,93 +1,93 @@
-name: Publish EPSS / KEV Dashboard
+name: Vuln Bank – EPSS / KEV Dashboard
 
 on:
+  workflow_run:
+    workflows:
+      - Vuln Bank – Weekly Security Data (OWASP / SLA / Scorecard)
+    types:
+      - completed
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "scripts/epss_dashboard.py"
-      - ".github/workflows/epss-dashboard.yml"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
-  group: github-pages
+  group: security-dashboards
   cancel-in-progress: true
 
 jobs:
-  build:
+  epss_dashboard:
+    name: Generate EPSS Dashboard
     runs-on: ubuntu-latest
 
     steps:
-      # -------------------------------------------------
+      # =================================================
       # Checkout
-      # -------------------------------------------------
+      # =================================================
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # -------------------------------------------------
-      # Download latest CI artifact (security-reports)
-      # -------------------------------------------------
-      - name: Download security-reports artifact
-        uses: dawidd6/action-download-artifact@v6
         with:
-          repo: ${{ github.repository }}
-          workflow: ci.yml
-          workflow_search: true
-          workflow_conclusion: success
-          name: security-reports
-          path: security-reports
-          check_artifacts: true
-          if_no_artifact_found: fail
+          fetch-depth: 0
 
+      # =================================================
+      # Verify input data (contract)
+      # =================================================
       - name: Verify EPSS findings exist
         run: |
           set -euo pipefail
-          test -f security-reports/epss-findings.json
-          jq . security-reports/epss-findings.json >/dev/null
-          echo "✅ epss-findings.json valid"
+          test -f docs/data/epss-findings.json
+          jq . docs/data/epss-findings.json >/dev/null
+          echo "✅ docs/data/epss-findings.json valid"
 
-      # -------------------------------------------------
-      # Setup Python
-      # -------------------------------------------------
+      # =================================================
+      # Runtime
+      # =================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # -------------------------------------------------
+      # =================================================
       # Generate Dashboard (STATIC HTML)
-      # -------------------------------------------------
-      - name: Generate EPSS Dashboard
+      # =================================================
+      - name: Generate EPSS dashboard (HTML)
         env:
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_SHA: ${{ github.sha }}
-          GENERATED_AT: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          mkdir -p site
+          mkdir -p docs/dashboards/epss
           python scripts/epss_dashboard.py \
-            --input security-reports/epss-findings.json \
-            --outdir site
+            --input docs/data/epss-findings.json \
+            --outdir docs/dashboards/epss
 
-      # -------------------------------------------------
-      # Upload Pages artifact
-      # -------------------------------------------------
+      # =================================================
+      # Deploy Pages (single Pages root = /docs)
+      # =================================================
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: docs
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - name: Deploy GitHub Pages
         uses: actions/deploy-pages@v4
+
+      # =================================================
+      # Commit generated dashboard
+      # =================================================
+      - name: Commit EPSS dashboard
+        run: |
+          set -euo pipefail
+          git config user.name "security-bot"
+          git config user.email "security-bot@users.noreply.github.com"
+
+          git add docs/dashboards/epss
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No EPSS dashboard changes"
+          else
+            git commit -m "chore(security): update EPSS/KEV dashboard"
+            git push
+          fi

@@ -1,4 +1,4 @@
-name: Vuln Bank – Weekly Security Trend
+name: Vuln Bank – Weekly Security Data (OWASP / SLA / Scorecard)
 
 on:
   schedule:
@@ -9,19 +9,27 @@ permissions:
   contents: write
   issues: read
 
+concurrency:
+  group: weekly-security-data
+  cancel-in-progress: false
+
 jobs:
-  weekly_trend:
+  security_data:
+    name: Generate Weekly Security Data
     runs-on: ubuntu-latest
 
     steps:
+      # =================================================
+      # Checkout
+      # =================================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # required for weekly append history
 
-      # -------------------------------------------------
+      # =================================================
       # Runtime
-      # -------------------------------------------------
+      # =================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -30,102 +38,105 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          python3 -m pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install reportlab requests jsonschema
 
-      # -------------------------------------------------
-      # 1) OWASP Weekly Trend
-      # -------------------------------------------------
-      - name: OWASP weekly trend
+      # =================================================
+      # 1) OWASP Weekly Trend (Issues-based signal)
+      # =================================================
+      - name: OWASP weekly trend (repo-level)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: python3 scripts/owasp_weekly_trend.py
+        run: |
+          set -euo pipefail
+          python3 scripts/owasp_weekly_trend.py
 
-      - name: OWASP per-asset
+      - name: OWASP weekly trend (per asset)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: python3 scripts/owasp_by_asset_weekly.py
+        run: |
+          set -euo pipefail
+          python3 scripts/owasp_by_asset_weekly.py
 
-      # -------------------------------------------------
-      # 2) DefectDojo SLA
-      # -------------------------------------------------
-      - name: DefectDojo SLA weekly
+      # =================================================
+      # 2) DefectDojo SLA (Governance signal)
+      # =================================================
+      - name: DefectDojo SLA weekly snapshot
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
-        run: python3 scripts/defectdojo_sla_weekly.py
-
-      - name: Validate SLA schema
         run: |
+          set -euo pipefail
+          python3 scripts/defectdojo_sla_weekly.py
+
+      - name: Validate DefectDojo SLA schema
+        run: |
+          set -euo pipefail
           python3 - << 'EOF'
           import json
           from jsonschema import validate
+
           validate(
             json.load(open("docs/data/defectdojo-sla-weekly.json")),
             json.load(open("schemas/defectdojo-sla-weekly.schema.json"))
           )
-          print("✅ SLA schema valid")
+          print("✅ DefectDojo SLA schema valid")
           EOF
 
-      # -------------------------------------------------
-      # 3) Security Scorecard + Maturity
-      # -------------------------------------------------
-      - name: Security scorecard
-        run: python3 scripts/security_scorecard.py
-
-      - name: Add maturity score (0–100)
-        run: python3 scripts/maturity_score.py
-
-      - name: Validate scorecard schema
+      # =================================================
+      # 3) Security Scorecard (Normalized risk model)
+      # =================================================
+      - name: Generate security scorecard
         run: |
+          set -euo pipefail
+          python3 scripts/security_scorecard.py
+
+      - name: Compute maturity score (0–100)
+        run: |
+          set -euo pipefail
+          python3 scripts/maturity_score.py
+
+      - name: Validate security scorecard schema
+        run: |
+          set -euo pipefail
           python3 - << 'EOF'
           import json
           from jsonschema import validate
+
           validate(
             json.load(open("docs/data/security-scorecard.json")),
             json.load(open("schemas/security-scorecard.schema.json"))
           )
-          print("✅ Scorecard schema valid")
+          print("✅ Security scorecard schema valid")
           EOF
 
-      # -------------------------------------------------
-      # 4) Dashboards & Executive Outputs
-      # -------------------------------------------------
-      - name: ASVS dashboard (HTML → Pages)
+      # =================================================
+      # 4) Weekly PASS% Trend (Executive Sparkline)
+      # =================================================
+      - name: Append ASVS PASS% weekly trend
         run: |
-          mkdir -p docs/dashboards/asvs
-          python3 scripts/asvs_dashboard.py \
-            --scorecard docs/data/security-scorecard.json \
-            --outdir docs/dashboards/asvs
+          set -euo pipefail
+          python3 scripts/append_pass_trend.py
 
-      - name: Board report (PDF with charts)
-        run: python3 scripts/generate_board_report.py
-
-      - name: Executive summary (MD + PDF)
+      # =================================================
+      # 5) Persist DATA artifacts only (append-only)
+      # =================================================
+      - name: Commit weekly security data
         run: |
-          python3 scripts/generate_executive_summary.py
-          python3 scripts/render_executive_pdf.py
-
-      # -------------------------------------------------
-      # 5) Slack (post-validation only)
-      # -------------------------------------------------
-      - name: Slack weekly breach report
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: python3 scripts/slack_weekly_breach.py
-
-      # -------------------------------------------------
-      # 6) Persist artifacts
-      # -------------------------------------------------
-      - name: Commit weekly outputs
-        run: |
+          set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
-          git add docs/data docs/dashboards docs/executive security-metrics/weekly
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(security): weekly security trend update"
+
+          git add \
+            docs/data \
+            security-metrics/weekly
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No security data changes"
+          else
+            git commit -m "chore(security): weekly security data update"
             git push
           fi

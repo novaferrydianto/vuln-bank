@@ -2,181 +2,155 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Vuln Bank – Security Posture Overview</title>
+  <title>Vuln Bank – Executive Security Overview</title>
+
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="Executive overview of Vuln Bank security posture, maturity, and risk trends." />
+  <meta name="robots" content="noindex,nofollow" />
+  <meta name="description"
+        content="Executive-level security posture overview for Vuln Bank. Board-ready, measurable, and audit-aligned." />
 
-  <!-- Optional: noindex for private demo -->
-  <!-- <meta name="robots" content="noindex,nofollow" /> -->
-
-  <style>
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: #f6f8fa;
-      color: #24292f;
-      margin: 0;
-      line-height: 1.5;
-    }
-
-    header {
-      background: #0b1f33;
-      color: #fff;
-      padding: 2rem;
-    }
-
-    header h1 {
-      margin: 0;
-      font-size: 1.6rem;
-    }
-
-    header p {
-      margin-top: 0.4rem;
-      opacity: 0.85;
-    }
-
-    main {
-      padding: 2rem;
-      max-width: 1100px;
-      margin: auto;
-    }
-
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1.2rem;
-      margin-bottom: 2rem;
-    }
-
-    .card {
-      background: #fff;
-      border-radius: 10px;
-      padding: 1.4rem;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    }
-
-    .card h2 {
-      margin-top: 0;
-      font-size: 1.1rem;
-    }
-
-    .metric {
-      font-size: 2.2rem;
-      font-weight: 700;
-      margin: 0.4rem 0;
-    }
-
-    .muted {
-      color: #57606a;
-      font-size: 0.9rem;
-    }
-
-    .links a {
-      display: block;
-      margin: 0.4rem 0;
-      text-decoration: none;
-      color: #0969da;
-      font-weight: 600;
-    }
-
-    .links a:hover {
-      text-decoration: underline;
-    }
-
-    footer {
-      padding: 1.5rem 2rem;
-      font-size: 0.85rem;
-      color: #57606a;
-      border-top: 1px solid #eaecef;
-    }
-  </style>
+  <!-- Reuse ASVS visual system -->
+  <link rel="stylesheet" href="./dashboards/asvs/styles.css" />
 </head>
 
 <body>
 
-<header>
-  <h1>Vuln Bank — Security Posture Overview</h1>
-  <p>
-    Executive-level view of application security, risk exposure, and maturity trends
-  </p>
+<!-- ================================================= -->
+<!-- HEADER -->
+<!-- ================================================= -->
+<header class="header">
+  <div class="header-main">
+    <h1>Security Posture Overview</h1>
+    <p class="subtitle">
+      Executive · Measurable · Evidence-based
+    </p>
+  </div>
+
+  <div class="header-meta">
+    <span class="meta-badge">
+      Program: <b>DevSecOps</b>
+    </span>
+    <span class="meta-badge">
+      Scope: <b>Application Security</b>
+    </span>
+  </div>
 </header>
 
-<main>
+<!-- ================================================= -->
+<!-- CONTEXT / EXECUTIVE SUMMARY -->
+<!-- ================================================= -->
+<section class="card">
+  <h2>At a Glance</h2>
 
-  <!-- ================================================= -->
-  <!-- EXEC SUMMARY -->
-  <!-- ================================================= -->
-  <section class="cards">
+  <p>
+    This page provides a <b>board-level summary</b> of Vuln Bank’s
+    application security posture.
+    Security health is measured continuously using
+    <b>OWASP ASVS</b>, <b>EPSS / KEV exploit intelligence</b>,
+    and <b>remediation SLA compliance</b>.
+  </p>
 
-    <div class="card">
-      <h2>Security Maturity</h2>
-      <div class="metric" id="maturity-score">–</div>
-      <p class="muted">
-        Composite score (0–100) based on OWASP, EPSS exploitability, and SLA discipline.
-      </p>
-    </div>
+  <ul class="explain">
+    <li>Security controls are verified automatically in CI/CD</li>
+    <li>Failures are treated as measurable risk signals, not blame</li>
+    <li>Executive focus is on <b>trend and exposure reduction</b></li>
+  </ul>
+</section>
 
-    <div class="card">
-      <h2>Current Posture</h2>
-      <p>
-        The security program focuses on <b>measurable controls</b>, <b>early risk detection</b>,
-        and <b>continuous improvement</b> through CI/CD.
-      </p>
-      <p class="muted">
-        FAIL findings indicate visibility — not failure.
-      </p>
-    </div>
+<!-- ================================================= -->
+<!-- KPI NAVIGATION -->
+<!-- ================================================= -->
+<section class="kpi">
 
-    <div class="card links">
-      <h2>Security Artifacts</h2>
-      <a href="./dashboards/asvs/">ASVS Security Dashboard →</a>
-      <a href="./board/board-report.pdf">Board Security Report (PDF) →</a>
-      <a href="./executive/executive-summary.pdf">Executive One-Pager →</a>
-    </div>
-
-  </section>
-
-  <!-- ================================================= -->
-  <!-- WHAT THIS MEANS -->
-  <!-- ================================================= -->
-  <section class="card">
-    <h2>What This Means for Leadership</h2>
-
-    <ul>
-      <li>
-        Security risks are <b>measured continuously</b>, not discovered late.
-      </li>
-      <li>
-        High-risk vulnerabilities are prioritized using <b>real exploit probability (EPSS)</b>.
-      </li>
-      <li>
-        Remediation speed is tracked via <b>SLA adherence</b>.
-      </li>
-      <li>
-        Security maturity is evaluated by <b>trend</b>, not snapshots.
-      </li>
-    </ul>
-
+  <div class="card">
+    <h2>Application Controls</h2>
     <p class="muted">
-      This approach aligns engineering execution with business risk visibility.
+      Are secure coding and design controls implemented and verified?
     </p>
-  </section>
+    <a class="meta-badge" href="./dashboards/asvs/index.html">
+      Open ASVS Dashboard →
+    </a>
+  </div>
 
-</main>
+  <div class="card">
+    <h2>Exploit Risk</h2>
+    <p class="muted">
+      Which vulnerabilities are most likely to be exploited in the wild?
+    </p>
+    <a class="meta-badge" href="./dashboards/epss/index.html">
+      Open EPSS / KEV Dashboard →
+    </a>
+  </div>
 
+  <div class="card">
+    <h2>Board Report</h2>
+    <p class="muted">
+      One-page security brief with charts, risks, and next actions.
+    </p>
+    <a class="meta-badge" href="./board/board-report.pdf">
+      Download Board PDF →
+    </a>
+  </div>
+
+</section>
+
+<!-- ================================================= -->
+<!-- TREND (PLACEHOLDER – SPARKLINE READY) -->
+<!-- ================================================= -->
+<section class="card">
+  <h2>Security Trend (Weekly)</h2>
+
+  <p class="muted">
+    Directional view of security maturity.
+    Executives should focus on <b>movement over time</b>, not single snapshots.
+  </p>
+
+  <!-- Sparkline injected by JS -->
+  <svg id="sparkline"
+       width="100%"
+       height="60"
+       viewBox="0 0 300 60"
+       preserveAspectRatio="none"
+       aria-label="Weekly PASS percentage trend">
+    <!-- rendered dynamically -->
+  </svg>
+
+  <p class="muted">
+    Upward trend indicates improving control coverage and risk reduction.
+  </p>
+</section>
+
+<!-- ================================================= -->
+<!-- WHY FAIL ≠ BAD -->
+<!-- ================================================= -->
+<section class="card explain">
+  <h2>Why “FAIL” ≠ Bad</h2>
+
+  <ul>
+    <li><b>FAIL</b> means a risk is visible, measured, and tracked</li>
+    <li>Unmeasured security equals invisible exposure</li>
+    <li>Each FAIL has ownership, SLA, and remediation evidence</li>
+    <li>Program success is measured by <b>declining FAIL trends</b></li>
+  </ul>
+
+  <p class="muted">
+    This program optimizes for <b>risk reduction</b>,
+    not cosmetic pass rates.
+  </p>
+</section>
+
+<!-- ================================================= -->
+<!-- FOOTER -->
+<!-- ================================================= -->
 <footer>
-  Generated automatically from CI pipelines · OWASP ASVS aligned · Audit-ready
+  <p>
+    Generated automatically from CI pipelines ·
+    OWASP-aligned · Audit-ready
+  </p>
 </footer>
 
-<script>
-  /* Minimal KPI hydration (optional) */
-  fetch("./data/security-scorecard.json", { cache: "no-store" })
-    .then(r => r.json())
-    .then(data => {
-      document.getElementById("maturity-score").textContent =
-        data?.score?.overall ?? "–";
-    })
-    .catch(() => {});
-</script>
+<!-- Sparkline renderer -->
+<script src="./sparkline.js"></script>
 
 </body>
 </html>
