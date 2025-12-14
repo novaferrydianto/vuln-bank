@@ -2,60 +2,86 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Vuln Bank – Security Posture Overview</title>
+  <title>Vuln Bank – Security Executive Overview</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="Executive overview of Vuln Bank application security posture and maturity." />
-  <meta name="robots" content="noindex, nofollow" />
-  <link rel="stylesheet" href="dashboards/asvs/styles.css" />
+  <meta name="description" content="Executive overview of Vuln Bank security posture, maturity, and trends." />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      margin: 0;
+      background: #f6f8fa;
+      color: #24292f;
+    }
+    header {
+      background: #0b1f33;
+      color: #fff;
+      padding: 2.2rem;
+    }
+    section {
+      padding: 2rem;
+      max-width: 1100px;
+      margin: auto;
+    }
+    .card {
+      background: #fff;
+      padding: 1.6rem;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+      margin-bottom: 1.2rem;
+    }
+    a.button {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.7rem 1.2rem;
+      border-radius: 6px;
+      background: #0b1f33;
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .muted {
+      color: #57606a;
+      font-size: 0.9rem;
+    }
+  </style>
 </head>
 
 <body>
-
 <header>
-  <h1>Vuln Bank – Security Posture</h1>
-  <p class="subtitle">Executive overview · Continuous assurance · Audit-ready</p>
+  <h1>Vuln Bank – Security Overview</h1>
+  <p class="muted">Executive-ready · Measurable · Audit-aligned</p>
 </header>
 
-<section class="card">
-  <h2>What is this?</h2>
-  <p>
-    This site presents Vuln Bank’s <b>real-time application security posture</b>,
-    generated automatically from CI/CD pipelines.
-  </p>
-  <p>
-    All data is sourced from automated security controls (ASVS, OWASP, EPSS, SLA),
-    ensuring transparency, repeatability, and audit readiness.
-  </p>
+<section>
+  <div class="card">
+    <h2>Security Maturity</h2>
+    <p>
+      This site presents Vuln Bank’s application security posture using
+      OWASP ASVS controls, exploit probability (EPSS), and remediation SLA.
+    </p>
+    <a class="button" href="./dashboards/asvs/index.html">
+      View ASVS Security Dashboard →
+    </a>
+  </div>
+
+  <div class="card">
+    <h2>Board & Executive Reports</h2>
+    <p>
+      Weekly board-style PDF reports with trends, risk prioritization,
+      and control coverage are generated automatically from CI.
+    </p>
+    <p class="muted">
+      (See <code>docs/board/board-report.pdf</code>)
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Why FAIL ≠ Bad</h2>
+    <p>
+      A FAIL indicates visibility and measurable risk — not blame.
+      Security maturity improves as FAIL trends decrease over time.
+    </p>
+  </div>
 </section>
-
-<section class="card">
-  <h2>Key Views</h2>
-  <ul>
-    <li>
-      <b>ASVS Dashboard</b> — control-level PASS / FAIL visibility  
-      <br />
-      <a href="dashboards/asvs/">→ Open ASVS Dashboard</a>
-    </li>
-    <li>
-      <b>Board Security Report</b> — maturity score & risk summary (PDF)  
-      <br />
-      <a href="board/board-report.pdf">→ Download Board Report</a>
-    </li>
-  </ul>
-</section>
-
-<section class="card explain">
-  <h2>Why FAIL ≠ Bad</h2>
-  <ul>
-    <li>FAIL means a control is visible and measurable.</li>
-    <li>Invisible security cannot be managed.</li>
-    <li>Security maturity improves when FAIL trends decrease over time.</li>
-  </ul>
-</section>
-
-<footer>
-  <p>Generated automatically from CI pipelines · Internal / Confidential</p>
-</footer>
-
 </body>
 </html>
