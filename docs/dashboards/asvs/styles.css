@@ -1,0 +1,258 @@
+/* ====================================================
+   Base
+   ==================================================== */
+:root {
+  --bg-page: #f6f8fa;
+  --bg-card: #ffffff;
+  --text-main: #24292f;
+  --text-muted: #57606a;
+
+  --brand-dark: #0b1f33;
+
+  --color-pass: #067647;
+  --color-pass-bg: #e6fffa;
+
+  --color-fail: #b42318;
+  --color-fail-bg: #ffeaea;
+
+  --color-na: #495057;
+  --color-na-bg: #f1f3f5;
+
+  --border-soft: #eaecef;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg-page);
+  color: var(--text-main);
+  margin: 0;
+  padding: 0;
+  line-height: 1.45;
+}
+
+/* ====================================================
+   Header
+   ==================================================== */
+header {
+  background: var(--brand-dark);
+  color: #ffffff;
+  padding: 1.6rem 2rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.subtitle {
+  margin-top: 0.3rem;
+  opacity: 0.85;
+  font-size: 0.95rem;
+}
+
+/* ====================================================
+   Layout
+   ==================================================== */
+section {
+  padding: 1.6rem 2rem;
+}
+
+.kpi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+/* ====================================================
+   Cards
+   ==================================================== */
+.card {
+  background: var(--bg-card);
+  border-radius: 10px;
+  padding: 1.3rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.card h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+
+/* ====================================================
+   KPI
+   ==================================================== */
+.score {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.score.big {
+  font-size: 2.6rem;
+}
+
+.muted {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ====================================================
+   Badges
+   ==================================================== */
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.badge {
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge.fail {
+  background: var(--color-fail-bg);
+  color: var(--color-fail);
+}
+
+.badge.pass {
+  background: var(--color-pass-bg);
+  color: var(--color-pass);
+}
+
+.badge.na {
+  background: var(--color-na-bg);
+  color: var(--color-na);
+}
+
+/* ====================================================
+   Donut Chart
+   ==================================================== */
+.donut-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+svg {
+  max-width: 220px;
+}
+
+.donut-bg {
+  fill: none;
+  stroke: #e6e8eb;
+  stroke-width: 18;
+}
+
+.donut-pass,
+.donut-fail {
+  fill: none;
+  stroke-width: 18;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  stroke-dasharray: 0 565;
+  transition: stroke-dasharray 0.6s ease;
+}
+
+.donut-pass {
+  stroke: var(--color-pass);
+}
+
+.donut-fail {
+  stroke: var(--color-fail);
+}
+
+.donut-text {
+  font-family: inherit;
+  fill: var(--text-main);
+}
+
+.donut-main {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.donut-sub {
+  font-size: 0.75rem;
+  fill: var(--text-muted);
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.legend .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+}
+
+.legend .pass { background: var(--color-pass); }
+.legend .fail { background: var(--color-fail); }
+.legend .na   { background: var(--color-na); }
+
+/* ====================================================
+   Table
+   ==================================================== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.8rem;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  padding: 0.6rem;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  font-weight: 600;
+  color: #1f2328;
+}
+
+tr.fail {
+  background: #fff5f5;
+}
+
+tr.pass {
+  background: #f6fffa;
+}
+
+/* ====================================================
+   Explain Section
+   ==================================================== */
+.explain ul {
+  margin: 0.6rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.explain li {
+  margin-bottom: 0.4rem;
+}
+
+/* ====================================================
+   Footer
+   ==================================================== */
+footer {
+  padding: 1.2rem 2rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
