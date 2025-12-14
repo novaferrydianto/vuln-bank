@@ -2,215 +2,59 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Vuln Bank – Security Posture Dashboard</title>
-
-  <style>
-    :root {
-      --bg: #0f172a;
-      --panel: #111827;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --accent: #38bdf8;
-      --good: #22c55e;
-      --warn: #f59e0b;
-      --bad: #ef4444;
-    }
-
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-    }
-
-    header {
-      padding: 3rem 2rem;
-      border-bottom: 1px solid #1f2933;
-    }
-
-    header h1 {
-      margin: 0;
-      font-size: 2.2rem;
-    }
-
-    header p {
-      color: var(--muted);
-      max-width: 800px;
-    }
-
-    main {
-      padding: 2rem;
-      max-width: 1100px;
-      margin: auto;
-    }
-
-    section {
-      margin-bottom: 3rem;
-    }
-
-    h2 {
-      margin-bottom: 0.5rem;
-      font-size: 1.5rem;
-    }
-
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1rem;
-      margin-top: 1rem;
-    }
-
-    .card {
-      background: var(--panel);
-      padding: 1.25rem;
-      border-radius: 10px;
-      border: 1px solid #1f2937;
-    }
-
-    .card h3 {
-      margin-top: 0;
-      font-size: 1.1rem;
-    }
-
-    .card p {
-      color: var(--muted);
-      font-size: 0.95rem;
-    }
-
-    a.button {
-      display: inline-block;
-      margin-top: 0.75rem;
-      padding: 0.5rem 0.9rem;
-      border-radius: 6px;
-      background: var(--accent);
-      color: #020617;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.9rem;
-    }
-
-    a.button.secondary {
-      background: transparent;
-      color: var(--accent);
-      border: 1px solid var(--accent);
-    }
-
-    footer {
-      padding: 2rem;
-      border-top: 1px solid #1f2937;
-      color: var(--muted);
-      font-size: 0.85rem;
-      text-align: center;
-    }
-
-    code {
-      background: #020617;
-      padding: 0.2rem 0.4rem;
-      border-radius: 4px;
-      font-size: 0.85rem;
-    }
-  </style>
+  <title>Vuln Bank – Security Posture Overview</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Executive overview of Vuln Bank application security posture and maturity." />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="stylesheet" href="dashboards/asvs/styles.css" />
 </head>
 
 <body>
 
 <header>
-  <h1>Vuln Bank – Security Posture Overview</h1>
-  <p>
-    This page represents the <strong>continuous security governance</strong> of the Vuln Bank platform.
-    All data below is generated automatically via CI/CD, validated against schemas, and intended for
-    <strong>engineering leadership, management, and audit review</strong>.
-  </p>
+  <h1>Vuln Bank – Security Posture</h1>
+  <p class="subtitle">Executive overview · Continuous assurance · Audit-ready</p>
 </header>
 
-<main>
+<section class="card">
+  <h2>What is this?</h2>
+  <p>
+    This site presents Vuln Bank’s <b>real-time application security posture</b>,
+    generated automatically from CI/CD pipelines.
+  </p>
+  <p>
+    All data is sourced from automated security controls (ASVS, OWASP, EPSS, SLA),
+    ensuring transparency, repeatability, and audit readiness.
+  </p>
+</section>
 
-  <!-- ============================= -->
-  <!-- Executive Summary -->
-  <!-- ============================= -->
-  <section>
-    <h2>Executive View</h2>
-    <div class="cards">
-      <div class="card">
-        <h3>Security Maturity</h3>
-        <p>
-          Board-level summary of overall security posture, maturity score (0–100),
-          risk themes, and recommended actions.
-        </p>
-        <a class="button" href="executive/security-maturity-one-pager.md">View One-Pager (MD)</a>
-        <a class="button secondary" href="executive/security-maturity-one-pager.pdf">Download PDF</a>
-      </div>
+<section class="card">
+  <h2>Key Views</h2>
+  <ul>
+    <li>
+      <b>ASVS Dashboard</b> — control-level PASS / FAIL visibility  
+      <br />
+      <a href="dashboards/asvs/">→ Open ASVS Dashboard</a>
+    </li>
+    <li>
+      <b>Board Security Report</b> — maturity score & risk summary (PDF)  
+      <br />
+      <a href="board/board-report.pdf">→ Download Board Report</a>
+    </li>
+  </ul>
+</section>
 
-      <div class="card">
-        <h3>Why FAIL ≠ Bad</h3>
-        <p>
-          Executive explanation of why security findings and failing controls
-          are indicators of <strong>visibility and improvement</strong>, not failure.
-        </p>
-        <a class="button" href="executive/why-fail-is-not-bad.md">Read Explanation</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================= -->
-  <!-- Dashboards -->
-  <!-- ============================= -->
-  <section>
-    <h2>Security Dashboards</h2>
-    <div class="cards">
-      <div class="card">
-        <h3>ASVS Coverage Dashboard</h3>
-        <p>
-          Interactive visualization of OWASP ASVS control coverage,
-          derived from SAST, SCA, and policy enforcement.
-        </p>
-        <a class="button" href="dashboards/asvs/index.html">Open ASVS Dashboard</a>
-      </div>
-
-      <div class="card">
-        <h3>Weekly Security Trends</h3>
-        <p>
-          Historical trends of OWASP categories, SLA breaches,
-          and exploitability-driven risk (EPSS).
-        </p>
-        <a class="button secondary" href="data/">Browse Raw Weekly Data</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================= -->
-  <!-- Transparency -->
-  <!-- ============================= -->
-  <section>
-    <h2>Transparency & Contracts</h2>
-    <div class="cards">
-      <div class="card">
-        <h3>Security Scorecard (JSON)</h3>
-        <p>
-          Machine-readable scorecard validated against a strict JSON Schema.
-          Intended for automation, dashboards, and audits.
-        </p>
-        <a class="button secondary" href="data/security-scorecard.json">Open JSON</a>
-      </div>
-
-      <div class="card">
-        <h3>SLA & DefectDojo Data</h3>
-        <p>
-          Weekly SLA breach aggregation sourced directly from DefectDojo
-          and validated before publication.
-        </p>
-        <a class="button secondary" href="data/sla-latest.json">Open SLA JSON</a>
-      </div>
-    </div>
-  </section>
-
-</main>
+<section class="card explain">
+  <h2>Why FAIL ≠ Bad</h2>
+  <ul>
+    <li>FAIL means a control is visible and measurable.</li>
+    <li>Invisible security cannot be managed.</li>
+    <li>Security maturity improves when FAIL trends decrease over time.</li>
+  </ul>
+</section>
 
 <footer>
-  Generated automatically by Vuln Bank CI/CD ·
-  Security as Code · Evidence-based Governance
+  <p>Generated automatically from CI pipelines · Internal / Confidential</p>
 </footer>
 
 </body>

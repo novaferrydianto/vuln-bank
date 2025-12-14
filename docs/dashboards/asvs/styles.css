@@ -1,14 +1,18 @@
 /* ====================================================
-   Base
+   Design Tokens (Single Source of Truth)
    ==================================================== */
 :root {
+  /* Backgrounds */
   --bg-page: #f6f8fa;
   --bg-card: #ffffff;
+  --bg-header: #0b1f33;
+
+  /* Text */
   --text-main: #24292f;
   --text-muted: #57606a;
+  --text-invert: #ffffff;
 
-  --brand-dark: #0b1f33;
-
+  /* Status Colors */
   --color-pass: #067647;
   --color-pass-bg: #e6fffa;
 
@@ -18,19 +22,29 @@
   --color-na: #495057;
   --color-na-bg: #f1f3f5;
 
+  /* UI */
   --border-soft: #eaecef;
+  --radius-card: 10px;
+  --shadow-soft: 0 1px 4px rgba(0, 0, 0, 0.06);
+
+  /* Chart */
+  --donut-bg: #e6e8eb;
 }
 
-* {
+/* ====================================================
+   Reset & Base
+   ==================================================== */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 body {
+  margin: 0;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   background: var(--bg-page);
   color: var(--text-main);
-  margin: 0;
-  padding: 0;
   line-height: 1.45;
 }
 
@@ -38,20 +52,41 @@ body {
    Header
    ==================================================== */
 header {
-  background: var(--brand-dark);
-  color: #ffffff;
+  background: var(--bg-header);
+  color: var(--text-invert);
   padding: 1.6rem 2rem;
 }
 
 header h1 {
   margin: 0;
   font-size: 1.5rem;
+  font-weight: 600;
 }
 
 .subtitle {
   margin-top: 0.3rem;
-  opacity: 0.85;
   font-size: 0.95rem;
+  opacity: 0.85;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.meta-badge {
+  background: rgba(255, 255, 255, 0.12);
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
 }
 
 /* ====================================================
@@ -72,18 +107,24 @@ section {
    ==================================================== */
 .card {
   background: var(--bg-card);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   padding: 1.3rem;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-soft);
 }
 
 .card h2 {
   margin: 0 0 0.6rem;
   font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* Emphasize primary KPI */
+.kpi .card:first-child {
+  border-left: 4px solid var(--color-pass);
 }
 
 /* ====================================================
-   KPI
+   KPI Values
    ==================================================== */
 .score {
   font-size: 2rem;
@@ -116,14 +157,14 @@ section {
   font-weight: 600;
 }
 
-.badge.fail {
-  background: var(--color-fail-bg);
-  color: var(--color-fail);
-}
-
 .badge.pass {
   background: var(--color-pass-bg);
   color: var(--color-pass);
+}
+
+.badge.fail {
+  background: var(--color-fail-bg);
+  color: var(--color-fail);
 }
 
 .badge.na {
@@ -147,7 +188,7 @@ svg {
 
 .donut-bg {
   fill: none;
-  stroke: #e6e8eb;
+  stroke: var(--donut-bg);
   stroke-width: 18;
 }
 
@@ -171,7 +212,6 @@ svg {
 }
 
 .donut-text {
-  font-family: inherit;
   fill: var(--text-main);
 }
 
@@ -183,6 +223,14 @@ svg {
 .donut-sub {
   font-size: 0.75rem;
   fill: var(--text-muted);
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .donut-pass,
+  .donut-fail {
+    transition: none;
+  }
 }
 
 /* Legend */
@@ -226,6 +274,10 @@ td {
 th {
   font-weight: 600;
   color: #1f2328;
+}
+
+tbody tr:hover {
+  background: #eef2f7;
 }
 
 tr.fail {
