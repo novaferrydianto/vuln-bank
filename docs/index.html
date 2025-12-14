@@ -3,16 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <title>Vuln Bank – Executive Security Overview</title>
+
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex,nofollow" />
   <meta name="description"
-        content="Executive security posture overview for Vuln Bank. Board-ready, measurable, audit-aligned." />
+        content="Executive-level security posture overview for Vuln Bank. Board-ready, measurable, and audit-aligned." />
 
+  <!-- Reuse ASVS visual system -->
   <link rel="stylesheet" href="./dashboards/asvs/styles.css" />
 </head>
 
 <body>
 
+<!-- ================================================= -->
+<!-- HEADER -->
+<!-- ================================================= -->
 <header class="header">
   <div class="header-main">
     <h1>Security Posture Overview</h1>
@@ -22,82 +27,130 @@
   </div>
 
   <div class="header-meta">
-    <span class="meta-badge">Program: <b>DevSecOps</b></span>
-    <span class="meta-badge">Scope: <b>Application Security</b></span>
+    <span class="meta-badge">
+      Program: <b>DevSecOps</b>
+    </span>
+    <span class="meta-badge">
+      Scope: <b>Application Security</b>
+    </span>
   </div>
 </header>
 
+<!-- ================================================= -->
+<!-- CONTEXT / EXECUTIVE SUMMARY -->
+<!-- ================================================= -->
 <section class="card">
   <h2>At a Glance</h2>
 
   <p>
     This page provides a <b>board-level summary</b> of Vuln Bank’s
     application security posture.
-    Security status is measured continuously using
-    <b>OWASP ASVS</b>, <b>EPSS</b>, and <b>SLA compliance</b>.
+    Security health is measured continuously using
+    <b>OWASP ASVS</b>, <b>EPSS / KEV exploit intelligence</b>,
+    and <b>remediation SLA compliance</b>.
   </p>
 
   <ul class="explain">
-    <li>Security is measured automatically in CI/CD</li>
-    <li>Failures are signals, not blame</li>
-    <li>Trends matter more than single snapshots</li>
+    <li>Security controls are verified automatically in CI/CD</li>
+    <li>Failures are treated as measurable risk signals, not blame</li>
+    <li>Executive focus is on <b>trend and exposure reduction</b></li>
   </ul>
 </section>
 
+<!-- ================================================= -->
+<!-- KPI NAVIGATION -->
+<!-- ================================================= -->
 <section class="kpi">
+
   <div class="card">
     <h2>Application Controls</h2>
     <p class="muted">
-      Are secure coding controls implemented and verified?
+      Are secure coding and design controls implemented and verified?
     </p>
     <a class="meta-badge" href="./dashboards/asvs/index.html">
-      View ASVS Dashboard →
+      Open ASVS Dashboard →
     </a>
   </div>
 
   <div class="card">
     <h2>Exploit Risk</h2>
     <p class="muted">
-      Which vulnerabilities are likely to be exploited?
+      Which vulnerabilities are most likely to be exploited in the wild?
     </p>
     <a class="meta-badge" href="./dashboards/epss/index.html">
-      View EPSS / KEV Dashboard →
+      Open EPSS / KEV Dashboard →
     </a>
   </div>
 
   <div class="card">
     <h2>Board Report</h2>
     <p class="muted">
-      One-page security summary with charts and actions.
+      One-page security brief with charts, risks, and next actions.
     </p>
     <a class="meta-badge" href="./board/board-report.pdf">
-      Download PDF →
+      Download Board PDF →
     </a>
   </div>
+
 </section>
 
+<!-- ================================================= -->
+<!-- TREND (PLACEHOLDER – SPARKLINE READY) -->
+<!-- ================================================= -->
+<section class="card">
+  <h2>Security Trend (Weekly)</h2>
+
+  <p class="muted">
+    Directional view of security maturity.
+    Executives should focus on <b>movement over time</b>, not single snapshots.
+  </p>
+
+  <!-- Sparkline injected by JS -->
+  <svg id="sparkline"
+       width="100%"
+       height="60"
+       viewBox="0 0 300 60"
+       preserveAspectRatio="none"
+       aria-label="Weekly PASS percentage trend">
+    <!-- rendered dynamically -->
+  </svg>
+
+  <p class="muted">
+    Upward trend indicates improving control coverage and risk reduction.
+  </p>
+</section>
+
+<!-- ================================================= -->
+<!-- WHY FAIL ≠ BAD -->
+<!-- ================================================= -->
 <section class="card explain">
   <h2>Why “FAIL” ≠ Bad</h2>
 
   <ul>
-    <li><b>FAIL</b> means the risk is visible and tracked</li>
-    <li>Invisible risk cannot be managed</li>
-    <li>Every FAIL has ownership, SLA, and evidence</li>
-    <li>Success is measured by <b>downward trends</b></li>
+    <li><b>FAIL</b> means a risk is visible, measured, and tracked</li>
+    <li>Unmeasured security equals invisible exposure</li>
+    <li>Each FAIL has ownership, SLA, and remediation evidence</li>
+    <li>Program success is measured by <b>declining FAIL trends</b></li>
   </ul>
 
   <p class="muted">
-    This program prioritizes <b>risk reduction</b>,
+    This program optimizes for <b>risk reduction</b>,
     not cosmetic pass rates.
   </p>
 </section>
 
+<!-- ================================================= -->
+<!-- FOOTER -->
+<!-- ================================================= -->
 <footer>
   <p>
     Generated automatically from CI pipelines ·
     OWASP-aligned · Audit-ready
   </p>
 </footer>
+
+<!-- Sparkline renderer -->
+<script src="./sparkline.js"></script>
 
 </body>
 </html>

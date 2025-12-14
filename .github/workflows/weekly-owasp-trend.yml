@@ -42,7 +42,7 @@ jobs:
           pip install reportlab requests jsonschema
 
       # =================================================
-      # 1) OWASP Weekly Trend (Issues-based)
+      # 1) OWASP Weekly Trend (Issues-based signal)
       # =================================================
       - name: OWASP weekly trend (repo-level)
         env:
@@ -61,7 +61,7 @@ jobs:
           python3 scripts/owasp_by_asset_weekly.py
 
       # =================================================
-      # 2) DefectDojo SLA (Governance Signal)
+      # 2) DefectDojo SLA (Governance signal)
       # =================================================
       - name: DefectDojo SLA weekly snapshot
         env:
@@ -86,7 +86,7 @@ jobs:
           EOF
 
       # =================================================
-      # 3) Security Scorecard (Normalized Risk Model)
+      # 3) Security Scorecard (Normalized risk model)
       # =================================================
       - name: Generate security scorecard
         run: |
@@ -112,7 +112,15 @@ jobs:
           EOF
 
       # =================================================
-      # 4) Persist DATA artifacts only
+      # 4) Weekly PASS% Trend (Executive Sparkline)
+      # =================================================
+      - name: Append ASVS PASS% weekly trend
+        run: |
+          set -euo pipefail
+          python3 scripts/append_pass_trend.py
+
+      # =================================================
+      # 5) Persist DATA artifacts only (append-only)
       # =================================================
       - name: Commit weekly security data
         run: |
