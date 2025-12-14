@@ -202,36 +202,6 @@ jobs:
           python3 -m pip install -q --upgrade pip
           python3 -m pip install -q jsonschema
 
-      - name: Validate EPSS findings schema
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - << 'EOF'
-          import json
-          from jsonschema import validate
-
-          schema = {
-            "type": "object",
-            "required": ["high_risk", "threshold"],
-            "properties": {
-              "high_risk": {
-                "type": "array",
-                "items": {"type": "object"}
-              },
-              "threshold": {
-                "type": ["number", "string"]
-              }
-            },
-            "additionalProperties": True
-          }
-
-          with open("security-reports/epss-findings.json") as f:
-              data = json.load(f)
-
-          validate(instance=data, schema=schema)
-          print("✅ EPSS findings schema valid")
-          EOF
-
 # ---------------- DAST ----------------
       - name: Build app image (for DAST)
         shell: bash
@@ -309,6 +279,24 @@ jobs:
             --out-json "${REPORT_DIR}/governance/asvs-coverage.json" \
             --out-md "${REPORT_DIR}/governance/asvs-coverage.md"
           test -f "${REPORT_DIR}/governance/asvs-coverage.json"
+
+      - name: Validate ASVS coverage schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          with open("schemas/asvs-coverage.schema.json") as f:
+              schema = json.load(f)
+
+          with open("security-reports/governance/asvs-coverage.json") as f:
+              data = json.load(f)
+
+          validate(instance=data, schema=schema)
+          print("✅ ASVS coverage schema valid")
+          EOF
 
 # ---------------- FINAL GATE ----------------
       - name: Final Gate
