@@ -195,6 +195,45 @@ jobs:
             --threshold "${EPSS_THRESHOLD}"
           test -f "${REPORT_DIR}/epss-findings.json" || echo '{"high_risk":[],"threshold":"'"${EPSS_THRESHOLD}"'"}' > "${REPORT_DIR}/epss-findings.json"
 
+      - name: Ensure jsonschema available
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - << 'EOF'
+          import jsonschema
+          print("jsonschema OK")
+          EOF
+
+      - name: Validate EPSS findings schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - << 'EOF'
+          import json
+          from jsonschema import validate
+
+          schema = {
+            "type": "object",
+            "required": ["high_risk", "threshold"],
+            "properties": {
+              "high_risk": {
+                "type": "array",
+                "items": {"type": "object"}
+              },
+              "threshold": {
+                "type": ["number", "string"]
+              }
+            },
+            "additionalProperties": true
+          }
+
+          with open("security-reports/epss-findings.json") as f:
+              data = json.load(f)
+
+          validate(instance=data, schema=schema)
+          print("✅ EPSS findings schema valid")
+          EOF
+
 # ---------------- DAST ----------------
       - name: Build app image (for DAST)
         shell: bash
