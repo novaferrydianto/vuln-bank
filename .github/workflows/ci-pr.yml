@@ -16,7 +16,7 @@ permissions:
 
 jobs:
 # =====================================================
-# 0) PYTHON COMPATIBILITY GUARD (FAST, NON-STYLE)
+# 0) PYTHON COMPATIBILITY GUARD (FAST, RUNTIME ONLY)
 # =====================================================
   python_guard:
     name: Python 3.8 Compatibility Guard
@@ -27,16 +27,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Ruff
-        run: |
-          pip install -q ruff==0.5.5
+        run: pip install -q ruff==0.5.5
 
-      - name: Python 3.8 compatibility guard (syntax only)
+      - name: Python syntax & runtime compatibility (py38)
         run: |
-          pip install -q ruff==0.5.5
           ruff check scripts \
             --target-version py38 \
-            --ignore UP006,UP007,UP015,UP034 \
+            --select E,F \
+            --ignore \
+              E401,E701,E702,E741,E722, \
+              F401,F541, \
+              UP006,UP007,UP015,UP034 \
             --output-format github
+
+      - name: Bytecode compile (runtime truth)
+        run: |
+          python3 -m compileall scripts
 
 # =====================================================
 # 1) PR SECURITY GATE (FAST)
@@ -63,7 +69,9 @@ jobs:
           sarif_file: security-reports/gitleaks.sarif
 
       - name: Block PR if security gate failed
+        shell: bash
         run: |
+          set -euo pipefail
           if [ -f security-reports/gate_failed ]; then
             echo "❌ PR blocked: new exploitable risk detected"
             exit 1
