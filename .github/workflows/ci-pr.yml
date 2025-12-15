@@ -89,6 +89,11 @@ jobs:
         with:
           sarif_file: security-reports/gitleaks.sarif
 
+      - name: Ensure DefectDojo scripts executable
+        shell: bash
+        run: |
+          chmod +x scripts/defectdojo_import.sh
+
       - name: Sync findings to DefectDojo (PR preview)
         if: always()
         env:
