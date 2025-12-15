@@ -1,238 +1,260 @@
 #!/usr/bin/env python3
 """
-ASVS Coverage Exporter (Schema-Compliant, CI/Board Ready)
+ASVS Export – Tool-Mapped (Deterministic, Schema-Compliant)
 
-Inputs:
-- Semgrep JSON
-- Bandit (DefectDojo-normalized) JSON
-- ASVS baseline (optional)
+Consumes:
+- schemas/asvs-tool-map.json
+- Semgrep / Bandit / ZAP / Trivy / Gitleaks outputs
 
-Outputs:
-- ASVS coverage JSON (schema-compliant)
-- Markdown summary (PR-friendly)
-- JSONL history for trending
+Produces:
+- security-reports/governance/asvs-coverage.json
 
-Schema:
-- schemas/asvs-coverage.schema.json
+Design:
+- Schema-first (audit-ready)
+- Deterministic evaluation
+- CI / Slack / Pages compatible
 """
 
-from __future__ import annotations
-import argparse
 import json
-import time
+import argparse
+import os
 from pathlib import Path
+from datetime import datetime
 from collections import defaultdict
-from typing import Dict, Any, Iterable, List
-from datetime import datetime, timezone
 
+# --------------------------------------------------
+# Risk model (level-weighted, non-linear)
+# --------------------------------------------------
+LEVEL_WEIGHTS = {
+    1: 1,  # L1
+    2: 2,  # L2
+    3: 4,  # L3 (non-linear, executive risk)
+}
 
-# -------------------------------------------------
-# Helpers
-# -------------------------------------------------
-def load_json(path: Path) -> Dict[str, Any]:
-    if not path.exists():
+# --------------------------------------------------
+# Utils
+# --------------------------------------------------
+def load_json(path):
+    if not path:
         return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    p = Path(path)
+    if not p.exists():
         return {}
+    return json.loads(p.read_text(encoding="utf-8"))
 
-
-def iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def extract_asvs_tags(metadata: Dict[str, Any]) -> Iterable[str]:
+def normalize_level(raw):
     """
-    Normalize ASVS tag extraction across tools.
-    Accepts:
-      - string
-      - list[str]
-      - dict(id/code/control)
+    Accepts: 'L1','L2','L3', 1,2,3
+    Returns: int 1|2|3
     """
-    if not metadata:
-        return []
+    if isinstance(raw, int) and raw in (1, 2, 3):
+        return raw
+    if isinstance(raw, str):
+        raw = raw.strip().upper()
+        if raw.startswith("L") and raw[1:].isdigit():
+            v = int(raw[1:])
+            if v in (1, 2, 3):
+                return v
+    raise ValueError(f"Invalid ASVS level: {raw}")
 
-    asvs = metadata.get("asvs")
-    if isinstance(asvs, list):
-        return [str(x).strip() for x in asvs if x]
-    if isinstance(asvs, str):
-        return [asvs.strip()]
-    if isinstance(asvs, dict):
-        for k in ("id", "code", "control"):
-            if k in asvs:
-                return [str(asvs[k]).strip()]
-    return []
+# --------------------------------------------------
+# Tool adapters (normalize signals)
+# --------------------------------------------------
+def semgrep_findings(data):
+    return {r.get("check_id") for r in data.get("results", [])}
 
+def bandit_findings(data):
+    return {r.get("test_id") for r in data.get("results", [])}
 
-def extract_from_semgrep(data: Dict[str, Any]) -> Iterable[str]:
-    for r in data.get("results", []):
-        md = (r.get("extra") or {}).get("metadata") or {}
-        yield from extract_asvs_tags(md)
+def zap_findings(data):
+    rules = set()
+    for site in data.get("site", []):
+        for alert in site.get("alerts", []):
+            rules.add(alert.get("name"))
+    return rules
 
+def gitleaks_findings(data):
+    runs = data.get("runs", [])
+    if not runs:
+        return set()
+    return {r.get("ruleId") for r in runs[0].get("results", [])}
 
-def extract_from_bandit(bandit_dd: Dict[str, Any]) -> Iterable[str]:
-    findings = bandit_dd.get("findings") or bandit_dd.get("results") or []
-    for f in findings:
-        md = f.get("metadata") or {}
-        yield from extract_asvs_tags(md)
+def trivy_findings(data):
+    vulns = []
+    for r in data.get("Results", []):
+        vulns.extend(r.get("Vulnerabilities", []))
+    return vulns
 
-
-def derive_level(control_id: str) -> int:
+# --------------------------------------------------
+# ASVS evaluation logic
+# --------------------------------------------------
+def evaluate_control(control, signals):
     """
-    Best-effort ASVS level inference.
-    Example:
-      V1 -> L1
-      V2 -> L2
-      V3 -> L3
+    Returns:
+      status: PASS | FAIL | NOT_APPLICABLE
+      evidence: list[str]
+      owners: list[str]
     """
-    if control_id.startswith("V1"):
-        return 1
-    if control_id.startswith("V2"):
-        return 2
-    if control_id.startswith("V3"):
-        return 3
-    return 1
+    decision = control.get("decision", {})
+    hits = []
+    owners = set()
 
+    for tool in control.get("tools", []):
+        tool_name = tool["tool"]
+        rule_ids = set(tool.get("rules", []))
+        findings = signals.get(tool_name, set())
 
-# -------------------------------------------------
+        # Trivy: severity + KEV logic
+        if tool_name == "trivy":
+            for v in findings:
+                if v.get("Severity") in tool.get("severity_fail", []):
+                    owners.add("trivy")
+                    if tool.get("kev_block") and v.get("KEV", False):
+                        return "FAIL", ["KEV detected"], ["trivy"]
+        else:
+            matched = rule_ids & findings
+            if matched:
+                hits.extend(sorted(matched))
+                owners.add(tool_name)
+
+    if decision.get("immediate_fail") and hits:
+        return "FAIL", hits, sorted(owners)
+
+    if decision.get("fail_if_any") and hits:
+        return "FAIL", hits, sorted(owners)
+
+    if hits:
+        # Schema does NOT allow PARTIAL → collapse to FAIL
+        return "FAIL", hits, sorted(owners)
+
+    if control.get("automation") == "manual":
+        return "NOT_APPLICABLE", [], []
+
+    return "PASS", [], []
+
+# --------------------------------------------------
 # Main
-# -------------------------------------------------
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--semgrep", required=True)
-    ap.add_argument("--bandit", required=True)
-    ap.add_argument("--out-json", required=True)
-    ap.add_argument("--out-md", required=True)
-    ap.add_argument("--baseline", default="security-baselines/asvs-baseline.json")
-    ap.add_argument("--history", default="security-reports/governance/asvs-history.jsonl")
-    ap.add_argument("--repo", default="")
-    ap.add_argument("--asvs-version", default="4.0.3")
-    args = ap.parse_args()
+# --------------------------------------------------
+def main(args):
+    tool_map = load_json(args.tool_map)
 
-    semgrep = load_json(Path(args.semgrep))
-    bandit = load_json(Path(args.bandit))
-    baseline = load_json(Path(args.baseline))
+    signals = {
+        "semgrep": semgrep_findings(load_json(args.semgrep)),
+        "bandit": bandit_findings(load_json(args.bandit)),
+        "zap": zap_findings(load_json(args.zap)),
+        "gitleaks": gitleaks_findings(load_json(args.gitleaks)),
+        "trivy": trivy_findings(load_json(args.trivy)),
+    }
 
-    # -------------------------------------------------
-    # Collect signals
-    # -------------------------------------------------
-    signals = defaultdict(int)
+    results = []
+    status_counts = defaultdict(int)
+    family_summary = defaultdict(lambda: defaultdict(int))
 
-    for tag in extract_from_semgrep(semgrep):
-        signals[tag] += 1
+    # Risk accumulators
+    risk_raw = 0
+    risk_max = 0
+    risk_by_level = defaultdict(int)    # "L3" -> points
+    risk_by_family = defaultdict(int)   # "V14" -> points
 
-    for tag in extract_from_bandit(bandit):
-        signals[tag] += 1
+    for ctrl in tool_map.get("controls", []):
+        status, evidence, owners = evaluate_control(ctrl, signals)
 
-    signals = dict(sorted(signals.items()))
+        level = normalize_level(ctrl.get("level"))
+        family = ctrl["id"].split(".")[0]  # V1..V14
 
-    # -------------------------------------------------
-    # Build controls array (schema core)
-    # -------------------------------------------------
-    controls: List[Dict[str, Any]] = []
+        status_counts[status] += 1
+        family_summary[family][status] += 1
 
-    for cid, count in signals.items():
-        controls.append({
-            "id": cid,
-            "level": derive_level(cid),
-            "status": "FAIL",          # signal exists → control violated
-            "evidence": [
-                f"{count} finding(s) mapped from SAST/SCA"
-            ]
+        weight = LEVEL_WEIGHTS[level]
+
+        # Risk model excludes NOT_APPLICABLE
+        if status in ("PASS", "FAIL"):
+            risk_max += weight
+            if status == "FAIL":
+                risk_raw += weight
+                risk_by_level[f"L{level}"] += weight
+                risk_by_family[family] += weight
+
+        results.append({
+            "id": ctrl["id"],
+            "title": ctrl["title"],
+            "level": level,                   # integer (schema)
+            "owasp": ctrl.get("owasp", []),
+            "status": status,                 # PASS | FAIL | NOT_APPLICABLE
+            "evidence": evidence,
+            "owners": owners,                 # tool ownership
         })
 
-    # Baseline controls not seen now → PASS
-    baseline_controls = baseline.get("controls", [])
-    seen_ids = {c["id"] for c in controls}
+    passed = status_counts.get("PASS", 0)
+    failed = status_counts.get("FAIL", 0)
+    not_applicable = status_counts.get("NOT_APPLICABLE", 0)
 
-    for bc in baseline_controls:
-        cid = bc.get("id")
-        if cid and cid not in seen_ids:
-            controls.append({
-                "id": cid,
-                "level": bc.get("level", derive_level(cid)),
-                "status": "PASS",
-                "evidence": ["No findings detected in current run"]
-            })
+    effective_total = passed + failed
 
-    # -------------------------------------------------
-    # Summary (CEO-friendly numbers)
-    # -------------------------------------------------
-    total = len(controls)
-    passed = sum(1 for c in controls if c["status"] == "PASS")
-    failed = sum(1 for c in controls if c["status"] == "FAIL")
+    coverage_percent = round(
+        (passed / effective_total) * 100, 2
+    ) if effective_total else 0.0
 
-    summary = {
-        "total": total,
-        "passed": passed,
-        "failed": failed,
-        "coverage_percent": round((passed / total) * 100, 2) if total else 0.0
-    }
+    risk_percent = round(
+        (risk_raw / risk_max) * 100, 2
+    ) if risk_max else 0.0
 
-    # -------------------------------------------------
-    # Meta
-    # -------------------------------------------------
-    meta = {
-        "asvs_version": args.asvs_version,
-        "generated_at": iso_now(),
-        "repo": args.repo or "unknown"
-    }
+    worst_families = sorted(
+        [{"family": f, "risk_points": pts} for f, pts in risk_by_family.items()],
+        key=lambda x: x["risk_points"],
+        reverse=True,
+    )
 
     output = {
-        "meta": meta,
-        "summary": summary,
-        "controls": sorted(
-            controls,
-            key=lambda x: (x["status"] != "FAIL", x["id"])
-        )
+        "meta": {
+            "asvs_version": tool_map.get("asvs_version", "4.x"),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "repo": os.getenv("GITHUB_REPOSITORY", "local"),
+        },
+        "summary": {
+            # REQUIRED BY SCHEMA
+            "total": effective_total,
+            "passed": passed,
+            "failed": failed,
+            "coverage_percent": coverage_percent,
+
+            # EXTENSIONS (allowed)
+            "not_applicable": not_applicable,
+            "families": family_summary,
+
+            # 🔥 Level-weighted risk model
+            "risk": {
+                "model": {
+                    "L1": LEVEL_WEIGHTS[1],
+                    "L2": LEVEL_WEIGHTS[2],
+                    "L3": LEVEL_WEIGHTS[3],
+                },
+                "raw_score": risk_raw,
+                "max_score": risk_max,
+                "risk_percent": risk_percent,
+                "by_level": dict(risk_by_level),
+                "by_family": dict(risk_by_family),
+                "worst_families": worst_families[:10],
+            },
+        },
+        "controls": results,
     }
 
-    # -------------------------------------------------
-    # Write JSON
-    # -------------------------------------------------
-    out_json = Path(args.out_json)
-    out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.write_text(json.dumps(output, indent=2), encoding="utf-8")
+    out = Path(args.out_json)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(output, indent=2), encoding="utf-8")
 
-    # -------------------------------------------------
-    # Write Markdown (PR-friendly)
-    # -------------------------------------------------
-    md = [
-        "## ASVS Coverage Report",
-        "",
-        f"- **Total controls:** `{total}`",
-        f"- **Passed:** `{passed}`",
-        f"- **Failed:** `{failed}`",
-        f"- **Coverage:** `{summary['coverage_percent']}%`",
-        "",
-        "| Control | Level | Status |",
-        "|--------|-------|--------|",
-    ]
+    print(f"[OK] ASVS coverage written → {out}")
 
-    for c in output["controls"]:
-        md.append(f"| `{c['id']}` | `{c['level']}` | `{c['status']}` |")
-
-    out_md = Path(args.out_md)
-    out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text("\n".join(md), encoding="utf-8")
-
-    # -------------------------------------------------
-    # History (for trending)
-    # -------------------------------------------------
-    hist = Path(args.history)
-    hist.parent.mkdir(parents=True, exist_ok=True)
-    with hist.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "ts": int(time.time()),
-            "summary": summary
-        }) + "\n")
-
-    print("[OK] ASVS export complete")
-    print(f"- JSON: {out_json}")
-    print(f"- MD  : {out_md}")
-    print(f"- History appended: {hist}")
-
-
+# --------------------------------------------------
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser()
+    p.add_argument("--tool-map", default="schemas/asvs-tool-map.json")
+    p.add_argument("--semgrep")
+    p.add_argument("--bandit")
+    p.add_argument("--zap")
+    p.add_argument("--trivy")
+    p.add_argument("--gitleaks")
+    p.add_argument("--out-json", required=True)
+    args = p.parse_args()
+    main(args)

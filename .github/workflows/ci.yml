@@ -13,13 +13,14 @@ concurrency:
   group: vuln-bank-${{ github.ref }}
   cancel-in-progress: true
 
-# Default least privilege
+# Default least privilege (job-level overrides as needed)
 permissions:
   contents: read
 
 env:
   REPORT_DIR: security-reports
   BASELINE_DIR: security-baselines
+  METRICS_DIR: security-metrics
   PYTHON_BIN: python3.11
   EPSS_THRESHOLD: "0.5"
   DAST_URL: http://vuln-bank-dast:5000
@@ -27,12 +28,12 @@ env:
 
 jobs:
 # =====================================================
-# 0) DEFECTDOJO ENGAGEMENT (PR ONLY)
+# 0) DEFECTDOJO ENGAGEMENT (PR ONLY, SAFE OUTPUT)
 # =====================================================
   create_engagement:
     name: Create DefectDojo Engagement (PR)
-    if: github.event_name == 'pull_request'
     runs-on: self-hosted
+    if: always()
     permissions:
       contents: read
     outputs:
@@ -43,7 +44,9 @@ jobs:
       DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
     steps:
       - uses: actions/checkout@v4
-      - name: Create / reuse engagement
+
+      - name: Create / reuse engagement (PR only)
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -51,7 +54,7 @@ jobs:
           bash scripts/create_defectdojo_engagement.sh
 
       - id: out
-        name: Export engagement ID
+        name: Export engagement ID (empty on non-PR)
         shell: bash
         run: |
           set -euo pipefail
@@ -269,15 +272,19 @@ jobs:
           docker compose -f docker-compose.dast.yml down || true
 
 # ---------------- ASVS ----------------
-      - name: ASVS export (JSON + MD)
+      - name: ASVS export (JSON)
         shell: bash
         run: |
           set -euo pipefail
           "${PYTHON_BIN}" scripts/asvs_export.py \
+            --tool-map schemas/asvs-tool-map.json \
             --semgrep "${REPORT_DIR}/semgrep.json" \
             --bandit "${REPORT_DIR}/bandit_dd.json" \
-            --out-json "${REPORT_DIR}/governance/asvs-coverage.json" \
-            --out-md "${REPORT_DIR}/governance/asvs-coverage.md"
+            --zap "${REPORT_DIR}/zap/zap_alerts.json" \
+            --trivy "${REPORT_DIR}/trivy-sca.json" \
+            --gitleaks "${REPORT_DIR}/gitleaks.sarif" \
+            --out-json "${REPORT_DIR}/governance/asvs-coverage.json"
+
           test -f "${REPORT_DIR}/governance/asvs-coverage.json"
 
       - name: Validate ASVS coverage schema
@@ -331,7 +338,7 @@ jobs:
       asvs_regression: ${{ steps.asvs.outputs.regression }}
 
     steps:
-      - name: Prepare artifact directory (fix permission)
+      - name: Prepare artifact directory
         shell: bash
         run: |
           set -euo pipefail
@@ -340,7 +347,7 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Download security-reports artifact
+      - name: Download security-reports
         uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -369,7 +376,56 @@ jobs:
           python3 scripts/asvs_to_labels.py
 
 # =====================================================
-# 3) UPDATE BASELINES (MAIN ONLY)
+# 3) WRITE SECURITY METRICS (SINGLE WRITER, MAIN ONLY)
+# =====================================================
+  write_security_metrics:
+    name: Write security metrics (main only)
+    needs: [security_scans, governance]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare artifact directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf security-reports security-metrics
+          mkdir -p security-reports security-metrics/weekly
+
+      - name: Download security-reports
+        uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      # Writer output for Slack trend: security-metrics/weekly/pass-trend.json
+      - name: Append PASS% weekly trend -> security-metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/append_pass_trend.py \
+            --asvs security-reports/governance/asvs-coverage.json \
+            --out security-metrics/weekly/pass-trend.json
+
+      - name: Append KEV trend -> security-metrics (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/append_kev_trend.py \
+            --epss security-reports/epss-findings.json \
+            --out security-metrics/weekly/kev-trend.json || true
+
+      - name: Upload security-metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-metrics
+          path: security-metrics
+
+# =====================================================
+# 4) UPDATE BASELINES (MAIN ONLY, ONLY IF GATE PASSED)
 # =====================================================
   update_baselines:
     name: Update baselines (main only)
@@ -380,7 +436,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Prepare artifact directory (fix permission)
+      - name: Prepare artifact directory
         shell: bash
         run: |
           set -euo pipefail
@@ -392,7 +448,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Download security-reports artifact
+      - name: Download security-reports
         uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -423,24 +479,24 @@ jobs:
           fi
 
 # =====================================================
-# 4) SLACK (RISK-AWARE)
+# 5) SLACK (RISK-AWARE + TREND-AWARE)
 # =====================================================
   slack_notify:
     name: Slack notify (risk-aware)
-    needs: [security_scans, governance]
+    needs: [security_scans, governance, write_security_metrics]
     runs-on: self-hosted
     if: always()
     permissions:
       contents: read
     steps:
-      - name: Prepare artifact directory (fix permission)
+      - name: Prepare artifact directories
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf security-reports
-          mkdir -p security-reports
+          rm -rf security-reports security-metrics
+          mkdir -p security-reports security-metrics
 
-      - name: Download security-reports artifact
+      - name: Download security-reports
         uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -452,14 +508,14 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GATE_FAILED: ${{ needs.security_scans.outputs.gate_failed }}
           ASVS_REGRESSION: ${{ needs.governance.outputs.asvs_regression }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           python3 scripts/slack_decision.py
 
 # =====================================================
-# 5) SLACK – SCA CRITICAL / EPSS HIGH
+# 6) SLACK – SCA CRITICAL / EPSS HIGH
 # =====================================================
   slack_sca_alert:
     name: Slack Alert – SCA Critical / EPSS High
@@ -477,7 +533,7 @@ jobs:
           rm -rf security-reports
           mkdir -p security-reports
 
-      - name: Download security-reports artifact
+      - name: Download security-reports
         uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -497,31 +553,23 @@ jobs:
           python3 scripts/slack_sca_alert.py
 
 # =====================================================
-# 6) DEFECTDOJO – AUTO CLOSE FINDINGS ON PR MERGE
+# 7) DEFECTDOJO – AUTO CLOSE FINDINGS ON PR MERGE
 # =====================================================
   defectdojo_autoclose_on_merge:
     name: DefectDojo – Auto-close findings on PR merge
     runs-on: ubuntu-latest
-
-    # 🔒 ONLY when PR is merged
     if: >
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true
-
-    needs:
-      - create_engagement
-
+    needs: [create_engagement]
     permissions:
       contents: read
-
     env:
       DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
       DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
       DEFECTDOJO_ENGAGEMENT_ID: ${{ needs.create_engagement.outputs.engagement_id }}
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Auto-close DefectDojo findings + complete engagement
         shell: bash
         run: |
@@ -529,14 +577,13 @@ jobs:
           python3 scripts/defectdojo_autoclose_on_merge.py
 
 # =====================================================
-# X) PUBLISH DATA FOR GITHUB PAGES (MAIN ONLY)
+# 8) PUBLISH DATA FOR GITHUB PAGES (MAIN ONLY)
 # =====================================================
   publish_pages_data:
     name: Publish Pages Data (main only)
     needs: [security_scans, governance]
     if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.gate_failed == 'false'
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
 
@@ -546,35 +593,36 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Download security-reports artifact
+      - name: Download security-reports
         uses: actions/download-artifact@v4
         with:
           name: security-reports
           path: security-reports
 
       - name: Prepare Pages data directory
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p docs/data/trends
 
-      # 1️⃣ Append weekly PASS% trend
-      - name: Append PASS% weekly trend
+      - name: Append PASS% weekly trend (Pages)
+        shell: bash
         run: |
           set -euo pipefail
           python3 scripts/append_pass_trend.py \
             --asvs security-reports/governance/asvs-coverage.json \
             --out docs/data/trends/pass-trend.json
 
-      # 2️⃣ Append KEV / EPSS trend (future-safe)
-      - name: Append KEV trend
+      - name: Append KEV trend (Pages, optional)
+        shell: bash
         run: |
           set -euo pipefail
           python3 scripts/append_kev_trend.py \
             --epss security-reports/epss-findings.json \
             --out docs/data/trends/kev-trend.json || true
 
-      # 3️⃣ Commit Pages data
       - name: Commit Pages data
+        shell: bash
         run: |
           set -euo pipefail
           git config user.name "pages-bot"
@@ -588,5 +636,3 @@ jobs:
           else
             echo "[INFO] No Pages data changes"
           fi
-
-
