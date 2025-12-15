@@ -7,6 +7,10 @@ on:
       - "security-baselines/**"
       - "security-metrics/**"
       - "docs/data/**"
+  # Optional: keep nightly assurance if needed
+  # schedule:
+  #   - cron: "0 18 * * *" # ~01:00 WIB nightly assurance
+  workflow_dispatch:
 
 concurrency:
   group: main-security
@@ -23,18 +27,18 @@ env:
   EPSS_THRESHOLD: "0.5"
 
 jobs:
-# =====================================================
-# 0) PYTHON COMPATIBILITY GUARD (HARD BLOCK)
-# =====================================================
+  # =====================================================
+  # 0) PYTHON COMPATIBILITY GUARD (HARD BLOCK)
+  # =====================================================
   python_guard:
     name: Python 3.8 Compatibility Guard
     uses: ./.github/workflows/python-compat-guard.yml
     with:
       target_version: py38
 
-# =====================================================
-# 1) AUTHORITATIVE SECURITY SCAN (WITH DAST)
-# =====================================================
+  # =====================================================
+  # 1) AUTHORITATIVE SECURITY SCAN (WITH DAST)
+  # =====================================================
   scan_authoritative:
     name: Scan + DAST + ASVS (Source of Truth)
     needs: [python_guard]
@@ -47,7 +51,6 @@ jobs:
           fetch-depth: 0
           clean: false
 
-      # ---------------- CORE SCAN ----------------
       - name: Security Scan Core (Authoritative)
         uses: ./.github/actions/security-scan
         with:
@@ -56,14 +59,12 @@ jobs:
           epss_threshold: ${{ env.EPSS_THRESHOLD }}
           zap_fail_severity: "HIGH"
 
-      # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
         if: always() && hashFiles('security-reports/gitleaks.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
-      # ---------------- FINAL GATE ----------------
       - name: Enforce security gate
         shell: bash
         run: |
@@ -74,7 +75,6 @@ jobs:
           fi
           echo "✅ Authoritative security gate passed"
 
-      # ---------------- ARTIFACT ----------------
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -82,9 +82,9 @@ jobs:
           name: security-reports
           path: security-reports
 
-# =====================================================
-# 2) SINGLE WRITER – BASELINES, METRICS, PAGES
-# =====================================================
+  # =====================================================
+  # 2) SINGLE WRITER – BASELINES, METRICS, PAGES
+  # =====================================================
   write_truth:
     name: Write baselines, trends, and Pages data
     needs: [scan_authoritative]
@@ -114,7 +114,6 @@ jobs:
             "${METRICS_DIR}/weekly" \
             docs/data/trends
 
-      # ---------------- TRENDS ----------------
       - name: Append security trends
         shell: bash
         run: |
@@ -136,7 +135,6 @@ jobs:
             --epss security-reports/epss-findings.json \
             --out docs/data/trends/kev-trend.json || true
 
-      # ---------------- BASELINES ----------------
       - name: Update baselines
         shell: bash
         run: |
@@ -146,7 +144,6 @@ jobs:
           cp security-reports/governance/asvs-coverage.json \
             "${BASELINE_DIR}/asvs-baseline.json"
 
-      # ---------------- COMMIT ----------------
       - name: Commit updates (idempotent)
         shell: bash
         run: |
