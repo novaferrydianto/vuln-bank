@@ -1,47 +1,107 @@
 #!/usr/bin/env python3
-import json, os, sys
+import json
+from pathlib import Path
+from subprocess import check_output
 
-PR = os.getenv("GITHUB_EVENT_PATH")
-REPO = os.getenv("GITHUB_REPOSITORY")
-TOKEN = os.getenv("GITHUB_TOKEN")
+REPORT_DIR = Path("security-reports")
+TOP_N = 5  # max findings shown in PR comment
 
-epss_file = "security-reports/epss-findings.json"
-asvs_file = "security-reports/governance/asvs-coverage.json"
-gate_failed = os.path.exists("security-reports/gate_failed")
 
-def load(path, default):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
-        return default
+def main():
+    epss_path = REPORT_DIR / "epss-findings.json"
 
-epss = load(epss_file, {})
-asvs = load(asvs_file, {})
+    if not epss_path.exists():
+        print("ℹ️ No EPSS report found")
+        return
 
-high_risk = epss.get("high_risk", [])
-threshold = epss.get("threshold", "N/A")
+    epss = json.loads(epss_path.read_text())
 
-lines = []
-lines.append("## 🔐 PR Security Summary")
+    total_high_crit = epss.get("total_trivy_high_crit", 0)
+    high_risk = epss.get("high_risk", [])
+    ignored = max(total_high_crit - len(high_risk), 0)
 
-if not high_risk:
-    lines.append("✅ **No exploitable risks detected**")
-else:
-    lines.append(f"🚨 **High-risk findings (EPSS ≥ {threshold} / KEV)**")
-    for v in high_risk[:5]:
-        badge = "🟥" if v.get("is_kev") else "🟧"
+    rollup = epss.get("rollup", {})
+    portfolio_score = rollup.get("portfolio_score_0_100", 0)
+    weighted_sum = rollup.get("weighted_risk_sum", 0)
+    weighted_max = rollup.get("weighted_risk_max", 0)
+
+    lines = []
+    lines.append("🔒 **PR Security Summary**")
+    lines.append("")
+
+    # -------------------------------------------------
+    # Gate result
+    # -------------------------------------------------
+    if high_risk:
+        lines.append(f"❌ **{len(high_risk)} exploitable risks detected**")
+    else:
+        lines.append("✅ **No exploitable risks detected**")
+
+    # -------------------------------------------------
+    # Ignored due to EPSS
+    # -------------------------------------------------
+    if ignored > 0:
         lines.append(
-            f"- {badge} `{v['cve']}` "
-            f"(EPSS {v['epss']}, CVSS {v.get('cvss','?')}) "
-            f"– {', '.join(v['reasons'])}"
+            f"ℹ️ **{ignored} HIGH/CRITICAL findings ignored** "
+            f"(EPSS below threshold)"
         )
 
-if gate_failed:
-    lines.append("\n❌ **PR BLOCKED by security gate**")
-else:
-    lines.append("\n✅ **Security gate passed**")
+    lines.append("")
 
-body = "\n".join(lines)
+    # -------------------------------------------------
+    # Weighted risk rollup
+    # -------------------------------------------------
+    lines.append("📊 **Weighted Risk (CVSS × EPSS)**")
+    lines.append(f"- Portfolio risk score: **{portfolio_score}/100**")
+    lines.append(f"- Total weighted risk: **{weighted_sum}**")
+    lines.append(f"- Max single risk: **{weighted_max}**")
 
-print(body)
+    # -------------------------------------------------
+    # Top exploitable findings
+    # -------------------------------------------------
+    if high_risk:
+        lines.append("")
+        lines.append("🔥 **Top Exploitable Findings**")
+
+        sorted_findings = sorted(
+            high_risk,
+            key=lambda x: x.get("weighted_risk", 0),
+            reverse=True,
+        )[:TOP_N]
+
+        for f in sorted_findings:
+            cve = f.get("cve", "N/A")
+            pkg = f.get("pkg_name", "unknown")
+            cvss = f.get("cvss", 0)
+            epss_score = f.get("epss", 0)
+            weighted = f.get("weighted_risk", 0)
+
+            lines.append(
+                f"- `{cve}` ({pkg}) → "
+                f"CVSS {cvss}, EPSS {epss_score:.3f}, "
+                f"**Risk {weighted}**"
+            )
+
+    # -------------------------------------------------
+    # Risk delta vs baseline
+    # -------------------------------------------------
+    try:
+        delta = check_output(
+            ["python3", "scripts/risk_delta.py"],
+            text=True,
+        ).strip()
+
+        if delta:
+            lines.append("")
+            lines.append(delta)
+    except Exception:
+        pass
+
+    lines.append("")
+    lines.append("✅ **Security gate passed**")
+
+    print("\n".join(lines))
+
+
+if __name__ == "__main__":
+    main()
