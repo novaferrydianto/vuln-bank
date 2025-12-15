@@ -1,18 +1,21 @@
+# ================================
+# Ruff configuration (CI-safe)
+# Python 3.8 runtime compatibility
+# ================================
+
 target-version = "py38"
 
 [lint]
 select = ["E", "F"]
 ignore = [
-  # ---- STYLE (allowed in legacy scripts)
-  "E401", # multiple imports per line
+  "E401", # multiple imports on one line
+  "E501", # line length (style only)
   "E701", # multiple statements
   "E702",
-  "E741", # ambiguous variable name
-  "E722", # bare except
+  "E741",
+  "E722",
   "F401", # unused imports
-  "F541", # f-string without placeholders
-
-  # ---- MODERNIZATION (pyupgrade)
+  "F541",
   "UP006",
   "UP007",
   "UP015",
