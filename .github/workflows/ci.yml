@@ -502,12 +502,6 @@ jobs:
           name: security-reports
           path: security-reports
 
-      - name: Download security-metrics
-        uses: actions/download-artifact@v4
-        with:
-          name: security-metrics
-          path: security-metrics
-
       - name: Slack decision notify
         shell: bash
         env:

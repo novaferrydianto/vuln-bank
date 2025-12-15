@@ -23,6 +23,15 @@ from datetime import datetime
 from collections import defaultdict
 
 # --------------------------------------------------
+# Risk model (level-weighted)
+# --------------------------------------------------
+LEVEL_WEIGHTS = {
+    1: 1,  # L1
+    2: 2,  # L2
+    3: 4,  # L3 (non-linear)
+}
+
+# --------------------------------------------------
 # Utils
 # --------------------------------------------------
 def load_json(path):
@@ -135,6 +144,12 @@ def main(args):
     status_counts = defaultdict(int)
     family_summary = defaultdict(lambda: defaultdict(int))
 
+    # --- Risk scoring accumulators (level-weighted) ---
+    risk_raw = 0
+    risk_max = 0
+    risk_by_level = defaultdict(int)   # "L1" -> points
+    risk_by_family = defaultdict(int)  # "V14" -> points (risk-weighted)
+
     for ctrl in tool_map.get("controls", []):
         status, evidence, owners = evaluate_control(ctrl, signals)
 
@@ -143,6 +158,15 @@ def main(args):
 
         status_counts[status] += 1
         family_summary[family][status] += 1
+
+        # Risk scoring (count PASS/FAIL only; NOT_APPLICABLE excluded from effective)
+        w = LEVEL_WEIGHTS[level]
+        if status in ("PASS", "FAIL"):
+            risk_max += w
+            if status == "FAIL":
+                risk_raw += w
+                risk_by_level[f"L{level}"] += w
+                risk_by_family[family] += w
 
         results.append({
             "id": ctrl["id"],
@@ -163,6 +187,17 @@ def main(args):
         (passed / effective_total) * 100, 2
     ) if effective_total else 0.0
 
+    risk_percent = round(
+        (risk_raw / risk_max) * 100, 2
+    ) if risk_max else 0.0
+
+    # Optional: precompute "top worst families" now (for Slack/pages consumers)
+    worst_families = sorted(
+        [{"family": f, "risk_points": pts} for f, pts in risk_by_family.items() if pts > 0],
+        key=lambda x: x["risk_points"],
+        reverse=True,
+    )
+
     output = {
         "meta": {
             "asvs_version": tool_map.get("asvs_version", "4.x"),
@@ -179,6 +214,17 @@ def main(args):
             # EXTENSIONS (allowed)
             "not_applicable": not_applicable,
             "families": family_summary,
+
+            # 🔥 NEW: level-weighted risk score (extensions)
+            "risk": {
+                "model": {"L1": LEVEL_WEIGHTS[1], "L2": LEVEL_WEIGHTS[2], "L3": LEVEL_WEIGHTS[3]},
+                "raw_score": risk_raw,
+                "max_score": risk_max,
+                "risk_percent": risk_percent,
+                "by_level": dict(risk_by_level),
+                "by_family": dict(risk_by_family),
+                "worst_families": worst_families[:10],  # keep small; Slack can take top-3
+            },
         },
         "controls": results,
     }
