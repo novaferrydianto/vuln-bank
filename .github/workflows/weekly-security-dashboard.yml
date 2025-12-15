@@ -1,138 +1,129 @@
-name: Vuln Bank – Weekly Security Dashboard & Executive Outputs
+name: Vuln Bank – Weekly Security Dashboard Builder
 
 on:
   workflow_run:
     workflows:
       - Vuln Bank – Weekly Security Data (OWASP / SLA / Scorecard)
-    types: [completed]
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
-  group: weekly-security-dashboard
+  group: weekly-dashboard-builder
   cancel-in-progress: true
 
-# =================================================
-# 1) BUILD DASHBOARDS & REPORTS
-# =================================================
 jobs:
-  build_dashboard:
-    name: Build Security Dashboards & Reports
+  build_dashboards:
+    name: Build Static Security Dashboards
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # =================================================
+      # Checkout (full history required for commit)
+      # =================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
-      # -----------------------------
+      # =================================================
       # Runtime
-      # -----------------------------
-      - uses: actions/setup-python@v5
+      # =================================================
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install dashboard dependencies
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install reportlab matplotlib
 
-      # -----------------------------
-      # Validate data contracts
-      # -----------------------------
-      - name: Validate required data inputs
+      # =================================================
+      # Pre-flight data contract checks
+      # =================================================
+      - name: Verify required data inputs
         run: |
           set -euo pipefail
-          for f in \
-            docs/data/security-scorecard.json
-          do
-            test -f "$f" || { echo "❌ Missing $f"; exit 1; }
-            jq . "$f" >/dev/null || { echo "❌ Invalid JSON: $f"; exit 1; }
-          done
-          echo "✅ All required data present"
+          test -f docs/data/security-scorecard.json
+          jq . docs/data/security-scorecard.json >/dev/null
 
-      # -----------------------------
-      # Generate dashboards
-      # -----------------------------
-      - name: Generate ASVS dashboard
+          test -f docs/data/governance/asvs-coverage.json
+          jq . docs/data/governance/asvs-coverage.json >/dev/null
+
+          echo "✅ Required dashboard input data present"
+
+      # =================================================
+      # 1) ASVS Static Dashboard
+      # =================================================
+      - name: Generate ASVS dashboard (static HTML)
         run: |
-          mkdir -p docs/dashboards/asvs
+          set -euo pipefail
           python scripts/asvs_dashboard.py \
             --scorecard docs/data/security-scorecard.json \
+            --asvs docs/data/governance/asvs-coverage.json \
             --outdir docs/dashboards/asvs
 
-      - name: Generate board security report (PDF)
+      # =================================================
+      # 2) EPSS / KEV Dashboard (static)
+      # =================================================
+      - name: Generate EPSS dashboard (static HTML)
         run: |
-          python scripts/generate_board_report.py
+          set -euo pipefail
+          python scripts/epss_dashboard.py \
+            --input docs/data/epss-findings.json \
+            --outdir docs/dashboards/epss
 
-      - name: Generate executive summary (PDF)
+      # =================================================
+      # 3) Executive PDFs (optional but recommended)
+      # =================================================
+      - name: Generate executive one-pager (PDF)
         run: |
+          set -euo pipefail
           python scripts/generate_executive_summary.py
           python scripts/render_executive_pdf.py
 
-      # -----------------------------
-      # Upload artifacts
-      # -----------------------------
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
-
-      - name: Upload executive reports artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: executive-reports
-          path: |
-            docs/board
-            docs/executive
-
-# =================================================
-# 2) DEPLOY GITHUB PAGES (GOVERNED)
-# =================================================
-  deploy_pages:
-    name: Deploy GitHub Pages
-    needs: build_dashboard
-    runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
-# =================================================
-# 3) COMMIT GENERATED OUTPUTS
-# =================================================
-  commit_outputs:
-    name: Commit dashboards & reports
-    needs: build_dashboard
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download executive reports artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: executive-reports
-          path: docs
-
-      - name: Commit generated outputs
+      # =================================================
+      # Guard rails – prevent JS regression forever
+      # =================================================
+      - name: Guard – verify static dashboards
         run: |
           set -euo pipefail
-          git config user.name "security-bot"
-          git config user.email "security-bot@users.noreply.github.com"
-          git add docs/dashboards docs/board docs/executive
+
+          ASVS=docs/dashboards/asvs/index.html
+          EPSS=docs/dashboards/epss/index.html
+
+          test -f "$ASVS"
+          ! grep -q "app.js" "$ASVS"
+          ! grep -q "Failed to load security dashboard data" "$ASVS"
+
+          test -f "$EPSS"
+          ! grep -q "app.js" "$EPSS"
+
+          echo "✅ Dashboards are static & JS-free"
+
+      # =================================================
+      # Commit dashboards to main
+      # =================================================
+      - name: Commit dashboards & executive outputs
+        run: |
+          set -euo pipefail
+          git config user.name "dashboard-bot"
+          git config user.email "dashboard-bot@users.noreply.github.com"
+
+          git add \
+            docs/dashboards \
+            docs/executive || true
+
           if git diff --cached --quiet; then
-            echo "ℹ️ No changes to commit"
+            echo "ℹ️ No dashboard changes to commit"
           else
-            git commit -m "chore(security): weekly dashboards & executive reports"
+            git commit -m "chore(dashboard): weekly static security dashboards"
             git push
           fi
