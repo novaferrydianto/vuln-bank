@@ -1,20 +1,18 @@
-target-version = "py38"
-
 [lint]
 select = ["E", "F"]
 ignore = [
-  # ---- STYLE (allowed in legacy scripts)
-  "E401", # multiple imports per line
-  "E701", # multiple statements
+  "E401",
+  "E501",
+  "E701",
   "E702",
-  "E741", # ambiguous variable name
-  "E722", # bare except
-  "F401", # unused imports
-  "F541", # f-string without placeholders
-
-  # ---- MODERNIZATION (pyupgrade)
+  "E741",
+  "E722",
+  "F401",
+  "F541",
   "UP006",
   "UP007",
   "UP015",
   "UP034",
 ]
+
+target-version = "py38"

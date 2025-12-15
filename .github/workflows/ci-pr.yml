@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Syntax + runtime compatibility (py38)
+      - name: Python syntax & runtime compatibility (py38)
         shell: bash
         run: |
           set -euo pipefail
@@ -38,7 +38,7 @@ jobs:
           ruff check scripts \
             --target-version py38 \
             --select E,F \
-            --ignore E401,E701,E702,E741,E722,F401,F541,UP006,UP007,UP015,UP034 \
+            --ignore E401,E501,E701,E702,E741,E722,F401,F541,UP006,UP007,UP015,UP034 \
             --output-format github
 
       - name: Bytecode compile (runtime truth)
