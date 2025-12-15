@@ -26,18 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ruff
-        run: pip install -q ruff==0.5.5
-
       - name: Python syntax & runtime compatibility (py38)
+        shell: bash
         run: |
+          set -euo pipefail
+          pip install -q ruff==0.5.5
           ruff check scripts \
             --target-version py38 \
             --select E,F \
-            --ignore \
-              E401,E701,E702,E741,E722, \
-              F401,F541, \
-              UP006,UP007,UP015,UP034 \
+            --ignore E401,E701,E702,E741,E722,F401,F541,UP006,UP007,UP015,UP034 \
             --output-format github
 
       - name: Bytecode compile (runtime truth)
