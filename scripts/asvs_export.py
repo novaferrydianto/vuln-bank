@@ -74,13 +74,12 @@ def evaluate_control(control, signals):
         rule_ids = set(tool.get("rules", []))
         findings = signals.get(tool_name, set())
 
-        # Trivy special handling (severity + KEV)
         if tool_name == "trivy":
             for v in findings:
                 if v.get("Severity") in tool.get("severity_fail", []):
                     owners.add("trivy")
                     if tool.get("kev_block") and v.get("KEV", False):
-                        return "FAIL", ["KEV detected"], sorted(owners)
+                        return "FAIL", ["KEV detected"], ["trivy"]
         else:
             matched = rule_ids & findings
             if matched:
@@ -94,10 +93,10 @@ def evaluate_control(control, signals):
         return "FAIL", hits, sorted(owners)
 
     if hits:
-        return "PARTIAL", hits, sorted(owners)
+        return "FAIL", hits, sorted(owners)
 
     if control.get("automation") == "manual":
-        return "MANUAL", [], []
+        return "NOT_APPLICABLE", [], []
 
     return "PASS", [], []
 
@@ -119,21 +118,12 @@ def main(args):
     status_counts = defaultdict(int)
     family_summary = defaultdict(lambda: defaultdict(int))
 
-    scoring = tool_map.get("scoring", {})
-    score = 0
-    max_score = 0
-
     for ctrl in tool_map.get("controls", []):
         status, evidence, owners = evaluate_control(ctrl, signals)
 
         status_counts[status] += 1
 
-        if status != "MANUAL":
-            max_score += 1
-            score += scoring.get(status.lower(), 0)
-
         family = ctrl["id"].split(".")[0]  # V1, V2, ...
-
         family_summary[family][status] += 1
 
         results.append({
@@ -143,13 +133,17 @@ def main(args):
             "owasp": ctrl.get("owasp", []),
             "status": status,
             "evidence": evidence,
-            "owners": owners,  # 🔑 tool ownership
+            "owners": owners,
         })
 
-    total = len(results)
     passed = status_counts.get("PASS", 0)
     failed = status_counts.get("FAIL", 0)
-    coverage_percent = round((passed / total) * 100, 2) if total else 0
+    not_applicable = status_counts.get("NOT_APPLICABLE", 0)
+
+    effective_total = passed + failed
+    coverage_percent = round(
+        (passed / effective_total) * 100, 2
+    ) if effective_total else 0.0
 
     output = {
         "meta": {
@@ -158,15 +152,14 @@ def main(args):
             "repo": os.getenv("GITHUB_REPOSITORY", "local"),
         },
         "summary": {
-            # ✅ REQUIRED by schema
-            "total": total,
+            # ✅ REQUIRED BY SCHEMA
+            "total": effective_total,
             "passed": passed,
             "failed": failed,
             "coverage_percent": coverage_percent,
 
-            # ➕ Allowed extensions
-            "partial": status_counts.get("PARTIAL", 0),
-            "manual": status_counts.get("MANUAL", 0),
+            # ➕ EXTENSIONS (allowed)
+            "not_applicable": not_applicable,
             "families": family_summary,
         },
         "controls": results,

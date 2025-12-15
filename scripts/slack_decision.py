@@ -10,6 +10,7 @@ Signals:
 - EPSS / KEV high-risk correlation (+ KEV weekly trend)
 - ZAP severity summary
 - ASVS family summary (V1–V14 counts)
+- ASVS weakest families (Top-3 worst)
 
 Design goals:
 - Explainable security decision
@@ -28,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # --------------------------------------------------
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
 REPO = os.getenv("GITHUB_REPOSITORY", "unknown")
-RUN_ID = os.getenv("GITHUB_RUN_ID", os.getenv("GITHUB_RUN_ID", "manual"))
+RUN_ID = os.getenv("GITHUB_RUN_ID", "manual")
 PR = os.getenv("PR_NUMBER")  # optional
 
 BASE = Path("security-reports")
@@ -51,6 +52,7 @@ GATE = BASE / "gate_failed"
 TOP_FAILED_ASVS = int(os.getenv("TOP_FAILED_ASVS", "6"))
 PASS_TREND_WINDOW = int(os.getenv("PASS_TREND_WINDOW", "10"))
 KEV_TREND_WINDOW = int(os.getenv("KEV_TREND_WINDOW", "10"))
+TOP_WORST_FAMILIES = int(os.getenv("TOP_WORST_FAMILIES", "3"))
 
 # --------------------------------------------------
 # Helpers
@@ -156,6 +158,38 @@ def asvs_family_summary() -> List[Tuple[str, int, int]]:
     out = [(k, v["pass"], v["total"]) for k, v in fam.items()]
     out.sort(key=lambda x: fam_key(x[0]))
     return out
+
+def worst_asvs_families(limit: int = TOP_WORST_FAMILIES) -> List[Dict[str, Any]]:
+    """
+    Uses schema-first summary.families if present:
+      summary.families = { "V1": {"PASS":..,"FAIL":..,"PARTIAL":..,"MANUAL":..,"TOTAL":..}, ... }
+
+    Computes severity score:
+      severity = FAIL*2 + PARTIAL
+    Returns top-N worst families (severity > 0).
+    """
+    data = load_json(ASVS_COVERAGE, {})
+    families = (data.get("summary", {}) or {}).get("families", {}) or {}
+
+    scored: List[Dict[str, Any]] = []
+
+    for fam, counts in families.items():
+        fail = int(counts.get("FAIL", 0) or 0)
+        partial = int(counts.get("PARTIAL", 0) or 0)
+        total = int(counts.get("TOTAL", 0) or 0)
+
+        severity = (fail * 2) + partial
+        if severity > 0:
+            scored.append({
+                "family": fam,
+                "fail": fail,
+                "partial": partial,
+                "total": total,
+                "severity": severity,
+            })
+
+    scored.sort(key=lambda x: (x["severity"], x["family"]), reverse=True)
+    return scored[:limit]
 
 # --------------------------------------------------
 # KEV helpers
@@ -279,7 +313,25 @@ def main():
         ])
 
     # --------------------------------------------------
-    # ASVS family summary (V1–V14)
+    # ASVS weakest families (Top-3 worst) - schema-first
+    # --------------------------------------------------
+    worst = worst_asvs_families()
+    if worst:
+        lines.append("")
+        lines.append(f"*📉 Weakest ASVS Domains (top {len(worst)}):*")
+        for w in worst:
+            parts = []
+            if w.get("fail", 0):
+                parts.append(f"{w['fail']} FAIL")
+            if w.get("partial", 0):
+                parts.append(f"{w['partial']} PARTIAL")
+            detail = " / ".join(parts) if parts else "signals detected"
+            total = w.get("total", 0)
+            total_txt = f" (of {total})" if total else ""
+            lines.append(f"• `{w['family']}` – {detail}{total_txt}")
+
+    # --------------------------------------------------
+    # ASVS family summary (V1–V14) from controls (PASS/TOTAL)
     # --------------------------------------------------
     fam = asvs_family_summary()
     if fam:
@@ -299,7 +351,7 @@ def main():
         for c in failed:
             cid = c.get("id", "unknown")
             lvl = c.get("level", "n/a")
-            title = c.get("title", "").strip()
+            title = (c.get("title") or "").strip()
             if title:
                 lines.append(f"• `{cid}` ({lvl}) – {title}")
             else:
