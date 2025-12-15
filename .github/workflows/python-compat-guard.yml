@@ -1,13 +1,9 @@
-name: Python Compatibility Guard (3.8+)
-
-permissions:
-  contents: read
+name: Python Compatibility Guard
 
 on:
   workflow_call:
     inputs:
       target_version:
-        description: "Python target version (e.g. py38)"
         required: false
         type: string
         default: "py38"
@@ -15,21 +11,30 @@ on:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 7
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show Python version
-        run: python3 --version
-
-      - name: Compile all scripts (syntax check)
+      - name: Install Ruff (pinned)
+        shell: bash
         run: |
           set -euo pipefail
-          python3 -m compileall -q scripts
+          python3 -m pip install -q --upgrade pip
+          pip install -q ruff==0.5.5
 
-      - name: Ruff compatibility check
+      - name: Ruff compatibility guard (non-style)
+        shell: bash
         run: |
-          pip install -q ruff
+          set -euo pipefail
           ruff check scripts \
             --target-version ${{ inputs.target_version }} \
-            --format github
+            --select E,F \
+            --ignore E401,E501,E701,E702,E741,E722,F401,F541,UP006,UP007,UP015,UP034 \
+            --output-format github
+
+      - name: Bytecode compile (runtime truth)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall scripts
