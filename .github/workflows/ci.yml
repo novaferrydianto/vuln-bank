@@ -146,6 +146,8 @@ jobs:
 
       - name: Semgrep scan (OWASP / ASVS)
         shell: bash
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD:/src" returntocorp/semgrep \
