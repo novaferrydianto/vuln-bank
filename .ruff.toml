@@ -1,0 +1,9 @@
+target-version = "py38"
+
+[lint]
+ignore = [
+  "UP006", # Dict → dict (style)
+  "UP007", # X | Y (py310+)
+  "UP015", # open() mode noise
+  "UP034", # cosmetic parentheses
+]
