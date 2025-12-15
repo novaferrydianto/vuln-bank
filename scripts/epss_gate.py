@@ -18,7 +18,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -57,19 +57,19 @@ def get_retry_session() -> requests.Session:
 
 
 # ------------------------------------------------------------
-# CVSS extraction helper
+# CVSS extraction helper (Python 3.8 safe)
 # ------------------------------------------------------------
-def extract_cvss(vuln: Dict[str, Any]) -> float | None:
+def extract_cvss(vuln: Dict[str, Any]) -> Optional[float]:
     cvss_data = vuln.get("CVSS")
     if not isinstance(cvss_data, dict):
         return None
 
-    # Try preferred CVSS sources (ordered)
     preferred_sources = ["nvd", "redhat", "github", "ghsa", "vendor"]
 
     for src in preferred_sources:
-        if src in cvss_data and isinstance(cvss_data[src], dict):
-            score = cvss_data[src].get("V3Score")
+        source_data = cvss_data.get(src)
+        if isinstance(source_data, dict):
+            score = source_data.get("V3Score")
             try:
                 return float(score) if score is not None else None
             except (TypeError, ValueError):
@@ -83,13 +83,13 @@ def extract_cvss(vuln: Dict[str, Any]) -> float | None:
 # ------------------------------------------------------------
 def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         print(f"[ERROR] Cannot read Trivy output: {path}")
         sys.exit(1)
 
-    vulns = []
+    vulns: List[Dict[str, Any]] = []
 
     for result in data.get("Results", []):
         detected = result.get("Vulnerabilities") or []
@@ -98,8 +98,6 @@ def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
             sev = (v.get("Severity") or "").upper()
             if sev not in ("HIGH", "CRITICAL"):
                 continue
-
-            cvss = extract_cvss(v)
 
             vulns.append(
                 {
@@ -110,7 +108,7 @@ def load_trivy_vulns(path: str) -> List[Dict[str, Any]]:
                     "severity": sev,
                     "description": (v.get("Description") or "")[:500],
                     "target": result.get("Target", "Unknown"),
-                    "cvss": cvss,
+                    "cvss": extract_cvss(v),
                 }
             )
 
@@ -125,7 +123,7 @@ def fetch_epss_scores(cves: List[str]) -> Dict[str, Dict[str, float]]:
         return {}
 
     session = get_retry_session()
-    scores = {}
+    scores: Dict[str, Dict[str, float]] = {}
 
     for i in range(0, len(cves), BATCH_SIZE):
         batch = cves[i : i + BATCH_SIZE]
@@ -200,11 +198,12 @@ def main():
     }
 
     if not vulns:
-        json.dump(
-            {"threshold": threshold, "total_trivy_high_crit": 0, "high_risk": []},
-            open(output_path, "w"),
-            indent=2,
-        )
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"threshold": threshold, "total_trivy_high_crit": 0, "high_risk": []},
+                f,
+                indent=2,
+            )
         write_history(output_path.parent, stats)
         print("[GATE] ✅ PASSED (No vulnerabilities)")
         return
@@ -213,7 +212,7 @@ def main():
     epss_scores = fetch_epss_scores(unique_cves)
     kev_map = fetch_cisa_kev()
 
-    high_risk = []
+    high_risk: List[Dict[str, Any]] = []
 
     for v in vulns:
         cve = v["cve"]
@@ -222,7 +221,8 @@ def main():
         percentile = epss_pack["percentile"]
         is_kev = kev_map.get(cve, False)
 
-        reasons = []
+        reasons: List[str] = []
+
         if epss >= threshold:
             reasons.append(f"EPSS>={threshold}")
             stats["epss_above_threshold"] += 1
@@ -246,23 +246,23 @@ def main():
 
     high_risk.sort(key=lambda x: x["epss"], reverse=True)
 
-    json.dump(
-        {
-            "threshold": threshold,
-            "total_trivy_high_crit": len(vulns),
-            "high_risk": high_risk,
-        },
-        open(output_path, "w"),
-        indent=2,
-    )
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "threshold": threshold,
+                "total_trivy_high_crit": len(vulns),
+                "high_risk": high_risk,
+            },
+            f,
+            indent=2,
+        )
 
     write_history(output_path.parent, stats)
 
-    # Gate output
     gate_file = output_path.parent / "gate_failed"
 
     if high_risk:
-        gate_file.write_text("Gate failed\n")
+        gate_file.write_text("Gate failed\n", encoding="utf-8")
         print(f"[GATE] 🚨 FAILED – {len(high_risk)} risk findings")
     else:
         print("[GATE] ✅ PASSED")
