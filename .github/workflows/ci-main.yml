@@ -3,9 +3,10 @@ name: Vuln Bank – Main Security Pipeline (Authoritative)
 on:
   push:
     branches: ["main"]
-  schedule:
-    - cron: "0 18 * * *" # ~01:00 WIB nightly assurance
-  workflow_dispatch:
+    paths-ignore:
+      - "security-baselines/**"
+      - "security-metrics/**"
+      - "docs/data/**"
 
 concurrency:
   group: main-security
