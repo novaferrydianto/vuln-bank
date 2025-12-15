@@ -33,6 +33,9 @@
     <span class="meta-badge">
       Scope: <b>Application Security</b>
     </span>
+    <span id="last-updated" class="meta-badge">
+      Updated: –
+    </span>
   </div>
 </header>
 
@@ -95,28 +98,41 @@
 </section>
 
 <!-- ================================================= -->
-<!-- TREND (PLACEHOLDER – SPARKLINE READY) -->
+<!-- TREND -->
 <!-- ================================================= -->
 <section class="card">
   <h2>Security Trend (Weekly)</h2>
 
   <p class="muted">
     Directional view of security maturity.
-    Executives should focus on <b>movement over time</b>, not single snapshots.
+    Focus on <b>movement over time</b>, not point-in-time scores.
   </p>
 
-  <!-- Sparkline injected by JS -->
-  <svg id="sparkline"
+  <!-- PASS% -->
+  <h3 class="muted">ASVS PASS %</h3>
+  <svg id="pass-sparkline"
        width="100%"
        height="60"
        viewBox="0 0 300 60"
        preserveAspectRatio="none"
-       aria-label="Weekly PASS percentage trend">
-    <!-- rendered dynamically -->
+       aria-label="Weekly ASVS PASS percentage trend">
+  </svg>
+
+  <!-- KEV -->
+  <h3 class="muted" style="margin-top:1rem;">
+    Known Exploited Vulnerabilities (KEV)
+  </h3>
+  <svg id="kev-sparkline"
+       width="100%"
+       height="60"
+       viewBox="0 0 300 60"
+       preserveAspectRatio="none"
+       aria-label="Weekly KEV exposure trend">
   </svg>
 
   <p class="muted">
-    Upward trend indicates improving control coverage and risk reduction.
+    Dashed line indicates <b>risk appetite threshold</b>.
+    Crossing it requires management attention.
   </p>
 </section>
 
@@ -130,7 +146,7 @@
     <li><b>FAIL</b> means a risk is visible, measured, and tracked</li>
     <li>Unmeasured security equals invisible exposure</li>
     <li>Each FAIL has ownership, SLA, and remediation evidence</li>
-    <li>Program success is measured by <b>declining FAIL trends</b></li>
+    <li>Program success is measured by <b>declining FAIL & KEV trends</b></li>
   </ul>
 
   <p class="muted">
@@ -149,8 +165,6 @@
   </p>
 </footer>
 
-<!-- Sparkline renderer -->
 <script src="./sparkline.js"></script>
-
 </body>
 </html>
