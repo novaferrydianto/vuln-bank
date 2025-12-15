@@ -21,7 +21,7 @@ env:
 
 jobs:
 # =====================================================
-# 0) DEFECTDOJO AUTO-CLOSE (ON MERGE)
+# DEFECTDOJO AUTO-CLOSE (ON MERGE)
 # =====================================================
   defectdojo_autoclose:
     name: DefectDojo – Auto-close findings on merge
@@ -36,10 +36,8 @@ jobs:
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
-          GITHUB_REPO: ${{ github.repository }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          set -euo pipefail
           python3 scripts/defectdojo_autoclose_on_merge.py
 
 # =====================================================

@@ -152,14 +152,40 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        
+        mkdir -p security-reports/zap
+        chmod 777 security-reports/zap
+
         docker compose -f docker-compose.dast.yml up -d
+
         docker run --rm \
+          --user root \
           --network vuln-bank_dastnet \
           -e TARGET_URL=http://vuln-bank-dast:5000 \
           -v "$PWD/security-reports/zap:/zap/wrk" \
           -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml:ro" \
           ghcr.io/zaproxy/zaproxy:stable \
           zap.sh -cmd -autorun /zap/automation.yml
+
+    - name: ZAP severity gate
+      if: inputs.run_dast == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -f security-reports/zap/zap_alerts.json ]; then
+        python3 scripts/zap_severity_gate.py \
+          security-reports/zap/zap_alerts.json \
+          "${{ inputs.zap_fail_severity }}"
+        else
+          echo "[WARN] ZAP report missing, skipping severity gate"
+        fi
+
+    - name: ZAP cleanup
+      if: inputs.run_dast == 'true'
+      shell: bash
+      run: |
+        docker compose -f docker-compose.dast.yml down -v || true
 
 # =====================================================
 # ASVS EXPORT (SOURCE OF TRUTH)
