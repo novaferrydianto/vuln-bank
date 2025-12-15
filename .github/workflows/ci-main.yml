@@ -75,6 +75,14 @@ jobs:
           fi
           echo "✅ Authoritative security gate passed"
 
+      - name: Open GitHub Issues for KEV findings
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/kev_to_github_issues.py
+
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -134,6 +142,10 @@ jobs:
           python3 scripts/append_kev_trend.py \
             --epss security-reports/epss-findings.json \
             --out docs/data/trends/kev-trend.json || true
+
+      - name: Render risk score trend
+        run: |
+          python3 scripts/render_risk_trend.py
 
       - name: Update baselines
         shell: bash

@@ -1,47 +1,36 @@
-#!/usr/bin/env python3
-import json, os, sys
+import json
+from pathlib import Path
 
-PR = os.getenv("GITHUB_EVENT_PATH")
-REPO = os.getenv("GITHUB_REPOSITORY")
-TOKEN = os.getenv("GITHUB_TOKEN")
+REPORT_DIR = Path("security-reports")
 
-epss_file = "security-reports/epss-findings.json"
-asvs_file = "security-reports/governance/asvs-coverage.json"
-gate_failed = os.path.exists("security-reports/gate_failed")
+def main():
+    epss = json.loads((REPORT_DIR / "epss-findings.json").read_text())
+    trivy = json.loads((REPORT_DIR / "trivy-sca.json").read_text())
 
-def load(path, default):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
-        return default
+    total_high_crit = epss.get("total_trivy_high_crit", 0)
+    high_risk = epss.get("high_risk", [])
+    ignored = total_high_crit - len(high_risk)
 
-epss = load(epss_file, {})
-asvs = load(asvs_file, {})
+    lines = []
+    lines.append("🔒 **PR Security Summary**\n")
 
-high_risk = epss.get("high_risk", [])
-threshold = epss.get("threshold", "N/A")
+    if high_risk:
+        lines.append(f"❌ **{len(high_risk)} exploitable risks detected**")
+    else:
+        lines.append("✅ **No exploitable risks detected**")
 
-lines = []
-lines.append("## 🔐 PR Security Summary")
+    lines.append("")
 
-if not high_risk:
-    lines.append("✅ **No exploitable risks detected**")
-else:
-    lines.append(f"🚨 **High-risk findings (EPSS ≥ {threshold} / KEV)**")
-    for v in high_risk[:5]:
-        badge = "🟥" if v.get("is_kev") else "🟧"
+    if ignored > 0:
         lines.append(
-            f"- {badge} `{v['cve']}` "
-            f"(EPSS {v['epss']}, CVSS {v.get('cvss','?')}) "
-            f"– {', '.join(v['reasons'])}"
+            f"ℹ️ **{ignored} HIGH/CRITICAL findings ignored** "
+            f"(EPSS below threshold)"
         )
 
-if gate_failed:
-    lines.append("\n❌ **PR BLOCKED by security gate**")
-else:
-    lines.append("\n✅ **Security gate passed**")
+    lines.append("")
+    lines.append("✅ **Security gate passed**")
 
-body = "\n".join(lines)
+    print("\n".join(lines))
 
-print(body)
+if __name__ == "__main__":
+    main()

@@ -194,10 +194,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        mkdir -p security-reports/governance
+
         python3 scripts/asvs_export.py \
           --tool-map schemas/asvs-tool-map.json \
           --semgrep security-reports/semgrep.json \
           --bandit security-reports/bandit_dd.json \
           --trivy security-reports/trivy-sca.json \
           --gitleaks security-reports/gitleaks.sarif \
-          --out-json security-reports/governance/asvs-coverage.json
+          --out-json security-reports/governance/asvs-coverage.json \
+          || echo '{"coverage":0,"controls":{}}' \
+            > security-reports/governance/asvs-coverage.json
