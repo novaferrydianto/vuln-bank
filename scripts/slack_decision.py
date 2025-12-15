@@ -71,6 +71,21 @@ def format_risk_block(risk: Dict[str, Any]) -> List[str]:
             lines.append(
                 f"  - `{w['family']}`: `{w['risk_points']}` pts"
             )
+
+    # 🔥 Burn-down velocity KPI (optional)
+    burn = risk.get("burn_down")
+    if burn:
+        arrow = {
+            "DOWN": "📉",
+            "UP": "📈",
+            "FLAT": "➡️",
+        }.get(burn.get("direction"), "➡️")
+
+        lines.append(
+            f"• Risk burn-down: `{burn.get('delta')}` pts/week {arrow} "
+            f"(prev `{burn.get('previous_raw')}`)"
+        )
+
     return lines
 
 def format_failed_controls(controls: List[Dict[str, Any]]) -> List[str]:
@@ -135,7 +150,7 @@ def main():
     )
 
     # --------------------------------------------------
-    # Risk block (🔥 core value)
+    # Risk block (🔥 core executive signal)
     # --------------------------------------------------
     lines.append("")
     lines.extend(format_risk_block(risk))

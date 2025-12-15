@@ -4,8 +4,7 @@ on:
   workflow_run:
     workflows:
       - Vuln Bank – Weekly Security Data (OWASP / SLA / Scorecard)
-    types:
-      - completed
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -17,87 +16,122 @@ concurrency:
   group: weekly-security-dashboard
   cancel-in-progress: true
 
+# =================================================
+# 1) BUILD DASHBOARDS & REPORTS
+# =================================================
 jobs:
-  dashboard:
-    name: Build Dashboards & Executive Reports
+  build_dashboard:
+    name: Build Security Dashboards & Reports
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
-      # =================================================
-      # Checkout
-      # =================================================
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      # =================================================
+      # -----------------------------
       # Runtime
-      # =================================================
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      # -----------------------------
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install reportlab matplotlib
 
-      # =================================================
-      # 1) ASVS Dashboard (Static HTML)
-      # =================================================
-      - name: Generate ASVS dashboard
+      # -----------------------------
+      # Validate data contracts
+      # -----------------------------
+      - name: Validate required data inputs
         run: |
           set -euo pipefail
+          for f in \
+            docs/data/security-scorecard.json
+          do
+            test -f "$f" || { echo "❌ Missing $f"; exit 1; }
+            jq . "$f" >/dev/null || { echo "❌ Invalid JSON: $f"; exit 1; }
+          done
+          echo "✅ All required data present"
+
+      # -----------------------------
+      # Generate dashboards
+      # -----------------------------
+      - name: Generate ASVS dashboard
+        run: |
           mkdir -p docs/dashboards/asvs
           python scripts/asvs_dashboard.py \
             --scorecard docs/data/security-scorecard.json \
             --outdir docs/dashboards/asvs
 
-      # =================================================
-      # 2) Board Report (PDF)
-      # =================================================
       - name: Generate board security report (PDF)
         run: |
-          set -euo pipefail
           python scripts/generate_board_report.py
 
-      # =================================================
-      # 3) Executive One-Pager (MD → PDF)
-      # =================================================
-      - name: Generate executive summary
+      - name: Generate executive summary (PDF)
         run: |
-          set -euo pipefail
           python scripts/generate_executive_summary.py
           python scripts/render_executive_pdf.py
 
-      # =================================================
-      # 4) GitHub Pages Deployment
-      # =================================================
+      # -----------------------------
+      # Upload artifacts
+      # -----------------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs
 
-      - name: Deploy GitHub Pages
+      - name: Upload executive reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: executive-reports
+          path: |
+            docs/board
+            docs/executive
+
+# =================================================
+# 2) DEPLOY GITHUB PAGES (GOVERNED)
+# =================================================
+  deploy_pages:
+    name: Deploy GitHub Pages
+    needs: build_dashboard
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
-      # =================================================
-      # 5) Commit generated visuals
-      # =================================================
-      - name: Commit dashboard & executive outputs
+# =================================================
+# 3) COMMIT GENERATED OUTPUTS
+# =================================================
+  commit_outputs:
+    name: Commit dashboards & reports
+    needs: build_dashboard
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download executive reports artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: executive-reports
+          path: docs
+
+      - name: Commit generated outputs
         run: |
           set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
-
           git add docs/dashboards docs/board docs/executive
-
           if git diff --cached --quiet; then
-            echo "ℹ️ No dashboard changes"
+            echo "ℹ️ No changes to commit"
           else
             git commit -m "chore(security): weekly dashboards & executive reports"
             git push
