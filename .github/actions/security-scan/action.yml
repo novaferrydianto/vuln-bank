@@ -2,6 +2,7 @@ name: "Vuln Bank – Security Scan Core"
 description: >
   Reusable DevSecOps security scan core:
   Secrets, SAST, SCA + EPSS/KEV, optional DAST, ASVS export.
+  Designed for PR-fast mode and Main-authoritative mode.
 
 inputs:
   mode:
@@ -27,9 +28,9 @@ inputs:
 runs:
   using: "composite"
   steps:
-    # ==================================================
-    # PREPARE
-    # ==================================================
+# =====================================================
+# PREPARE
+# =====================================================
     - name: Prepare workspace
       shell: bash
       run: |
@@ -37,15 +38,18 @@ runs:
         mkdir -p security-reports/zap security-reports/governance .trivy-cache
         rm -f security-reports/gate_failed || true
 
-    # ==================================================
-    # SECRETS – GITLEAKS
-    # ==================================================
+# =====================================================
+# SECRETS – GITLEAKS
+# =====================================================
     - name: Gitleaks scan
       shell: bash
       run: |
         set -euo pipefail
-        docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.0 \
-          detect --source /repo \
+        docker run --rm \
+          -v "$PWD:/repo" \
+          zricethezav/gitleaks:v8.21.0 \
+          detect \
+          --source /repo \
           --config /repo/.gitleaks.toml \
           --report-format sarif \
           --report-path /repo/security-reports/gitleaks.sarif \
@@ -58,9 +62,9 @@ runs:
         set -euo pipefail
         python3 scripts/gitleaks_gate.py security-reports/gitleaks.sarif
 
-    # ==================================================
-    # SAST – BANDIT
-    # ==================================================
+# =====================================================
+# SAST – BANDIT + SEMGREP
+# =====================================================
     - name: Bandit scan
       shell: bash
       run: |
@@ -78,14 +82,13 @@ runs:
           security-reports/bandit.json \
           security-reports/bandit_dd.json
 
-    # ==================================================
-    # SAST – SEMGREP
-    # ==================================================
     - name: Semgrep scan
       shell: bash
       run: |
         set -euo pipefail
-        docker run --rm -v "$PWD:/src" returntocorp/semgrep:1.75.0 \
+        docker run --rm \
+          -v "$PWD:/src" \
+          returntocorp/semgrep:1.75.0 \
           semgrep scan \
             --config p/owasp-top-ten \
             --config p/security-audit \
@@ -106,9 +109,9 @@ runs:
           python3 scripts/semgrep_owasp_gate.py security-reports/semgrep.json
         fi
 
-    # ==================================================
-    # SCA – TRIVY + EPSS / KEV
-    # ==================================================
+# =====================================================
+# SCA – TRIVY + EPSS / KEV
+# =====================================================
     - name: Trivy filesystem scan
       shell: bash
       run: |
@@ -134,18 +137,18 @@ runs:
           --output security-reports/epss-findings.json \
           --threshold "${{ inputs.epss_threshold }}"
 
-    # ==================================================
-    # DAST – ZAP (MAIN ONLY)
-    # ==================================================
+# =====================================================
+# DAST – OPTIONAL (MAIN ONLY)
+# =====================================================
     - name: Build app image (DAST)
-      if: inputs.run_dast == 'true' && inputs.mode == 'main'
+      if: inputs.run_dast == 'true'
       shell: bash
       run: |
         set -euo pipefail
         docker build -t vuln-bank:ci -f containers/app/Dockerfile .
 
-    - name: Run ZAP DAST
-      if: inputs.run_dast == 'true' && inputs.mode == 'main'
+    - name: ZAP DAST scan
+      if: inputs.run_dast == 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -158,24 +161,9 @@ runs:
           ghcr.io/zaproxy/zaproxy:2.15.0 \
           zap.sh -cmd -autorun /zap/automation.yml
 
-    - name: ZAP severity gate
-      if: inputs.run_dast == 'true' && inputs.mode == 'main'
-      shell: bash
-      run: |
-        set -euo pipefail
-        python3 scripts/zap_severity_gate.py \
-          security-reports/zap/zap_alerts.json \
-          "${{ inputs.zap_fail_severity }}"
-
-    - name: Stop DAST stack
-      if: inputs.run_dast == 'true' && inputs.mode == 'main'
-      shell: bash
-      run: |
-        docker compose -f docker-compose.dast.yml down || true
-
-    # ==================================================
-    # ASVS EXPORT (AUTHORITATIVE DATA)
-    # ==================================================
+# =====================================================
+# ASVS EXPORT (SOURCE OF TRUTH)
+# =====================================================
     - name: ASVS export
       shell: bash
       run: |

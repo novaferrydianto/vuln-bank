@@ -1,165 +1,109 @@
-name: Vuln Bank – Main Security Pipeline (Authoritative)
+name: Vuln Bank – PR Security Gate (Fast)
 
 on:
-  push:
+  pull_request:
     branches: ["main"]
-  schedule:
-    - cron: "0 18 * * *" # ~01:00 WIB
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
-  group: main-security
+  group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   security-events: write
+  pull-requests: write
 
 env:
   REPORT_DIR: security-reports
   BASELINE_DIR: security-baselines
-  METRICS_DIR: security-metrics
+  EPSS_THRESHOLD: "0.5"
 
 jobs:
-# =====================================================
-# 0) PYTHON COMPATIBILITY GUARD (NON-STYLE)
-# =====================================================
+  # =====================================================
+  # 0) PYTHON COMPATIBILITY GUARD (BLOCKING, NON-STYLE)
+  # =====================================================
   python_guard:
     name: Python 3.8 Compatibility Guard
     uses: ./.github/workflows/python-compat-guard.yml
     with:
       target_version: py38
 
-# =====================================================
-# 1) AUTHORITATIVE SECURITY SCAN
-# =====================================================
-  scan_authoritative:
-    name: Scan + DAST + ASVS (Source of Truth)
+  # =====================================================
+  # 1) PR SECURITY GATE (FAST, NO DAST)
+  # =====================================================
+  pr_security_gate:
+    name: PR Security Gate
     needs: [python_guard]
     runs-on: self-hosted
-    timeout-minutes: 45
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: false
 
-      # ---------------- CORE SCAN ----------------
-      - name: Security Scan Core (Authoritative)
+      - name: Prepare workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}" "${BASELINE_DIR}"
+          rm -f "${REPORT_DIR}/gate_failed" || true
+
+      # ---------------- CORE SCAN (PR MODE, NO DAST) ----------------
+      - name: Security Scan Core (PR)
         uses: ./.github/actions/security-scan
         with:
-          mode: main
-          run_dast: "true"
-          epss_threshold: "0.5"
+          mode: pr
+          run_dast: "false"
+          epss_threshold: ${{ env.EPSS_THRESHOLD }}
           zap_fail_severity: "HIGH"
 
       # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
+        if: always() && hashFiles('security-reports/gitleaks.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
-      # ---------------- FINAL GATE ----------------
-      - name: Enforce security gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f security-reports/gate_failed ]; then
-            echo "❌ Main pipeline blocked by security gate"
-            exit 1
-          fi
-          echo "✅ Authoritative security gate passed"
-
-      # ---------------- ARTIFACT ----------------
+      # ---------------- ARTIFACTS ----------------
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: security-reports
+          name: security-reports-pr
           path: security-reports
 
-# =====================================================
-# 2) SINGLE WRITER – BASELINES + METRICS + PAGES
-# =====================================================
-  write_truth:
-    name: Write baselines, trends, and Pages data
-    needs: [scan_authoritative]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Download security reports
-        uses: actions/download-artifact@v4
-        with:
-          name: security-reports
-          path: security-reports
-
-      - name: Prepare directories
+      # ---------------- PR COMMENT SUMMARY ----------------
+      # NOTE: this expects you to implement scripts/pr_security_summary.py
+      # It should read:
+      # - security-reports/epss-findings.json
+      # - security-reports/governance/asvs-coverage.json (if generated)
+      # And then post a comment to the PR.
+      - name: PR comment – Security summary
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPORT_DIR: ${{ env.REPORT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p \
-            "${BASELINE_DIR}" \
-            "${METRICS_DIR}/weekly" \
-            docs/data/trends
-
-      # ---------------- TRENDS ----------------
-      - name: Append security trends
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 scripts/append_pass_trend.py \
-            --asvs security-reports/governance/asvs-coverage.json \
-            --out "${METRICS_DIR}/weekly/pass-trend.json"
-
-          python3 scripts/append_pass_trend.py \
-            --asvs security-reports/governance/asvs-coverage.json \
-            --out docs/data/trends/pass-trend.json
-
-          python3 scripts/append_kev_trend.py \
-            --epss security-reports/epss-findings.json \
-            --out "${METRICS_DIR}/weekly/kev-trend.json" || true
-
-          python3 scripts/append_kev_trend.py \
-            --epss security-reports/epss-findings.json \
-            --out docs/data/trends/kev-trend.json || true
-
-      # ---------------- BASELINES ----------------
-      - name: Update baselines
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp security-reports/semgrep.json \
-            "${BASELINE_DIR}/semgrep-baseline.json"
-          cp security-reports/governance/asvs-coverage.json \
-            "${BASELINE_DIR}/asvs-baseline.json"
-
-      # ---------------- COMMIT ----------------
-      - name: Commit updates (idempotent)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git config user.name "security-bot"
-          git config user.email "security-bot@users.noreply.github.com"
-
-          git add \
-            "${BASELINE_DIR}" \
-            "${METRICS_DIR}" \
-            docs/data/trends || true
-
-          if git diff --cached --quiet; then
-            echo "ℹ️ No baseline or trend changes"
+          if [ -f "scripts/pr_security_summary.py" ]; then
+            python3 scripts/pr_security_summary.py "${REPORT_DIR}" --post-comment || true
           else
-            git commit -m "chore(security): update baselines & trends"
-            git push
+            echo "[INFO] scripts/pr_security_summary.py not found; skipping PR summary comment."
           fi
+
+      # ---------------- FINAL DECISION ----------------
+      - name: Enforce PR gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "${REPORT_DIR}/gate_failed" ]; then
+            echo "❌ PR blocked: new security risk detected"
+            exit 1
+          fi
+          echo "✅ PR security gate passed"

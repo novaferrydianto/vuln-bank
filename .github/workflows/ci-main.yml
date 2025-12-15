@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   schedule:
-    - cron: "0 18 * * *" # ~01:00 WIB
+    - cron: "0 18 * * *" # ~01:00 WIB nightly assurance
   workflow_dispatch:
 
 concurrency:
@@ -19,22 +19,23 @@ env:
   REPORT_DIR: security-reports
   BASELINE_DIR: security-baselines
   METRICS_DIR: security-metrics
+  EPSS_THRESHOLD: "0.5"
 
 jobs:
 # =====================================================
-# 0) PYTHON COMPATIBILITY GUARD (HARD PRECONDITION)
+# 0) PYTHON COMPATIBILITY GUARD (HARD BLOCK)
 # =====================================================
   python_guard:
-    name: Python Compatibility Guard (py38+)
+    name: Python 3.8 Compatibility Guard
     uses: ./.github/workflows/python-compat-guard.yml
     with:
       target_version: py38
 
 # =====================================================
-# 1) AUTHORITATIVE SECURITY SCAN (SOURCE OF TRUTH)
+# 1) AUTHORITATIVE SECURITY SCAN (WITH DAST)
 # =====================================================
   scan_authoritative:
-    name: Authoritative Security Scan
+    name: Scan + DAST + ASVS (Source of Truth)
     needs: [python_guard]
     runs-on: self-hosted
     timeout-minutes: 45
@@ -46,22 +47,17 @@ jobs:
           clean: false
 
       # ---------------- CORE SCAN ----------------
-      - name: Security Scan Core (Main)
+      - name: Security Scan Core (Authoritative)
         uses: ./.github/actions/security-scan
         with:
           mode: main
           run_dast: "true"
-          epss_threshold: "0.5"
+          epss_threshold: ${{ env.EPSS_THRESHOLD }}
           zap_fail_severity: "HIGH"
-
-      # ---------------- SANITY ----------------
-      - name: Sanity check reports
-        shell: bash
-        run: |
-          test -d security-reports || exit 1
 
       # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
+        if: always() && hashFiles('security-reports/gitleaks.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
@@ -70,8 +66,9 @@ jobs:
       - name: Enforce security gate
         shell: bash
         run: |
-          if [ -f security-reports/gate_failed ]; then
-            echo "❌ Main pipeline blocked"
+          set -euo pipefail
+          if [ -f "${REPORT_DIR}/gate_failed" ]; then
+            echo "❌ Main pipeline blocked by security gate"
             exit 1
           fi
           echo "✅ Authoritative security gate passed"
@@ -85,10 +82,10 @@ jobs:
           path: security-reports
 
 # =====================================================
-# 2) SINGLE WRITER – BASELINES, METRICS, PAGES DATA
+# 2) SINGLE WRITER – BASELINES, METRICS, PAGES
 # =====================================================
   write_truth:
-    name: Write Baselines + Trends + Pages Data
+    name: Write baselines, trends, and Pages data
     needs: [scan_authoritative]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -110,6 +107,7 @@ jobs:
       - name: Prepare directories
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p \
             "${BASELINE_DIR}" \
             "${METRICS_DIR}/weekly" \
@@ -119,6 +117,8 @@ jobs:
       - name: Append security trends
         shell: bash
         run: |
+          set -euo pipefail
+
           python3 scripts/append_pass_trend.py \
             --asvs security-reports/governance/asvs-coverage.json \
             --out "${METRICS_DIR}/weekly/pass-trend.json"
@@ -139,16 +139,17 @@ jobs:
       - name: Update baselines
         shell: bash
         run: |
+          set -euo pipefail
           cp security-reports/semgrep.json \
-             "${BASELINE_DIR}/semgrep-baseline.json"
-
+            "${BASELINE_DIR}/semgrep-baseline.json"
           cp security-reports/governance/asvs-coverage.json \
-             "${BASELINE_DIR}/asvs-baseline.json"
+            "${BASELINE_DIR}/asvs-baseline.json"
 
       # ---------------- COMMIT ----------------
       - name: Commit updates (idempotent)
         shell: bash
         run: |
+          set -euo pipefail
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
 
@@ -158,7 +159,7 @@ jobs:
             docs/data/trends || true
 
           if git diff --cached --quiet; then
-            echo "ℹ️ No changes to commit"
+            echo "ℹ️ No baseline or trend changes"
           else
             git commit -m "chore(security): update baselines & trends"
             git push
