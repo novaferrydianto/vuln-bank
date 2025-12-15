@@ -23,12 +23,12 @@ from datetime import datetime
 from collections import defaultdict
 
 # --------------------------------------------------
-# Risk model (level-weighted)
+# Risk model (level-weighted, non-linear)
 # --------------------------------------------------
 LEVEL_WEIGHTS = {
     1: 1,  # L1
     2: 2,  # L2
-    3: 4,  # L3 (non-linear)
+    3: 4,  # L3 (non-linear, executive risk)
 }
 
 # --------------------------------------------------
@@ -45,7 +45,7 @@ def load_json(path):
 def normalize_level(raw):
     """
     Accepts: 'L1','L2','L3', 1,2,3
-    Returns: int 1|2|3 or raises ValueError
+    Returns: int 1|2|3
     """
     if isinstance(raw, int) and raw in (1, 2, 3):
         return raw
@@ -89,6 +89,12 @@ def trivy_findings(data):
 # ASVS evaluation logic
 # --------------------------------------------------
 def evaluate_control(control, signals):
+    """
+    Returns:
+      status: PASS | FAIL | NOT_APPLICABLE
+      evidence: list[str]
+      owners: list[str]
+    """
     decision = control.get("decision", {})
     hits = []
     owners = set()
@@ -98,7 +104,7 @@ def evaluate_control(control, signals):
         rule_ids = set(tool.get("rules", []))
         findings = signals.get(tool_name, set())
 
-        # Trivy: severity + KEV
+        # Trivy: severity + KEV logic
         if tool_name == "trivy":
             for v in findings:
                 if v.get("Severity") in tool.get("severity_fail", []):
@@ -118,7 +124,7 @@ def evaluate_control(control, signals):
         return "FAIL", hits, sorted(owners)
 
     if hits:
-        # Schema does NOT allow PARTIAL → treat as FAIL
+        # Schema does NOT allow PARTIAL → collapse to FAIL
         return "FAIL", hits, sorted(owners)
 
     if control.get("automation") == "manual":
@@ -144,38 +150,39 @@ def main(args):
     status_counts = defaultdict(int)
     family_summary = defaultdict(lambda: defaultdict(int))
 
-    # --- Risk scoring accumulators (level-weighted) ---
+    # Risk accumulators
     risk_raw = 0
     risk_max = 0
-    risk_by_level = defaultdict(int)   # "L1" -> points
-    risk_by_family = defaultdict(int)  # "V14" -> points (risk-weighted)
+    risk_by_level = defaultdict(int)    # "L3" -> points
+    risk_by_family = defaultdict(int)   # "V14" -> points
 
     for ctrl in tool_map.get("controls", []):
         status, evidence, owners = evaluate_control(ctrl, signals)
 
         level = normalize_level(ctrl.get("level"))
-        family = ctrl["id"].split(".")[0]  # V1, V2, ...
+        family = ctrl["id"].split(".")[0]  # V1..V14
 
         status_counts[status] += 1
         family_summary[family][status] += 1
 
-        # Risk scoring (count PASS/FAIL only; NOT_APPLICABLE excluded from effective)
-        w = LEVEL_WEIGHTS[level]
+        weight = LEVEL_WEIGHTS[level]
+
+        # Risk model excludes NOT_APPLICABLE
         if status in ("PASS", "FAIL"):
-            risk_max += w
+            risk_max += weight
             if status == "FAIL":
-                risk_raw += w
-                risk_by_level[f"L{level}"] += w
-                risk_by_family[family] += w
+                risk_raw += weight
+                risk_by_level[f"L{level}"] += weight
+                risk_by_family[family] += weight
 
         results.append({
             "id": ctrl["id"],
             "title": ctrl["title"],
-            "level": level,                  # ✅ integer
+            "level": level,                   # integer (schema)
             "owasp": ctrl.get("owasp", []),
-            "status": status,                # PASS | FAIL | NOT_APPLICABLE
+            "status": status,                 # PASS | FAIL | NOT_APPLICABLE
             "evidence": evidence,
-            "owners": owners,
+            "owners": owners,                 # tool ownership
         })
 
     passed = status_counts.get("PASS", 0)
@@ -183,6 +190,7 @@ def main(args):
     not_applicable = status_counts.get("NOT_APPLICABLE", 0)
 
     effective_total = passed + failed
+
     coverage_percent = round(
         (passed / effective_total) * 100, 2
     ) if effective_total else 0.0
@@ -191,9 +199,8 @@ def main(args):
         (risk_raw / risk_max) * 100, 2
     ) if risk_max else 0.0
 
-    # Optional: precompute "top worst families" now (for Slack/pages consumers)
     worst_families = sorted(
-        [{"family": f, "risk_points": pts} for f, pts in risk_by_family.items() if pts > 0],
+        [{"family": f, "risk_points": pts} for f, pts in risk_by_family.items()],
         key=lambda x: x["risk_points"],
         reverse=True,
     )
@@ -215,15 +222,19 @@ def main(args):
             "not_applicable": not_applicable,
             "families": family_summary,
 
-            # 🔥 NEW: level-weighted risk score (extensions)
+            # 🔥 Level-weighted risk model
             "risk": {
-                "model": {"L1": LEVEL_WEIGHTS[1], "L2": LEVEL_WEIGHTS[2], "L3": LEVEL_WEIGHTS[3]},
+                "model": {
+                    "L1": LEVEL_WEIGHTS[1],
+                    "L2": LEVEL_WEIGHTS[2],
+                    "L3": LEVEL_WEIGHTS[3],
+                },
                 "raw_score": risk_raw,
                 "max_score": risk_max,
                 "risk_percent": risk_percent,
                 "by_level": dict(risk_by_level),
                 "by_family": dict(risk_by_family),
-                "worst_families": worst_families[:10],  # keep small; Slack can take top-3
+                "worst_families": worst_families[:10],
             },
         },
         "controls": results,
