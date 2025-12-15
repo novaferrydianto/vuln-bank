@@ -1,109 +1,70 @@
-name: Vuln Bank – PR Security Gate (Fast)
+name: Vuln Bank – PR Security Gate
 
 on:
   pull_request:
     branches: ["main"]
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: pr-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  security-events: write
   pull-requests: write
-
-env:
-  REPORT_DIR: security-reports
-  BASELINE_DIR: security-baselines
-  EPSS_THRESHOLD: "0.5"
+  security-events: write
 
 jobs:
-  # =====================================================
-  # 0) PYTHON COMPATIBILITY GUARD (BLOCKING, NON-STYLE)
-  # =====================================================
+# =====================================================
+# 0) PYTHON COMPATIBILITY GUARD (FAST, NON-STYLE)
+# =====================================================
   python_guard:
     name: Python 3.8 Compatibility Guard
-    uses: ./.github/workflows/python-compat-guard.yml
-    with:
-      target_version: py38
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
 
-  # =====================================================
-  # 1) PR SECURITY GATE (FAST, NO DAST)
-  # =====================================================
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ruff
+        run: |
+          pip install -q ruff==0.5.5
+
+      - name: Python 3.8 syntax guard (AST-level)
+        run: |
+          ruff check scripts \
+            --target-version py38 \
+            --select UP \
+            --output-format github
+
+# =====================================================
+# 1) PR SECURITY GATE (FAST)
+# =====================================================
   pr_security_gate:
-    name: PR Security Gate
+    name: PR Security Gate (Fast)
     needs: [python_guard]
     runs-on: self-hosted
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Prepare workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${REPORT_DIR}" "${BASELINE_DIR}"
-          rm -f "${REPORT_DIR}/gate_failed" || true
-
-      # ---------------- CORE SCAN (PR MODE, NO DAST) ----------------
       - name: Security Scan Core (PR)
         uses: ./.github/actions/security-scan
         with:
           mode: pr
           run_dast: "false"
-          epss_threshold: ${{ env.EPSS_THRESHOLD }}
-          zap_fail_severity: "HIGH"
+          epss_threshold: "0.5"
 
-      # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
-        if: always() && hashFiles('security-reports/gitleaks.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
-      # ---------------- ARTIFACTS ----------------
-      - name: Upload security reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports-pr
-          path: security-reports
-
-      # ---------------- PR COMMENT SUMMARY ----------------
-      # NOTE: this expects you to implement scripts/pr_security_summary.py
-      # It should read:
-      # - security-reports/epss-findings.json
-      # - security-reports/governance/asvs-coverage.json (if generated)
-      # And then post a comment to the PR.
-      - name: PR comment – Security summary
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPORT_DIR: ${{ env.REPORT_DIR }}
-        shell: bash
+      - name: Block PR if security gate failed
         run: |
-          set -euo pipefail
-          if [ -f "scripts/pr_security_summary.py" ]; then
-            python3 scripts/pr_security_summary.py "${REPORT_DIR}" --post-comment || true
-          else
-            echo "[INFO] scripts/pr_security_summary.py not found; skipping PR summary comment."
-          fi
-
-      # ---------------- FINAL DECISION ----------------
-      - name: Enforce PR gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "${REPORT_DIR}/gate_failed" ]; then
-            echo "❌ PR blocked: new security risk detected"
+          if [ -f security-reports/gate_failed ]; then
+            echo "❌ PR blocked: new exploitable risk detected"
             exit 1
           fi
           echo "✅ PR security gate passed"
