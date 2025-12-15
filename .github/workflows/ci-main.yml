@@ -1,0 +1,127 @@
+name: Vuln Bank – Main Security Pipeline (Authoritative)
+
+on:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *" # ~01:00 WIB
+  workflow_dispatch:
+
+concurrency:
+  group: main-security
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  security-events: write
+
+jobs:
+  scan_authoritative:
+    name: Scan + DAST + ASVS (Source of Truth)
+    runs-on: self-hosted
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+
+      # ---------------- CORE SCAN (WITH DAST) ----------------
+      - name: Security Scan Core (Authoritative)
+        uses: ./.github/actions/security-scan-core
+        with:
+          run_dast: "true"
+          epss_threshold: "0.5"
+          zap_fail_severity: "HIGH"
+
+      # ---------------- SARIF UPLOAD ----------------
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: security-reports/gitleaks.sarif
+
+      # ---------------- FINAL GATE ----------------
+      - name: Enforce security gate
+        shell: bash
+        run: |
+          if [ -f security-reports/gate_failed ]; then
+            echo "❌ Main pipeline blocked"
+            exit 1
+          fi
+          echo "✅ Security gate passed"
+
+      # ---------------- ARTIFACT ----------------
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+  write_truth:
+    name: Write baselines + trends + Pages data
+    needs: [scan_authoritative]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download reports
+        uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      - name: Prepare directories
+        shell: bash
+        run: |
+          mkdir -p security-baselines security-metrics/weekly docs/data/trends
+
+      # ---------------- TRENDS ----------------
+      - name: Append security trends
+        shell: bash
+        run: |
+          python3 scripts/append_pass_trend.py \
+            --asvs security-reports/governance/asvs-coverage.json \
+            --out security-metrics/weekly/pass-trend.json
+
+          python3 scripts/append_pass_trend.py \
+            --asvs security-reports/governance/asvs-coverage.json \
+            --out docs/data/trends/pass-trend.json
+
+          python3 scripts/append_kev_trend.py \
+            --epss security-reports/epss-findings.json \
+            --out security-metrics/weekly/kev-trend.json || true
+
+          python3 scripts/append_kev_trend.py \
+            --epss security-reports/epss-findings.json \
+            --out docs/data/trends/kev-trend.json || true
+
+      # ---------------- BASELINES ----------------
+      - name: Update baselines
+        shell: bash
+        run: |
+          cp security-reports/semgrep.json security-baselines/semgrep-baseline.json
+          cp security-reports/governance/asvs-coverage.json security-baselines/asvs-baseline.json
+
+      - name: Commit updates (idempotent)
+        shell: bash
+        run: |
+          git config user.name "security-bot"
+          git config user.email "security-bot@users.noreply.github.com"
+
+          git add security-baselines security-metrics docs/data/trends || true
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes to commit"
+          else
+            git commit -m "chore(security): update baselines & trends"
+            git push
+          fi
