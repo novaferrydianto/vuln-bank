@@ -22,6 +22,7 @@ jobs:
 
   pr_security_gate:
     name: PR Security Gate (Fast)
+    needs: [python_guard]
     runs-on: self-hosted
     timeout-minutes: 15
 
@@ -36,7 +37,13 @@ jobs:
           run_dast: "false"
           epss_threshold: "0.5"
 
-      # ---------------- SARIF UPLOAD ----------------
+      # ---------------- SANITY ----------------
+      - name: Sanity check reports
+        shell: bash
+        run: |
+          test -d security-reports || exit 1
+
+      # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:

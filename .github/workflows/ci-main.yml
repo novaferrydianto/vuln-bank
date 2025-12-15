@@ -15,14 +15,27 @@ permissions:
   contents: write
   security-events: write
 
+env:
+  REPORT_DIR: security-reports
+  BASELINE_DIR: security-baselines
+  METRICS_DIR: security-metrics
+
 jobs:
+# =====================================================
+# 0) PYTHON COMPATIBILITY GUARD (HARD PRECONDITION)
+# =====================================================
   python_guard:
+    name: Python Compatibility Guard (py38+)
     uses: ./.github/workflows/python-compat-guard.yml
     with:
       target_version: py38
 
+# =====================================================
+# 1) AUTHORITATIVE SECURITY SCAN (SOURCE OF TRUTH)
+# =====================================================
   scan_authoritative:
-    name: Scan + DAST + ASVS (Source of Truth)
+    name: Authoritative Security Scan
+    needs: [python_guard]
     runs-on: self-hosted
     timeout-minutes: 45
 
@@ -32,8 +45,8 @@ jobs:
           fetch-depth: 0
           clean: false
 
-      # ---------------- CORE SCAN (WITH DAST) ----------------
-      - name: Security Scan Core (Authoritative)
+      # ---------------- CORE SCAN ----------------
+      - name: Security Scan Core (Main)
         uses: ./.github/actions/security-scan
         with:
           mode: main
@@ -41,7 +54,13 @@ jobs:
           epss_threshold: "0.5"
           zap_fail_severity: "HIGH"
 
-      # ---------------- SARIF UPLOAD ----------------
+      # ---------------- SANITY ----------------
+      - name: Sanity check reports
+        shell: bash
+        run: |
+          test -d security-reports || exit 1
+
+      # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
@@ -55,7 +74,7 @@ jobs:
             echo "❌ Main pipeline blocked"
             exit 1
           fi
-          echo "✅ Security gate passed"
+          echo "✅ Authoritative security gate passed"
 
       # ---------------- ARTIFACT ----------------
       - name: Upload security reports
@@ -65,8 +84,11 @@ jobs:
           name: security-reports
           path: security-reports
 
+# =====================================================
+# 2) SINGLE WRITER – BASELINES, METRICS, PAGES DATA
+# =====================================================
   write_truth:
-    name: Write baselines + trends + Pages data
+    name: Write Baselines + Trends + Pages Data
     needs: [scan_authoritative]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -79,7 +101,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Download reports
+      - name: Download security reports
         uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -88,7 +110,10 @@ jobs:
       - name: Prepare directories
         shell: bash
         run: |
-          mkdir -p security-baselines security-metrics/weekly docs/data/trends
+          mkdir -p \
+            "${BASELINE_DIR}" \
+            "${METRICS_DIR}/weekly" \
+            docs/data/trends
 
       # ---------------- TRENDS ----------------
       - name: Append security trends
@@ -96,7 +121,7 @@ jobs:
         run: |
           python3 scripts/append_pass_trend.py \
             --asvs security-reports/governance/asvs-coverage.json \
-            --out security-metrics/weekly/pass-trend.json
+            --out "${METRICS_DIR}/weekly/pass-trend.json"
 
           python3 scripts/append_pass_trend.py \
             --asvs security-reports/governance/asvs-coverage.json \
@@ -104,7 +129,7 @@ jobs:
 
           python3 scripts/append_kev_trend.py \
             --epss security-reports/epss-findings.json \
-            --out security-metrics/weekly/kev-trend.json || true
+            --out "${METRICS_DIR}/weekly/kev-trend.json" || true
 
           python3 scripts/append_kev_trend.py \
             --epss security-reports/epss-findings.json \
@@ -114,16 +139,23 @@ jobs:
       - name: Update baselines
         shell: bash
         run: |
-          cp security-reports/semgrep.json security-baselines/semgrep-baseline.json
-          cp security-reports/governance/asvs-coverage.json security-baselines/asvs-baseline.json
+          cp security-reports/semgrep.json \
+             "${BASELINE_DIR}/semgrep-baseline.json"
 
+          cp security-reports/governance/asvs-coverage.json \
+             "${BASELINE_DIR}/asvs-baseline.json"
+
+      # ---------------- COMMIT ----------------
       - name: Commit updates (idempotent)
         shell: bash
         run: |
           git config user.name "security-bot"
           git config user.email "security-bot@users.noreply.github.com"
 
-          git add security-baselines security-metrics docs/data/trends || true
+          git add \
+            "${BASELINE_DIR}" \
+            "${METRICS_DIR}" \
+            docs/data/trends || true
 
           if git diff --cached --quiet; then
             echo "ℹ️ No changes to commit"
