@@ -13,6 +13,9 @@ concurrency:
   group: weekly-security-data
   cancel-in-progress: false
 
+env:
+  PYTHON_BIN: python3
+
 jobs:
   security_data:
     name: Generate Weekly Security Data
@@ -20,25 +23,23 @@ jobs:
 
     steps:
       # =================================================
-      # Checkout
+      # Checkout (append-only history)
       # =================================================
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # required for weekly append history
+          fetch-depth: 0
 
       # =================================================
       # Runtime
       # =================================================
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
+          $PYTHON_BIN -m pip install --upgrade pip
           pip install reportlab requests jsonschema
 
       # =================================================
@@ -50,7 +51,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          python3 scripts/owasp_weekly_trend.py
+          $PYTHON_BIN scripts/owasp_weekly_trend.py
 
       - name: OWASP weekly trend (per asset)
         env:
@@ -58,7 +59,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          python3 scripts/owasp_by_asset_weekly.py
+          $PYTHON_BIN scripts/owasp_by_asset_weekly.py
 
       # =================================================
       # 2) DefectDojo SLA (Governance signal)
@@ -70,12 +71,12 @@ jobs:
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
         run: |
           set -euo pipefail
-          python3 scripts/defectdojo_sla_weekly.py
+          $PYTHON_BIN scripts/defectdojo_sla_weekly.py
 
       - name: Validate DefectDojo SLA schema
         run: |
           set -euo pipefail
-          python3 - << 'EOF'
+          $PYTHON_BIN - << 'EOF'
           import json
           from jsonschema import validate
 
@@ -92,17 +93,17 @@ jobs:
       - name: Generate security scorecard
         run: |
           set -euo pipefail
-          python3 scripts/security_scorecard.py
+          $PYTHON_BIN scripts/security_scorecard.py
 
       - name: Compute maturity score (0–100)
         run: |
           set -euo pipefail
-          python3 scripts/maturity_score.py
+          $PYTHON_BIN scripts/maturity_score.py
 
       - name: Validate security scorecard schema
         run: |
           set -euo pipefail
-          python3 - << 'EOF'
+          $PYTHON_BIN - << 'EOF'
           import json
           from jsonschema import validate
 
@@ -119,10 +120,19 @@ jobs:
       - name: Append ASVS PASS% weekly trend
         run: |
           set -euo pipefail
-          python3 scripts/append_pass_trend.py
+          $PYTHON_BIN scripts/append_pass_trend.py
 
       # =================================================
-      # 5) Persist DATA artifacts only (append-only)
+      # 5) Emit DATA CONTRACT MARKER (NEW)
+      # =================================================
+      - name: Emit data-ready marker
+        run: |
+          set -euo pipefail
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > docs/data/.weekly-data-ready
+          echo "✅ Weekly security data ready"
+
+      # =================================================
+      # 6) Persist DATA artifacts only (append-only)
       # =================================================
       - name: Commit weekly security data
         run: |
