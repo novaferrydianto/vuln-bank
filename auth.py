@@ -185,7 +185,7 @@ def init_auth_routes(app):
         c = conn.cursor()
 
         # Vulnerability: Race condition in transfer
-        c.execute(f"SELECT balance FROM users WHERE id={current_user['user_id']}")
+        c.execute("SELECT balance FROM users WHERE id=?", (current_user["user_id"],))
         balance = c.fetchone()[0]
 
         if balance >= amount:
