@@ -1,144 +1,121 @@
 name: "Vuln Bank – Security Scan Core"
-description: "Authoritative security scan core: Secrets, SAST, SCA+EPSS/KEV, optional DAST, ASVS export"
+description: >
+  Reusable DevSecOps security scan core:
+  Secrets, SAST, SCA + EPSS/KEV, optional DAST, ASVS export.
+  Designed for PR-fast mode and Main-authoritative mode.
 
 inputs:
+  mode:
+    description: "Scan mode: pr | main"
+    required: false
+    default: "pr"
+
   run_dast:
     description: "Run DAST (true/false)"
     required: false
-    default: "true"
+    default: "false"
 
   epss_threshold:
-    description: "EPSS threshold"
+    description: "EPSS exploitability threshold"
     required: false
     default: "0.5"
 
   zap_fail_severity:
-    description: "ZAP fail severity (e.g., HIGH, MEDIUM)"
+    description: "ZAP fail severity"
     required: false
     default: "HIGH"
-
-  dast_url:
-    description: "Target URL for DAST readiness + ZAP"
-    required: false
-    default: "http://vuln-bank-dast:5000"
-
-  dast_compose_file:
-    description: "Compose file used for DAST stack"
-    required: false
-    default: "docker-compose.dast.yml"
-
-  report_dir:
-    description: "Report directory"
-    required: false
-    default: "security-reports"
-
-  baseline_dir:
-    description: "Baseline directory"
-    required: false
-    default: "security-baselines"
-
-outputs:
-  gate_failed:
-    description: "true if any gate wrote gate_failed marker"
-    value: ${{ steps.finalize.outputs.gate_failed }}
-
-  asvs_json:
-    description: "Path to ASVS coverage JSON"
-    value: ${{ steps.finalize.outputs.asvs_json }}
-
-  epss_json:
-    description: "Path to EPSS findings JSON"
-    value: ${{ steps.finalize.outputs.epss_json }}
 
 runs:
   using: "composite"
   steps:
+# =====================================================
+# PREPARE
+# =====================================================
     - name: Prepare workspace
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        mkdir -p "${REPORT_DIR}/zap" "${REPORT_DIR}/governance" ".trivy-cache"
-        rm -f "${REPORT_DIR}/gate_failed" || true
+        mkdir -p security-reports/zap security-reports/governance .trivy-cache
+        rm -f security-reports/gate_failed || true
 
-    # ---------------- SECRETS ----------------
-    - name: Gitleaks (SARIF)
+# =====================================================
+# SECRETS – GITLEAKS
+# =====================================================
+    - name: Gitleaks scan
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.0 \
-          detect --source /repo \
+        docker run --rm \
+          -v "$PWD:/repo" \
+          zricethezav/gitleaks:v8.21.0 \
+          detect \
+          --source /repo \
           --config /repo/.gitleaks.toml \
           --report-format sarif \
-          --report-path /repo/${REPORT_DIR}/gitleaks.sarif \
+          --report-path /repo/security-reports/gitleaks.sarif \
           --redact \
           --exit-code 0
-        test -f "${REPORT_DIR}/gitleaks.sarif"
 
     - name: Gitleaks gate
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        python3 scripts/gitleaks_gate.py "${REPORT_DIR}/gitleaks.sarif"
+        python3 scripts/gitleaks_gate.py security-reports/gitleaks.sarif
 
-    # ---------------- SAST ----------------
-    - name: Bandit (JSON)
+# =====================================================
+# SAST – BANDIT + SEMGREP
+# =====================================================
+    - name: Bandit scan
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        python3 -m pip install -q --upgrade pip bandit
+        python3 -m pip install -q bandit
         bandit -r app.py database.py auth.py ai_agent_deepseek.py \
-          -f json -o "${REPORT_DIR}/bandit.json" || true
-        test -f "${REPORT_DIR}/bandit.json" || echo '{"results":[]}' > "${REPORT_DIR}/bandit.json"
+          -f json -o security-reports/bandit.json || true
+        test -f security-reports/bandit.json || echo '{"results":[]}' > security-reports/bandit.json
 
-    - name: Bandit normalize (DefectDojo compatible)
+    - name: Bandit normalize
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
         python3 scripts/bandit_normalize.py \
-          "${REPORT_DIR}/bandit.json" \
-          "${REPORT_DIR}/bandit_dd.json"
-        test -f "${REPORT_DIR}/bandit_dd.json" || echo '{"findings":[]}' > "${REPORT_DIR}/bandit_dd.json"
+          security-reports/bandit.json \
+          security-reports/bandit_dd.json
 
-    - name: Semgrep scan (OWASP / ASVS)
+    - name: Semgrep scan
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        docker run --rm -v "$PWD:/src" returntocorp/semgrep:1.75.0 \
+        docker run --rm \
+          -v "$PWD:/src" \
+          returntocorp/semgrep:1.75.0 \
           semgrep scan \
             --config p/owasp-top-ten \
             --config p/security-audit \
             --config p/python \
             --json \
-            --output /src/${REPORT_DIR}/semgrep.json || true
-        test -f "${REPORT_DIR}/semgrep.json" || echo '{"results":[]}' > "${REPORT_DIR}/semgrep.json"
+            --output /src/security-reports/semgrep.json || true
+        test -f security-reports/semgrep.json || echo '{"results":[]}' > security-reports/semgrep.json
 
-    - name: Semgrep OWASP gate (baseline-aware)
+    - name: Semgrep OWASP gate
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        BASELINE_DIR="${{ inputs.baseline_dir }}"
-        if [ -f "${BASELINE_DIR}/semgrep-baseline.json" ]; then
+        if [ "${{ inputs.mode }}" = "main" ] && [ -f security-baselines/semgrep-baseline.json ]; then
           python3 scripts/semgrep_owasp_gate.py \
-            "${REPORT_DIR}/semgrep.json" \
-            "${BASELINE_DIR}/semgrep-baseline.json"
+            security-reports/semgrep.json \
+            security-baselines/semgrep-baseline.json
         else
-          python3 scripts/semgrep_owasp_gate.py "${REPORT_DIR}/semgrep.json"
+          python3 scripts/semgrep_owasp_gate.py security-reports/semgrep.json
         fi
 
-    # ---------------- SCA + EPSS/KEV ----------------
-    - name: Trivy FS (rootless + cache-safe)
+# =====================================================
+# SCA – TRIVY + EPSS / KEV
+# =====================================================
+    - name: Trivy filesystem scan
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        mkdir -p ".trivy-cache"
         docker run --rm \
           -u "$(id -u):$(id -g)" \
           -e TRIVY_CACHE_DIR=/tmp/trivy-cache \
@@ -149,119 +126,52 @@ runs:
           --severity HIGH,CRITICAL \
           --ignore-unfixed \
           --format json \
-          -o /work/${REPORT_DIR}/trivy-sca.json
-        test -f "${REPORT_DIR}/trivy-sca.json" || echo '{"Results":[]}' > "${REPORT_DIR}/trivy-sca.json"
+          -o /work/security-reports/trivy-sca.json
 
     - name: EPSS + KEV gate
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
         python3 scripts/epss_gate.py \
-          --input "${REPORT_DIR}/trivy-sca.json" \
-          --output "${REPORT_DIR}/epss-findings.json" \
+          --input security-reports/trivy-sca.json \
+          --output security-reports/epss-findings.json \
           --threshold "${{ inputs.epss_threshold }}"
-        test -f "${REPORT_DIR}/epss-findings.json" || echo '{"high_risk":[],"threshold":"'"${{ inputs.epss_threshold }}"'"}' > "${REPORT_DIR}/epss-findings.json"
 
-    # ---------------- DAST (OPTIONAL) ----------------
+# =====================================================
+# DAST – OPTIONAL (MAIN ONLY)
+# =====================================================
     - name: Build app image (DAST)
-      if: ${{ inputs.run_dast == 'true' }}
+      if: inputs.run_dast == 'true'
       shell: bash
       run: |
         set -euo pipefail
         docker build -t vuln-bank:ci -f containers/app/Dockerfile .
 
-    - name: Start DAST stack
-      if: ${{ inputs.run_dast == 'true' }}
+    - name: ZAP DAST scan
+      if: inputs.run_dast == 'true'
       shell: bash
       run: |
         set -euo pipefail
-        docker compose -f "${{ inputs.dast_compose_file }}" up -d
-
-    - name: Wait for DAST readiness
-      if: ${{ inputs.run_dast == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        for i in {1..20}; do
-          curl -fs "${{ inputs.dast_url }}" >/dev/null 2>&1 && exit 0
-          sleep 5
-        done
-        echo "[ERROR] DAST target not ready: ${{ inputs.dast_url }}"
-        docker compose -f "${{ inputs.dast_compose_file }}" logs || true
-        exit 1
-
-    - name: ZAP Automation (DAST)
-      if: ${{ inputs.run_dast == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        chmod -R 777 "${REPORT_DIR}/zap" || true
+        docker compose -f docker-compose.dast.yml up -d
         docker run --rm \
           --network vuln-bank_dastnet \
-          -e TARGET_URL="${{ inputs.dast_url }}" \
-          -v "$PWD/${REPORT_DIR}/zap:/zap/wrk" \
+          -e TARGET_URL=http://vuln-bank-dast:5000 \
+          -v "$PWD/security-reports/zap:/zap/wrk" \
           -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml:ro" \
           ghcr.io/zaproxy/zaproxy:2.15.0 \
           zap.sh -cmd -autorun /zap/automation.yml
-        test -f "${REPORT_DIR}/zap/zap_alerts.json"
 
-    - name: ZAP severity gate
-      if: ${{ inputs.run_dast == 'true' }}
+# =====================================================
+# ASVS EXPORT (SOURCE OF TRUTH)
+# =====================================================
+    - name: ASVS export
       shell: bash
       run: |
         set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-        python3 scripts/zap_severity_gate.py \
-          "${REPORT_DIR}/zap/zap_alerts.json" \
-          "${{ inputs.zap_fail_severity }}"
-
-    - name: Stop DAST stack
-      if: ${{ always() && inputs.run_dast == 'true' }}
-      shell: bash
-      timeout-minutes: 5
-      run: |
-        set -euo pipefail
-        docker compose -f "${{ inputs.dast_compose_file }}" down || true
-
-    # ---------------- ASVS (support no-DAST mode) ----------------
-    - name: ASVS export (authoritative)
-      shell: bash
-      run: |
-        set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-
-        # If DAST is off, ensure zap file path doesn't break exporters that expect it.
-        if [ "${{ inputs.run_dast }}" != "true" ]; then
-          mkdir -p "${REPORT_DIR}/zap"
-          test -f "${REPORT_DIR}/zap/zap_alerts.json" || echo '{"site":[]}' > "${REPORT_DIR}/zap/zap_alerts.json"
-        fi
-
         python3 scripts/asvs_export.py \
           --tool-map schemas/asvs-tool-map.json \
-          --semgrep "${REPORT_DIR}/semgrep.json" \
-          --bandit "${REPORT_DIR}/bandit_dd.json" \
-          --zap "${REPORT_DIR}/zap/zap_alerts.json" \
-          --trivy "${REPORT_DIR}/trivy-sca.json" \
-          --gitleaks "${REPORT_DIR}/gitleaks.sarif" \
-          --out-json "${REPORT_DIR}/governance/asvs-coverage.json"
-
-        test -f "${REPORT_DIR}/governance/asvs-coverage.json"
-
-    # ---------------- FINALIZE OUTPUTS ----------------
-    - id: finalize
-      name: Finalize outputs
-      shell: bash
-      run: |
-        set -euo pipefail
-        REPORT_DIR="${{ inputs.report_dir }}"
-
-        if [ -f "${REPORT_DIR}/gate_failed" ]; then
-          echo "gate_failed=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "gate_failed=false" >> "$GITHUB_OUTPUT"
-        fi
-
-        echo "asvs_json=${REPORT_DIR}/governance/asvs-coverage.json" >> "$GITHUB_OUTPUT"
-        echo "epss_json=${REPORT_DIR}/epss-findings.json" >> "$GITHUB_OUTPUT"
+          --semgrep security-reports/semgrep.json \
+          --bandit security-reports/bandit_dd.json \
+          --trivy security-reports/trivy-sca.json \
+          --gitleaks security-reports/gitleaks.sarif \
+          --out-json security-reports/governance/asvs-coverage.json

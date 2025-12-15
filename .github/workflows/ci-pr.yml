@@ -11,37 +11,66 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write
   pull-requests: write
+  security-events: write
 
 jobs:
+# =====================================================
+# 0) PYTHON COMPATIBILITY GUARD (FAST, RUNTIME ONLY)
+# =====================================================
+  python_guard:
+    name: Python 3.8 Compatibility Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python syntax & runtime compatibility (py38)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -q ruff==0.5.5
+          ruff check scripts \
+            --target-version py38 \
+            --select E,F \
+            --ignore E401,E501,E701,E702,E741,E722,F401,F541,UP006,UP007,UP015,UP034 \
+            --output-format github
+
+      - name: Bytecode compile (runtime truth)
+        run: |
+          python3 -m compileall scripts
+
+# =====================================================
+# 1) PR SECURITY GATE (FAST)
+# =====================================================
   pr_security_gate:
     name: PR Security Gate (Fast)
+    needs: [python_guard]
     runs-on: self-hosted
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
-      # ---------------- CORE SCAN (NO DAST) ----------------
       - name: Security Scan Core (PR)
         uses: ./.github/actions/security-scan
         with:
+          mode: pr
           run_dast: "false"
           epss_threshold: "0.5"
 
-      # ---------------- SARIF UPLOAD ----------------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
-      # ---------------- FINAL PR DECISION ----------------
-      - name: Block PR if gate failed
+      - name: Block PR if security gate failed
         shell: bash
         run: |
+          set -euo pipefail
           if [ -f security-reports/gate_failed ]; then
-            echo "❌ PR blocked: new security risk detected"
+            echo "❌ PR blocked: new exploitable risk detected"
             exit 1
           fi
           echo "✅ PR security gate passed"
