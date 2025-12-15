@@ -15,6 +15,11 @@ permissions:
   pull-requests: write
 
 jobs:
+  python_guard:
+    uses: ./.github/workflows/python-compat-guard.yml
+    with:
+      target_version: py38
+
   pr_security_gate:
     name: PR Security Gate (Fast)
     runs-on: self-hosted

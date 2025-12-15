@@ -1,23 +1,42 @@
 repos:
+  # ==================================================
+  # GITLEAKS – Secret scanning (Fast, blocking)
+  # ==================================================
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0
     hooks:
       - id: gitleaks
         name: gitleaks-enterprise
         args:
-          - detect
           - --config=.gitleaks.toml
           - --redact
           - --exit-code=1
-        stages: [pre-commit]
+        stages: [pre-commit, commit-msg]
 
+  # ==================================================
+  # YAML hygiene (Ansible + GitHub Actions)
+  # ==================================================
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: v4.6.0
     hooks:
       - id: check-yaml
+        name: yaml-sanity
         files: |
           ^ansible/playbooks/|
           ^\.github/workflows/
         exclude: |
           ^k3s/|
           ^ansible/roles/
+
+  # ==================================================
+  # RUFF – Python AST & Compatibility Guard (py38+)
+  # ==================================================
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.5
+    hooks:
+      - id: ruff
+        name: ruff-py38-guard
+        args:
+          - --target-version=py38
+          - --select=UP
+        files: ^scripts/

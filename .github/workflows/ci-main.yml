@@ -16,6 +16,11 @@ permissions:
   security-events: write
 
 jobs:
+  python_guard:
+    uses: ./.github/workflows/python-compat-guard.yml
+    with:
+      target_version: py38
+
   scan_authoritative:
     name: Scan + DAST + ASVS (Source of Truth)
     runs-on: self-hosted

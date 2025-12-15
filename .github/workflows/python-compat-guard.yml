@@ -1,0 +1,32 @@
+name: Python Compatibility Guard (3.8+)
+
+on:
+  workflow_call:
+    inputs:
+      target_version:
+        description: "Python target version (e.g. py38)"
+        required: false
+        type: string
+        default: "py38"
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Python version
+        run: python3 --version
+
+      - name: Compile all scripts (syntax check)
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts
+
+      - name: Ruff compatibility check
+        run: |
+          pip install -q ruff
+          ruff check scripts \
+            --target-version ${{ inputs.target_version }} \
+            --format github
