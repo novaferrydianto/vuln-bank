@@ -29,8 +29,9 @@ jobs:
 
       # ---------------- CORE SCAN (WITH DAST) ----------------
       - name: Security Scan Core (Authoritative)
-        uses: ./.github/actions/security-scan-core
+        uses: ./.github/actions/security-scan
         with:
+          mode: main
           run_dast: "true"
           epss_threshold: "0.5"
           zap_fail_severity: "HIGH"

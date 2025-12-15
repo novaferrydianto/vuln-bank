@@ -24,9 +24,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # ---------------- CORE SCAN (NO DAST) ----------------
-      - name: Security Scan Core (PR)
+      - name: Security Scan (PR)
         uses: ./.github/actions/security-scan
         with:
+          mode: pr
           run_dast: "false"
           epss_threshold: "0.5"
 
