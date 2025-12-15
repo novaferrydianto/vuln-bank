@@ -158,7 +158,7 @@ runs:
           -e TARGET_URL=http://vuln-bank-dast:5000 \
           -v "$PWD/security-reports/zap:/zap/wrk" \
           -v "$PWD/security-policies/zap-automation.yml:/zap/automation.yml:ro" \
-          ghcr.io/zaproxy/zaproxy:2.15.0 \
+          ghcr.io/zaproxy/zaproxy:stable \
           zap.sh -cmd -autorun /zap/automation.yml
 
 # =====================================================
