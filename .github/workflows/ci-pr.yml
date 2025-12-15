@@ -1,76 +1,165 @@
-name: Vuln Bank – PR Security Gate (Fast)
+name: Vuln Bank – Main Security Pipeline (Authoritative)
 
 on:
-  pull_request:
+  push:
     branches: ["main"]
+  schedule:
+    - cron: "0 18 * * *" # ~01:00 WIB
   workflow_dispatch:
 
 concurrency:
-  group: pr-${{ github.ref }}
+  group: main-security
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   security-events: write
-  pull-requests: write
 
 env:
-  EPSS_THRESHOLD: "0.5"
+  REPORT_DIR: security-reports
+  BASELINE_DIR: security-baselines
+  METRICS_DIR: security-metrics
 
 jobs:
-  # ==================================================
-  # 0) PYTHON COMPATIBILITY GUARD (PY38+)
-  # ==================================================
+# =====================================================
+# 0) PYTHON COMPATIBILITY GUARD (NON-STYLE)
+# =====================================================
   python_guard:
-    name: Python Compatibility Guard (py38+)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    name: Python 3.8 Compatibility Guard
+    uses: ./.github/workflows/python-compat-guard.yml
+    with:
+      target_version: py38
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Ruff AST + compatibility check
-        shell: bash
-        run: |
-          set -euo pipefail
-          pip install -q ruff==0.5.5
-          ruff check scripts \
-            --target-version py38 \
-            --output-format github
-
-  # ==================================================
-  # 1) PR SECURITY GATE (FAST, NO DAST)
-  # ==================================================
-  pr_security_gate:
-    name: PR Security Gate (Fast)
+# =====================================================
+# 1) AUTHORITATIVE SECURITY SCAN
+# =====================================================
+  scan_authoritative:
+    name: Scan + DAST + ASVS (Source of Truth)
     needs: [python_guard]
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
 
       # ---------------- CORE SCAN ----------------
-      - name: Security Scan Core (PR mode)
+      - name: Security Scan Core (Authoritative)
         uses: ./.github/actions/security-scan
         with:
-          mode: pr
-          run_dast: "false"
-          epss_threshold: ${{ env.EPSS_THRESHOLD }}
+          mode: main
+          run_dast: "true"
+          epss_threshold: "0.5"
+          zap_fail_severity: "HIGH"
 
-      # ---------------- SARIF UPLOAD ----------------
+      # ---------------- SARIF ----------------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
-      # ---------------- FINAL PR DECISION ----------------
-      - name: Enforce PR security gate
+      # ---------------- FINAL GATE ----------------
+      - name: Enforce security gate
         shell: bash
         run: |
           set -euo pipefail
           if [ -f security-reports/gate_failed ]; then
-            echo "❌ PR blocked: new security risk detected"
+            echo "❌ Main pipeline blocked by security gate"
             exit 1
           fi
-          echo "✅ PR security gate passed"
+          echo "✅ Authoritative security gate passed"
+
+      # ---------------- ARTIFACT ----------------
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+# =====================================================
+# 2) SINGLE WRITER – BASELINES + METRICS + PAGES
+# =====================================================
+  write_truth:
+    name: Write baselines, trends, and Pages data
+    needs: [scan_authoritative]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download security reports
+        uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports
+
+      - name: Prepare directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            "${BASELINE_DIR}" \
+            "${METRICS_DIR}/weekly" \
+            docs/data/trends
+
+      # ---------------- TRENDS ----------------
+      - name: Append security trends
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 scripts/append_pass_trend.py \
+            --asvs security-reports/governance/asvs-coverage.json \
+            --out "${METRICS_DIR}/weekly/pass-trend.json"
+
+          python3 scripts/append_pass_trend.py \
+            --asvs security-reports/governance/asvs-coverage.json \
+            --out docs/data/trends/pass-trend.json
+
+          python3 scripts/append_kev_trend.py \
+            --epss security-reports/epss-findings.json \
+            --out "${METRICS_DIR}/weekly/kev-trend.json" || true
+
+          python3 scripts/append_kev_trend.py \
+            --epss security-reports/epss-findings.json \
+            --out docs/data/trends/kev-trend.json || true
+
+      # ---------------- BASELINES ----------------
+      - name: Update baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp security-reports/semgrep.json \
+            "${BASELINE_DIR}/semgrep-baseline.json"
+          cp security-reports/governance/asvs-coverage.json \
+            "${BASELINE_DIR}/asvs-baseline.json"
+
+      # ---------------- COMMIT ----------------
+      - name: Commit updates (idempotent)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "security-bot"
+          git config user.email "security-bot@users.noreply.github.com"
+
+          git add \
+            "${BASELINE_DIR}" \
+            "${METRICS_DIR}" \
+            docs/data/trends || true
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No baseline or trend changes"
+          else
+            git commit -m "chore(security): update baselines & trends"
+            git push
+          fi
