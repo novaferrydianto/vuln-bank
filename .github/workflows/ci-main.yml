@@ -144,6 +144,12 @@ jobs:
           cp security-reports/governance/asvs-coverage.json \
             "${BASELINE_DIR}/asvs-baseline.json"
 
+      - name: Generate compliance evidence (SOC2 / ISO / NIST)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_compliance_evidence.py
+
       - name: Commit updates (idempotent)
         shell: bash
         run: |
@@ -162,3 +168,4 @@ jobs:
             git commit -m "chore(security): update baselines & trends"
             git push
           fi
+      
