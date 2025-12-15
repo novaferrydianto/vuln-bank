@@ -11,7 +11,7 @@ Produces:
 
 Design:
 - Schema-first (audit-ready)
-- Deterministic scoring
+- Deterministic evaluation
 - CI / Slack / Pages compatible
 """
 
@@ -32,6 +32,21 @@ def load_json(path):
     if not p.exists():
         return {}
     return json.loads(p.read_text(encoding="utf-8"))
+
+def normalize_level(raw):
+    """
+    Accepts: 'L1','L2','L3', 1,2,3
+    Returns: int 1|2|3 or raises ValueError
+    """
+    if isinstance(raw, int) and raw in (1, 2, 3):
+        return raw
+    if isinstance(raw, str):
+        raw = raw.strip().upper()
+        if raw.startswith("L") and raw[1:].isdigit():
+            v = int(raw[1:])
+            if v in (1, 2, 3):
+                return v
+    raise ValueError(f"Invalid ASVS level: {raw}")
 
 # --------------------------------------------------
 # Tool adapters (normalize signals)
@@ -74,6 +89,7 @@ def evaluate_control(control, signals):
         rule_ids = set(tool.get("rules", []))
         findings = signals.get(tool_name, set())
 
+        # Trivy: severity + KEV
         if tool_name == "trivy":
             for v in findings:
                 if v.get("Severity") in tool.get("severity_fail", []):
@@ -93,6 +109,7 @@ def evaluate_control(control, signals):
         return "FAIL", hits, sorted(owners)
 
     if hits:
+        # Schema does NOT allow PARTIAL → treat as FAIL
         return "FAIL", hits, sorted(owners)
 
     if control.get("automation") == "manual":
@@ -121,17 +138,18 @@ def main(args):
     for ctrl in tool_map.get("controls", []):
         status, evidence, owners = evaluate_control(ctrl, signals)
 
-        status_counts[status] += 1
-
+        level = normalize_level(ctrl.get("level"))
         family = ctrl["id"].split(".")[0]  # V1, V2, ...
+
+        status_counts[status] += 1
         family_summary[family][status] += 1
 
         results.append({
             "id": ctrl["id"],
             "title": ctrl["title"],
-            "level": ctrl["level"],
+            "level": level,                  # ✅ integer
             "owasp": ctrl.get("owasp", []),
-            "status": status,
+            "status": status,                # PASS | FAIL | NOT_APPLICABLE
             "evidence": evidence,
             "owners": owners,
         })
@@ -152,13 +170,13 @@ def main(args):
             "repo": os.getenv("GITHUB_REPOSITORY", "local"),
         },
         "summary": {
-            # ✅ REQUIRED BY SCHEMA
+            # REQUIRED BY SCHEMA
             "total": effective_total,
             "passed": passed,
             "failed": failed,
             "coverage_percent": coverage_percent,
 
-            # ➕ EXTENSIONS (allowed)
+            # EXTENSIONS (allowed)
             "not_applicable": not_applicable,
             "families": family_summary,
         },
