@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 from pathlib import Path
+from subprocess import check_output
 
 REPORT_DIR = Path("security-reports")
 TOP_N = 5  # max findings shown in PR comment
@@ -56,13 +57,12 @@ def main():
     lines.append(f"- Max single risk: **{weighted_max}**")
 
     # -------------------------------------------------
-    # Top findings
+    # Top exploitable findings
     # -------------------------------------------------
     if high_risk:
         lines.append("")
         lines.append("🔥 **Top Exploitable Findings**")
 
-        # Sort by weighted risk desc
         sorted_findings = sorted(
             high_risk,
             key=lambda x: x.get("weighted_risk", 0),
@@ -70,7 +70,7 @@ def main():
         )[:TOP_N]
 
         for f in sorted_findings:
-            cve = f.get("cve_id", "N/A")
+            cve = f.get("cve", "N/A")
             pkg = f.get("pkg_name", "unknown")
             cvss = f.get("cvss", 0)
             epss_score = f.get("epss", 0)
@@ -81,6 +81,21 @@ def main():
                 f"CVSS {cvss}, EPSS {epss_score:.3f}, "
                 f"**Risk {weighted}**"
             )
+
+    # -------------------------------------------------
+    # Risk delta vs baseline
+    # -------------------------------------------------
+    try:
+        delta = check_output(
+            ["python3", "scripts/risk_delta.py"],
+            text=True,
+        ).strip()
+
+        if delta:
+            lines.append("")
+            lines.append(delta)
+    except Exception:
+        pass
 
     lines.append("")
     lines.append("✅ **Security gate passed**")
