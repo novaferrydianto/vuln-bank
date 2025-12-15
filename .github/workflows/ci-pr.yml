@@ -1,4 +1,4 @@
-name: Vuln Bank – PR Security Gate
+name: Vuln Bank – PR Security Gate (Fast)
 
 on:
   pull_request:
@@ -14,12 +14,33 @@ permissions:
   security-events: write
   pull-requests: write
 
-jobs:
-  python_guard:
-    uses: ./.github/workflows/python-compat-guard.yml
-    with:
-      target_version: py38
+env:
+  EPSS_THRESHOLD: "0.5"
 
+jobs:
+  # ==================================================
+  # 0) PYTHON COMPATIBILITY GUARD (PY38+)
+  # ==================================================
+  python_guard:
+    name: Python Compatibility Guard (py38+)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ruff AST + compatibility check
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -q ruff==0.5.5
+          ruff check scripts \
+            --target-version py38 \
+            --output-format github
+
+  # ==================================================
+  # 1) PR SECURITY GATE (FAST, NO DAST)
+  # ==================================================
   pr_security_gate:
     name: PR Security Gate (Fast)
     needs: [python_guard]
@@ -29,30 +50,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ---------------- CORE SCAN (NO DAST) ----------------
-      - name: Security Scan (PR)
+      # ---------------- CORE SCAN ----------------
+      - name: Security Scan Core (PR mode)
         uses: ./.github/actions/security-scan
         with:
           mode: pr
           run_dast: "false"
-          epss_threshold: "0.5"
+          epss_threshold: ${{ env.EPSS_THRESHOLD }}
 
-      # ---------------- SANITY ----------------
-      - name: Sanity check reports
-        shell: bash
-        run: |
-          test -d security-reports || exit 1
-
-      # ---------------- SARIF ----------------
+      # ---------------- SARIF UPLOAD ----------------
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: security-reports/gitleaks.sarif
 
       # ---------------- FINAL PR DECISION ----------------
-      - name: Block PR if gate failed
+      - name: Enforce PR security gate
         shell: bash
         run: |
+          set -euo pipefail
           if [ -f security-reports/gate_failed ]; then
             echo "❌ PR blocked: new security risk detected"
             exit 1
