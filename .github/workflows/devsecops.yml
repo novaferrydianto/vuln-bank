@@ -78,8 +78,8 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v4
@@ -87,7 +87,7 @@ jobs:
           context: . 
           file: containers/app/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/vuln-bank:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
 
       # ====================================================
       # 5.5 SUPPLY CHAIN SECURITY (SBOM & COSIGN) - [BARU]
@@ -109,7 +109,7 @@ jobs:
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ secrets.DOCKER_USERNAME }}/vuln-bank:latest
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
           format: spdx-json
           output-file: sbom.spdx.json
 
