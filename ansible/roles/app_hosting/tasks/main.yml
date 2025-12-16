@@ -25,19 +25,6 @@
     mode: '0644'
   no_log: true
 
-# ---------------------------------------------------------
-# DIAGNOSTIK KRITIS: Tampilkan Kunci Publik RAW
-# ---------------------------------------------------------
-- name: "DIAGNOSTIK: Tampilkan Konten /tmp/cosign.pub (Verifikasi Integritas)"
-  ansible.builtin.shell: cat /tmp/cosign.pub
-  register: cosign_pub_content
-  changed_when: false
-
-- name: "DEBUG: Kunci Publik yang Digunakan (Cek Integritas PEM RAW)"
-  ansible.builtin.debug:
-    msg: "KUNCI PUBLIK RAW:\n{{ cosign_pub_content.stdout }}"
-# ---------------------------------------------------------
-
 - name: 3.5 Login ke Docker Hub pada Host Target (KRITIS)
   # Menjalankan login docker di VM hosting menggunakan user hosting
   community.docker.docker_login:
@@ -65,17 +52,31 @@
   copy:
     dest: "{{ remote_app_dir }}/.env"
     content: |
+      # =========================
+      # DATABASE
+      # =========================
       DB_HOST={{ db_host }}
       DB_PORT=5432
       DB_NAME=vulnerable_bank
       DB_USER=postgres
       DB_PASSWORD={{ db_password }}
 
+      # =========================
+      # APPLICATION SECRETS
+      # =========================
       FLASK_SECRET_KEY={{ app_secret }}
       JWT_SECRET_KEY={{ jwt_secret }}
       DEEPSEEK_API_KEY={{ deepseek_key }}
 
-      APP_PORT=80
+      # =========================
+      # IMAGE (IMMUTABLE, DIGEST)
+      # =========================
+      IMAGE_WITH_TAG={{ DOCKERHUB_USERNAME }}/vuln-bank@{{ image_digest }}
+
+      # =========================
+      # APP CONFIG
+      # =========================
+      APP_PORT=5000
       DEBUG=false
 
 - name: 7. Restart Container Aplikasi
