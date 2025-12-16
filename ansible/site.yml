@@ -21,7 +21,7 @@
     - db_setup
 
 # ==========================================
-# PLAY 3: Deployment Aplikasi Web (Menggunakan Docker-CE)
+# PLAY 3: Deployment Application Component
 # ==========================================
 - name: 3. Deployment Application Component
   hosts: hosting
@@ -29,6 +29,6 @@
   vars:
     remote_app_dir: "/opt/vuln-bank/app"
     db_host: "192.168.107.129"
-    docker_repo_user: YOUR_DOCKERHUB_USERNAME # Pastikan ini diset di pipeline/extra-vars
+    docker_repo_user: {{ DOCKERHUB_USERNAME }} # Pastikan ini diset di pipeline/extra-vars
   roles:
     - app_hosting

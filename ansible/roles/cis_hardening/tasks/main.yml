@@ -13,6 +13,13 @@
     state: latest
   tags: [install]
 
+- name: 1.5 Install Cosign CLI (untuk verifikasi Supply Chain)
+  ansible.builtin.get_url:
+    url: https://github.com/sigstore/cosign/releases/download/v2.2.4/cosign-linux-amd64
+    dest: /usr/local/bin/cosign
+    mode: '0755'
+  tags: [install, security]
+
 - name: 2. Start dan enable Firewalld
   service:
     name: firewalld
