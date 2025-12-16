@@ -24,7 +24,10 @@
       DB_PORT=5432
 
 - name: 4. Jalankan Database Container menggunakan podman-compose
-  # Menggunakan podman-compose untuk kompatibilitas dengan file docker-compose.yml
-  command: podman-compose up -d
+  # Ganti command menjadi shell untuk mengatur PATH, atau temukan lokasi pip/podman-compose
+  shell: |
+    # Mencoba menemukan lokasi bin lokal user (misalnya: /home/db/.local/bin)
+    export PATH=$PATH:$HOME/.local/bin
+    podman-compose up -d
   args:
     chdir: "{{ remote_db_dir }}"
