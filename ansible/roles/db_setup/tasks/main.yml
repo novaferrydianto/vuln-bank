@@ -23,6 +23,17 @@
       POSTGRES_PASSWORD={{ db_password }}
       DB_PORT=5432
 
+- name: 3.5 Stop dan Hapus Container Lama (Idempotensi)
+  become: yes 
+  shell: |
+    export PATH=$PATH:/home/{{ ansible_user }}/.local/bin
+    # podman-compose down akan menghentikan dan menghapus kontainer/volume lama
+    podman-compose down 
+  args:
+    chdir: "{{ remote_db_dir }}"
+  ignore_errors: true # Abaikan error jika kontainer belum ada
+  tags: [idempotency]
+
 - name: 4. Jalankan Database Container menggunakan podman-compose
   become: yes
   shell: |
