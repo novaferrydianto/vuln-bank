@@ -154,9 +154,6 @@ jobs:
       # ====================================================
       # 7. DAST (OWASP ZAP)
       # ====================================================
-      - name: Fix permissions for ZAP workspace
-        run: chmod -R 777 $GITHUB_WORKSPACE
-
       - name: Pull ZAP Image (GHCR)
         run: docker pull ghcr.io/zaproxy/zaproxy:stable
 
@@ -166,6 +163,8 @@ jobs:
           target: 'http://192.168.107.135:5000'
           cmd_options: '-a'
           allow_issue_writing: false
+        env:
+          ZAP_DOCKER_USER: "${{ github.run_id && '$(id -u):$(id -g)' }}"
         continue-on-error: true
 
       # ====================================================
