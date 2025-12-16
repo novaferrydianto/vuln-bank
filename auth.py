@@ -5,9 +5,10 @@ import sqlite3
 from functools import wraps
 
 # Vulnerable JWT implementation with common security issues
-import os
+
 # Weak secret key (CWE-326)
 #JWT_SECRET = "secret123"
+import os
 JWT_SECRET = os.getenv("JWT_SECRET_KEY", "secret123")
 
 # Vulnerable algorithm selection - allows 'none' algorithm
