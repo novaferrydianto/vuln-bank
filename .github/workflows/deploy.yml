@@ -27,7 +27,7 @@ env:
   APP_ENV: "${{ github.ref == 'refs/heads/main' && 'prod' || 'staging' }}"
 
   # =========================
-  # DAST TARGET
+  # DAST TARGET (persistent app)
   # =========================
   DAST_TARGET_URL: http://192.168.107.135:5500
 
@@ -55,10 +55,10 @@ env:
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
+# ==========================================================
+# 1️⃣ STATIC / DEPENDENCY SECURITY + QUALITY
+# ==========================================================
 jobs:
-# ==========================================================
-# 1️⃣ SECURITY SCANS + QUALITY + RISK GATES
-# ==========================================================
   security_scans:
     name: Security & Quality Scans
     runs-on: self-hosted
@@ -70,15 +70,19 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # REQUIRED for SonarQube
+          fetch-depth: 0
 
       - name: Prepare report directory
-        run: |
-          mkdir -p ${REPORT_DIR}/zap
+        run: mkdir -p ${REPORT_DIR}
 
-      # ------------------------------------------------------
-      # SONARQUBE — SAST + QUALITY GATE (HARD FAIL)
-      # ------------------------------------------------------
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GHCR_TOKEN }}" | \
+          docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # -------------------------
+      # SONARQUBE (SAST + QUALITY)
+      # -------------------------
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v2
         env:
@@ -89,7 +93,7 @@ jobs:
             -Dsonar.projectKey=vuln-bank
             -Dsonar.projectName=vuln-bank
             -Dsonar.sources=.
-            -Dsonar.python.version=3.9
+            -Dsonar.python.version=3.11
 
       - name: SonarQube Quality Gate
         if: github.ref == 'refs/heads/main'
@@ -98,49 +102,49 @@ jobs:
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
 
-      # ------------------------------------------------------
-      # Resolve EPSS threshold dynamically
-      # ------------------------------------------------------
+      # -------------------------
+      # EPSS THRESHOLD
+      # -------------------------
       - name: Resolve EPSS threshold
         id: epss
         run: |
           case "${APP_ENV}" in
-            dev)      echo "threshold=0.90" >> $GITHUB_OUTPUT ;;
-            staging)  echo "threshold=0.70" >> $GITHUB_OUTPUT ;;
-            prod)     echo "threshold=0.50" >> $GITHUB_OUTPUT ;;
-            *)        echo "threshold=0.70" >> $GITHUB_OUTPUT ;;
+            staging) echo "threshold=0.70" >> $GITHUB_OUTPUT ;;
+            prod)    echo "threshold=0.50" >> $GITHUB_OUTPUT ;;
+            *)       echo "threshold=0.70" >> $GITHUB_OUTPUT ;;
           esac
 
-      # ------------------------------------------------------
-      # SECRET SCANNING — TruffleHog
-      # ------------------------------------------------------
-      - name: Secret Scan (TruffleHog)
+      # -------------------------
+      # SECRET SCANNING
+      # -------------------------
+      - name: TruffleHog Scan
         run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest \
+          docker run --rm -v "$PWD:/repo" \
+            ghcr.io/trufflesecurity/trufflehog:latest \
             git file:///repo --json > ${REPORT_DIR}/trufflehog.json || true
 
-      # ------------------------------------------------------
-      # SAST — Semgrep
-      # ------------------------------------------------------
-      - name: SAST Scan (Semgrep)
+      # -------------------------
+      # SAST (SEMgrep)
+      # -------------------------
+      - name: Semgrep Scan
         run: |
           docker run --rm -v "$PWD:/src" returntocorp/semgrep \
             semgrep scan --config=auto --json \
             -o ${REPORT_DIR}/semgrep.json || true
 
-      # ------------------------------------------------------
-      # SCA — Trivy FS
-      # ------------------------------------------------------
-      - name: SCA Scan (Trivy FS)
+      # -------------------------
+      # SCA (TRIVY)
+      # -------------------------
+      - name: Trivy FS Scan
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo aquasec/trivy:latest fs \
             --severity HIGH,CRITICAL \
             --format json \
             --output ${REPORT_DIR}/trivy-sca.json .
 
-      # ------------------------------------------------------
-      # SCA + CODE — Snyk
-      # ------------------------------------------------------
+      # -------------------------
+      # SCA (SNYK)
+      # -------------------------
       - name: Snyk Scan
         run: |
           docker run --rm \
@@ -149,12 +153,9 @@ jobs:
             ghcr.io/snyk/snyk-cli \
             snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
 
-          echo "== Snyk output =="
-          ls -lah ${REPORT_DIR}/snyk-sca.json || true
-
-      # ------------------------------------------------------
-      # EPSS RISK GATE (HARD FAIL)
-      # ------------------------------------------------------
+      # -------------------------
+      # EPSS GATE
+      # -------------------------
       - name: EPSS Risk Gate
         run: |
           ${PYTHON_BIN} scripts/epss_gate.py \
@@ -162,14 +163,44 @@ jobs:
             --output ${REPORT_DIR}/epss-findings.json \
             --threshold "${{ steps.epss.outputs.threshold }}"
 
-      # ------------------------------------------------------
-      # DAST — OWASP ZAP
-      # ------------------------------------------------------
-      - name: Login to GHCR (for ZAP image)
+      # -------------------------
+      # FINAL DECISION
+      # -------------------------
+      - name: Evaluate Security Gate
+        id: gate_decision
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          count=$(${PYTHON_BIN} -c "import json;print(len(json.load(open('${REPORT_DIR}/epss-findings.json')).get('high_risk',[])))" 2>/dev/null || echo 0)
 
-      - name: DAST Scan (OWASP ZAP)
+          if [ "$count" -gt 0 ]; then
+            echo "gate_failed=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "gate_failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ github.run_id }}
+          path: security-reports
+          retention-days: 14
+
+# ==========================================================
+# 2️⃣ DAST (RUNTIME SECURITY)
+# ==========================================================
+  dast_scan:
+    name: DAST Scan (OWASP ZAP)
+    runs-on: self-hosted
+    needs: security_scans
+    if: needs.security_scans.outputs.gate_failed == 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare DAST report dir
+        run: mkdir -p ${REPORT_DIR}/zap
+
+      - name: Run ZAP Baseline
         run: |
           docker run --rm --network host \
             -v "$PWD:/zap/wrk" \
@@ -179,19 +210,10 @@ jobs:
             -J ${REPORT_DIR}/zap/zap_alerts.json \
             -r ${REPORT_DIR}/zap/zap_report.html || true
 
-          echo "== ZAP outputs =="
-          ls -lah ${REPORT_DIR}/zap || true
-
-      # ------------------------------------------------------
-      # Import ZAP to DefectDojo
-      # ------------------------------------------------------
       - name: Import ZAP to DefectDojo
         if: env.DEFECTDOJO_URL != ''
         run: |
-          if [ ! -f "${REPORT_DIR}/zap/zap_alerts.json" ]; then
-            echo "[SKIP] ZAP report not found, skipping DefectDojo import"
-            exit 0
-          fi
+          [ -f "${REPORT_DIR}/zap/zap_alerts.json" ] || exit 0
 
           curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
@@ -202,49 +224,14 @@ jobs:
             -F "active=true" \
             -F "verified=true"
 
-      # ------------------------------------------------------
-      # FINAL GATE DECISION
-      # ------------------------------------------------------
-      - name: Evaluate Security Gate
-        id: gate_decision
-        run: |
-          count=$(${PYTHON_BIN} -c "import json; d=json.load(open('security-reports/epss-findings.json')); print(len(d.get('high_risk', [])))" 2>/dev/null || echo 0)
-
-          if [ "$count" -gt 0 ]; then
-            echo "gate_failed=true" >> $GITHUB_OUTPUT
-            exit 1
-          else
-            echo "gate_failed=false" >> $GITHUB_OUTPUT
-          fi
-
-      # ------------------------------------------------------
-      # Slack Alert (Failure Only)
-      # ------------------------------------------------------
-      - name: Slack Alert (Gate Failed)
-        if: failure() && env.SLACK_WEBHOOK_URL != ''
-        env:
-          PIPELINE_STATUS: FAILED
-        run: |
-          python3 scripts/slack_notify.py
-
-      # ------------------------------------------------------
-      # Upload Artifacts
-      # ------------------------------------------------------
-      - name: Upload security reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports-${{ github.run_id }}
-          path: security-reports
-          retention-days: 14
-
 # ==========================================================
-# 2️⃣ DEPLOY — SECURITY + QUALITY GATED
+# 3️⃣ DEPLOY (ANSIBLE)
 # ==========================================================
   deploy:
     name: Deploy Vuln Bank (Ansible)
-    needs: security_scans
-    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.gate_failed == 'false'
     runs-on: self-hosted
+    needs: [security_scans, dast_scan]
+    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.gate_failed == 'false'
 
     steps:
       - uses: actions/checkout@v4
