@@ -102,7 +102,10 @@ jobs:
         uses: anchore/sbom-action@v0
         with:
           image: ${{ env.IMAGE_REF }}
-          output-file: ${REPORT_DIR}/sbom/sbom.spdx.json
+          format: spdx-json
+          output-file: security-reports/sbom/sbom.spdx.json
+          upload-artifact: false
+          dependency-snapshot: false
 
       # ====================================================
       # 7. DEPLOY
