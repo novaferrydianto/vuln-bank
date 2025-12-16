@@ -136,7 +136,7 @@ jobs:
           # Eksekusi Ansible dengan path yang benar (ansible/) dan injeksi semua secret
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
-            -e "db_password=${{ secrets.APP_DB_PASSWORD }}" \
+            -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \

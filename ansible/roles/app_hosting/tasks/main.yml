@@ -39,8 +39,7 @@
     chdir: "{{ remote_app_dir }}"
 
 - name: 5. Verifikasi Image Docker menggunakan Digest
-  # Memastikan image yang ditarik ditandatangani oleh kunci yang benar
-  command: cosign verify --key /tmp/cosign.pub {{ docker_repo_user }}/vuln-bank@{{ image_digest }}
+  shell: cosign verify --key /tmp/cosign.pub {{ DOCKERHUB_USERNAME }}/vuln-bank@{{ image_digest }}
   args:
     chdir: "{{ remote_app_dir }}"
 
