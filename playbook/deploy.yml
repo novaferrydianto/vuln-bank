@@ -1,0 +1,99 @@
+---
+# ==========================================
+# PLAY 1: Setup Database (Backend) pada VM3
+# ==========================================
+- name: Deploy Database Component
+  hosts: db
+  become: yes
+  vars:
+    project_dir: "/opt/vuln-bank"
+    repo_url: "https://github.com/novaferrydianto/vuln-bank.git"
+  
+  tasks:
+    - name: 1. Pastikan direktori project ada
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: 2. Pull kode terbaru dari Git
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: main
+        force: yes
+
+    - name: 3. Konfigurasi Environment Variable (Database)
+      copy:
+        dest: "{{ project_dir }}/containers/db/.env"
+        # Menyesuaikan dengan variabel user: user 'postgres' dan pass dari secret
+        content: |
+          POSTGRES_DB=vulnerable_bank
+          POSTGRES_USER=postgres
+          POSTGRES_PASSWORD={{ db_password }}
+          DB_PORT=5432 
+
+    - name: 4. Jalankan Container Database
+      shell: docker compose up -d
+      args:
+        chdir: "{{ project_dir }}/containers/db"
+
+# ==========================================
+# PLAY 2: Setup Aplikasi (Frontend) pada VM2
+# ==========================================
+- name: Deploy Application Component
+  hosts: hosting
+  become: yes
+  vars:
+    project_dir: "/opt/vuln-bank"
+    repo_url: "https://github.com/novaferrydianto/vuln-bank.git"
+    db_host: "192.168.107.129" # IP VM Database
+  
+  tasks:
+    - name: 1. Pastikan direktori project ada
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: 2. Pull kode terbaru dari Git
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: main
+        force: yes
+
+    - name: 3. Konfigurasi Environment Variable (App)
+      copy:
+        dest: "{{ project_dir }}/containers/app/.env"
+        # PENTING: Semua variabel sensitif diambil dari variable Ansible {{ ... }}
+        content: |
+          # Database Config
+          DB_HOST={{ db_host }}
+          DB_PORT=5432
+          DB_NAME=vulnerable_bank
+          DB_USER=postgres
+          DB_PASSWORD={{ db_password }}
+          
+          # Security Keys & API
+          SECRET_KEY={{ app_secret }}
+          DEEPSEEK_API_KEY={{ deepseek_key }}
+          
+          # App Settings
+          APP_PORT=80
+          DEBUG=false
+
+    - name: 4. Pull Image Terbaru dari Docker Hub
+      shell: docker compose pull app
+      args:
+        chdir: "{{ project_dir }}/containers/app"
+
+    - name: 5. Restart Container Aplikasi
+      # --no-build memaksa pakai image dari registry (hasil build pipeline)
+      shell: docker compose up -d --no-build app
+      args:
+        chdir: "{{ project_dir }}/containers/app"

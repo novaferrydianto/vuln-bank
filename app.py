@@ -51,7 +51,8 @@ swaggerui_blueprint = get_swaggerui_blueprint(
 app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 
 # Hardcoded secret key (CWE-798)
-app.secret_key = "secret123"
+#app.secret_key = "secret123"
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "secret123")
 
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = 3 * 60 * 60  # 3 hours in seconds

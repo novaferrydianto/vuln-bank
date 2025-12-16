@@ -12,12 +12,14 @@ jobs:
     runs-on: self-hosted
     
     steps:
-      # 1. Checkout Code
+      # ====================================================
+      # 1. CHECKOUT CODE
+      # ====================================================
       - name: Checkout Code
         uses: actions/checkout@v3
 
       # ====================================================
-      # TAHAP 1: SECRET SCANNING
+      # 2. SECRET SCANNING (TRUFFLEHOG)
       # ====================================================
       - name: Secret Scanning (TruffleHog)
         uses: trufflesecurity/trufflehog@main
@@ -29,7 +31,7 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 2: SCA (Snyk & Trivy)
+      # 3. SCA (SNYK & TRIVY)
       # ====================================================
       - name: SCA Scan (Snyk)
         uses: snyk/actions/node@master
@@ -50,13 +52,11 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 3: SAST (Semgrep & SonarQube)
+      # 4. SAST (SEMGREP & SONARQUBE)
       # ====================================================
       - name: SAST Scan (Semgrep)
         run: |
-          # Pastikan path user terbaca
           export PATH=$PATH:$HOME/.local/bin
-          # Jalankan scan (Tanpa install ulang karena sudah di VM)
           semgrep scan --config=p/security-audit --json --output=semgrep-results.json
         continue-on-error: true
 
@@ -65,7 +65,6 @@ jobs:
           SONAR_HOST_URL: "http://192.168.107.132:9000"
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          # Tool sonar-scanner diambil dari /usr/local/bin (hasil install manual)
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.sources=. \
@@ -74,29 +73,68 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 4: DEPLOYMENT
+      # 5. BUILD & PUSH IMAGE (DOCKER HUB)
+      # ====================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v4
+        with:
+          context: . 
+          file: containers/app/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/vuln-bank:latest
+
+      # ====================================================
+      # 5.5 SUPPLY CHAIN SECURITY (SBOM & COSIGN) - [BARU]
+      # ====================================================
+      
+      # A. Install Cosign Tool
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.3.0
+
+      # B. Sign Docker Image (Memastikan Image Asli)
+      - name: Sign image with a key
+        run: |
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ secrets.DOCKER_USERNAME }}/vuln-bank:latest"
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+
+      # C. Generate SBOM (Software Bill of Materials) pakai Syft
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ secrets.DOCKER_USERNAME }}/vuln-bank:latest
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      # ====================================================
+      # 6. DEPLOYMENT (ANSIBLE)
       # ====================================================
       - name: Setup SSH Key & Deploy
         run: |
-          # 1. Buat file key sementara dari GitHub Secrets
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
           
-          # 2. Update ansible.cfg sementara untuk menunjuk ke key baru
-          # Kita override private_key_file lewat command line agar tidak merubah file config asli
-          
-          # 3. Jalankan Ansible
           ansible-playbook -i inventory.ini playbooks/deploy.yml \
-            --private-key ~/.ssh/id_runner_temp
+            --private-key ~/.ssh/id_runner_temp \
+            -e "db_password=${{ secrets.APP_DB_PASSWORD }}" \
+            -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
+            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
+            -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
             
-          # 4. Hapus key setelah selesai (Security Practice)
           rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible.cfg
 
       # ====================================================
-      # TAHAP 5: DAST (OWASP ZAP)
+      # 7. DAST (OWASP ZAP)
       # ====================================================
       - name: DAST Scan (OWASP ZAP)
         uses: zaproxy/action-baseline@v0.7.0
@@ -108,7 +146,7 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 6: REPORTING & NOTIFICATION
+      # 8. REPORTING & NOTIFICATION
       # ====================================================
       - name: Upload All Reports to DefectDojo
         env:
@@ -135,6 +173,12 @@ jobs:
           upload_scan "trivy-results.json" "Trivy Scan"
           upload_scan "snyk-results.json" "Snyk Scan"
           upload_scan "semgrep-results.json" "Semgrep JSON Report"
+          
+          # [BARU] Upload SBOM ke DefectDojo (Opsional, tapi bagus)
+          # DefectDojo bisa membaca format SBOM untuk tracking komponen
+          upload_scan "sbom.spdx.json" "Generic Header Analysis" 
+          # Note: DefectDojo punya scan type khusus SBOM, tapi kadang perlu config plugin
+          # Jika error di step ini, bisa di-comment dulu.
 
       - name: Slack Notification
         if: always()
@@ -146,8 +190,8 @@ jobs:
           
           if [ "$TOTAL_CRIT" -gt "0" ]; then
             curl -X POST -H 'Content-type: application/json' --data "{
-              'text': '🚨 *Security Alert Vuln Bank* 🚨\nTotal Temuan Critical/High: *$TOTAL_CRIT*\n- Trivy: $TRIVY_CRIT\n- Snyk: $SNYK_CRIT\n- Semgrep: $SEMGREP_CRIT\nMohon cek DefectDojo segera.'
+              'text': '🚨 *Security Alert Vuln Bank* 🚨\nTotal Temuan Critical/High: *$TOTAL_CRIT*\n- Trivy: $TRIVY_CRIT\n- Snyk: $SNYK_CRIT\n- Semgrep: $SEMGREP_CRIT\nImage Signed & SBOM Generated. ✅\nMohon cek DefectDojo segera.'
             }" ${{ secrets.SLACK_WEBHOOK_URL }}
           else
-            echo "Pipeline aman. Tidak ada temuan Critical baru."
+            echo "Pipeline aman. Image Signed & SBOM Generated. ✅"
           fi
