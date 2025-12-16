@@ -135,6 +135,8 @@ jobs:
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
           
+          echo "${{ secrets.COSIGN_PUBLIC_KEY }}" > /tmp/cosign_pub_key_temp
+          
           # Eksekusi Ansible dengan injeksi semua Secret sebagai extra-vars
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
@@ -143,10 +145,11 @@ jobs:
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
             -e "image_digest=${{ env.IMAGE_REFERENCE_DIGEST }}" \
-            -e "cosign_pub_key=${{ secrets.COSIGN_PUBLIC_KEY }}" \
+            -e "cosign_pub_key=@/tmp/cosign_pub_key_temp" \
             -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}"
-            
+          
+          rm -f /tmp/cosign_pub_key_temp
           rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible/ansible.cfg

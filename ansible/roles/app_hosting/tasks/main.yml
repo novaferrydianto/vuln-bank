@@ -20,9 +20,8 @@
 # =========================================================
 
 - name: 3. Buat file Kunci Publik Cosign
-  template:
-    content: |
-      {{ cosign_pub_key }}
+  copy:
+    content: "{{ cosign_pub_key }}"
     dest: "/tmp/cosign.pub"
     mode: '0644'
 
