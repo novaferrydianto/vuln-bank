@@ -34,8 +34,7 @@ jobs:
       # 3. SCA (SNYK & TRIVY)
       # ====================================================
       - name: SCA Scan (Snyk)
-        # GANTI DARI uses: snyk/actions/node@master
-        uses: snyk/actions/docker@master 
+        uses: snyk/actions/docker@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
           DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }} 
@@ -85,17 +84,15 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and Push Docker Image
-        id: docker_build # Digunakan untuk merekam output
+        id: docker_build
         uses: docker/build-push-action@v4
         with:
           context: .
           file: containers/app/Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
-          # Output Digest Image yang Immutable
           outputs: type=image,names=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest,digest=true
-      
-      # Set Digest sebagai Environment Variable untuk langkah selanjutnya
+        
       - name: Set Image Digest Variable
         run: |
           IMAGE_DIGEST="${{ steps.docker_build.outputs.digest }}"
@@ -109,7 +106,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.3.0
 
-      # Sign Image menggunakan Digest (Fix UNAUTHORIZED dengan DOCKER_USER)
+      # Sign Image menggunakan Digest
       - name: Sign image with a key
         run: |
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$DOCKER_USER/vuln-bank@${{ env.IMAGE_REFERENCE_DIGEST }}"
@@ -127,13 +124,18 @@ jobs:
           output-file: sbom.spdx.json
 
       # ====================================================
-      # 6. DEPLOYMENT (ANSIBLE) - Menggunakan Digest
+      # 6. DEPLOYMENT (ANSIBLE) - Menggunakan Digest & Kunci Publik
       # ====================================================
       - name: Setup SSH Key & Deploy
         run: |
-          # ... (setup ssh keys dan ansible-galaxy install sama) ...
+          # Perbaikan: Install Collection Docker sebelum menjalankan Playbook
+          ansible-galaxy collection install community.docker
 
-          # Eksekusi Ansible dengan path yang benar (ansible/) dan injeksi semua secret
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
+          chmod 600 ~/.ssh/id_runner_temp
+          
+          # Eksekusi Ansible dengan injeksi semua Secret sebagai extra-vars
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
@@ -144,7 +146,7 @@ jobs:
             -e "cosign_pub_key=${{ secrets.COSIGN_PUBLIC_KEY }}" \
             -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}"
-
+            
           rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible/ansible.cfg
@@ -196,6 +198,7 @@ jobs:
       - name: Slack Notification
         if: always()
         run: |
+          # Note: jq is needed on the self-hosted runner for this.
           TRIVY_CRIT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json || echo 0)
           SNYK_CRIT=$(jq '[.vulnerabilities[]? | select(.severity=="high")] | length' snyk-results.json || echo 0)
           SEMGREP_CRIT=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' semgrep-results.json || echo 0)
