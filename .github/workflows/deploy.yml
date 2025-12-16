@@ -1,0 +1,246 @@
+name: Vuln Bank DevSecOps Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+
+concurrency:
+  group: vuln-bank-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: vuln-bank
+  REPORT_DIR: security-reports
+  PYTHON_BIN: python3
+
+  # =========================
+  # ENVIRONMENT AWARE CONTROL
+  # =========================
+  APP_ENV: "${{ github.ref == 'refs/heads/main' && 'prod' || 'staging' }}"
+
+  # =========================
+  # DAST TARGET
+  # =========================
+  DAST_TARGET_URL: http://192.168.107.135:5000
+
+  # =========================
+  # SLACK
+  # =========================
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # =========================
+  # SNYK
+  # =========================
+  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # =========================
+  # SONARQUBE
+  # =========================
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # =========================
+  # DEFECTDOJO
+  # =========================
+  DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+  DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+  DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+  DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+
+jobs:
+# ==========================================================
+# 1️⃣ SECURITY SCANS + QUALITY + RISK GATES
+# ==========================================================
+  security_scans:
+    name: Security & Quality Scans
+    runs-on: self-hosted
+
+    outputs:
+      gate_failed: ${{ steps.gate_decision.outputs.gate_failed }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # REQUIRED for SonarQube
+
+      - name: Prepare report directory
+        run: |
+          mkdir -p ${REPORT_DIR}/zap
+
+      # ------------------------------------------------------
+      # SONARQUBE — SAST + QUALITY GATE (HARD FAIL)
+      # ------------------------------------------------------
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=vuln-bank
+            -Dsonar.projectName=vuln-bank
+            -Dsonar.sources=.
+            -Dsonar.python.version=3.9
+
+      - name: SonarQube Quality Gate
+        if: github.ref == 'refs/heads/main'
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+
+      # ------------------------------------------------------
+      # Resolve EPSS threshold dynamically
+      # ------------------------------------------------------
+      - name: Resolve EPSS threshold
+        id: epss
+        run: |
+          case "${APP_ENV}" in
+            dev)      echo "threshold=0.90" >> $GITHUB_OUTPUT ;;
+            staging)  echo "threshold=0.70" >> $GITHUB_OUTPUT ;;
+            prod)     echo "threshold=0.50" >> $GITHUB_OUTPUT ;;
+            *)        echo "threshold=0.70" >> $GITHUB_OUTPUT ;;
+          esac
+
+      # ------------------------------------------------------
+      # SECRET SCANNING — TruffleHog
+      # ------------------------------------------------------
+      - name: Secret Scan (TruffleHog)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest \
+            git file:///repo --json > ${REPORT_DIR}/trufflehog.json || true
+
+      # ------------------------------------------------------
+      # SAST — Semgrep
+      # ------------------------------------------------------
+      - name: SAST Scan (Semgrep)
+        run: |
+          docker run --rm -v "$PWD:/src" returntocorp/semgrep \
+            semgrep scan --config=auto --json \
+            -o ${REPORT_DIR}/semgrep.json || true
+
+      # ------------------------------------------------------
+      # SCA — Trivy FS
+      # ------------------------------------------------------
+      - name: SCA Scan (Trivy FS)
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo aquasec/trivy:latest fs \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output ${REPORT_DIR}/trivy-sca.json .
+
+      # ------------------------------------------------------
+      # SCA + CODE — Snyk
+      # ------------------------------------------------------
+      - name: Snyk Scan
+        run: |
+          docker run --rm \
+            -e SNYK_TOKEN=${SNYK_TOKEN} \
+            -v "$PWD:/project" -w /project \
+            snyk/snyk-cli snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
+
+      # ------------------------------------------------------
+      # EPSS RISK GATE (HARD FAIL)
+      # ------------------------------------------------------
+      - name: EPSS Risk Gate
+        run: |
+          ${PYTHON_BIN} scripts/epss_gate.py \
+            --input ${REPORT_DIR}/trivy-sca.json \
+            --output ${REPORT_DIR}/epss-findings.json \
+            --threshold "${{ steps.epss.outputs.threshold }}"
+
+      # ------------------------------------------------------
+      # DAST — OWASP ZAP
+      # ------------------------------------------------------
+      - name: DAST Scan (OWASP ZAP)
+        run: |
+          docker run --rm --network host \
+            -v "$PWD:/zap/wrk" \
+            owasp/zap2docker-stable zap-baseline.py \
+            -t ${DAST_TARGET_URL} \
+            -J ${REPORT_DIR}/zap/zap_alerts.json \
+            -r ${REPORT_DIR}/zap/zap_report.html || true
+
+      # ------------------------------------------------------
+      # Import ZAP to DefectDojo
+      # ------------------------------------------------------
+      - name: Import ZAP to DefectDojo
+        if: env.DEFECTDOJO_URL != ''
+        run: |
+          curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+            -F "scan_type=ZAP Scan" \
+            -F "file=@${REPORT_DIR}/zap/zap_alerts.json" \
+            -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+            -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+            -F "active=true" \
+            -F "verified=true"
+
+      # ------------------------------------------------------
+      # FINAL GATE DECISION
+      # ------------------------------------------------------
+      - name: Evaluate Security Gate
+        id: gate_decision
+        run: |
+          count=$(${PYTHON_BIN} -c "import json; d=json.load(open('security-reports/epss-findings.json')); print(len(d.get('high_risk', [])))" 2>/dev/null || echo 0)
+
+          if [ "$count" -gt 0 ]; then
+            echo "gate_failed=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "gate_failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ------------------------------------------------------
+      # Slack Alert (Failure Only)
+      # ------------------------------------------------------
+      - name: Slack Alert (Gate Failed)
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          PIPELINE_STATUS: FAILED
+        run: |
+          python3 scripts/slack_notify.py
+
+      # ------------------------------------------------------
+      # Upload Artifacts
+      # ------------------------------------------------------
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ github.run_id }}
+          path: security-reports
+          retention-days: 14
+
+# ==========================================================
+# 2️⃣ DEPLOY — SECURITY + QUALITY GATED
+# ==========================================================
+  deploy:
+    name: Deploy Vuln Bank (Ansible)
+    needs: security_scans
+    if: github.ref == 'refs/heads/main' && needs.security_scans.outputs.gate_failed == 'false'
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ansible Ping
+        run: ansible -i inventory.ini all -m ping
+
+      - name: Deploy via Ansible
+        run: ansible-playbook -i inventory.ini site.yml
+
+      - name: Slack Notify (Deploy Success)
+        if: success() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          PIPELINE_STATUS: SUCCESS
+        run: |
+          python3 scripts/slack_notify.py

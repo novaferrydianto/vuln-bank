@@ -1,18 +1,46 @@
 {
   "threshold": 0.5,
   "total_trivy_high_crit": 7,
+  "ignored_high_crit": 6,
+
+  "rollup": {
+    "portfolio_score_0_100": 83,
+    "weighted_risk_sum": 8.918,
+    "weighted_risk_max": 8.918,
+    "epss_above_threshold": 1,
+    "kev_hits": 1
+  },
+
   "high_risk": [
     {
       "cve": "CVE-2024-12345",
       "pkg_name": "openssl",
-      "installed_version": "1.1.1",
-      "fixed_version": "1.1.1u",
       "severity": "CRITICAL",
       "cvss": 9.8,
       "epss": 0.91,
+      "weighted_risk": 8.918,
       "percentile": 0.99,
       "is_kev": true,
       "reasons": ["EPSS>=0.5", "CISA_KEV"]
+    }
+  ],
+
+  "all_findings": [
+    {
+      "cve": "CVE-2024-12345",
+      "severity": "CRITICAL",
+      "cvss": 9.8,
+      "epss": 0.91,
+      "weighted_risk": 8.918,
+      "decision": "BLOCK"
+    },
+    {
+      "cve": "CVE-2023-XXXXX",
+      "severity": "HIGH",
+      "cvss": 7.5,
+      "epss": 0.04,
+      "weighted_risk": 0.30,
+      "decision": "IGNORE_LOW_EPSS"
     }
   ]
 }
