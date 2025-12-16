@@ -130,13 +130,16 @@ jobs:
         run: |
           # Perbaikan: Install Collection Docker sebelum menjalankan Playbook
           ansible-galaxy collection install community.docker
-
+          
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
           
-          echo "${{ secrets.COSIGN_PUBLIC_KEY }}" > /tmp/cosign_pub_key_temp
-          
+          # **SOLUSI HILANGKAN KARAKTER RUSAK**
+          # Tulis Secret, lalu gunakan 'tr' untuk menghapus karakter carriage return (CR)
+          # yang mungkin merusak decoding PEM.
+          echo "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r' > /tmp/cosign_pub_key_temp
+
           # Eksekusi Ansible dengan injeksi semua Secret sebagai extra-vars
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
@@ -148,7 +151,7 @@ jobs:
             -e "cosign_pub_key=@/tmp/cosign_pub_key_temp" \
             -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}"
-          
+            
           rm -f /tmp/cosign_pub_key_temp
           rm -f ~/.ssh/id_runner_temp
         env:
