@@ -24,10 +24,9 @@
       DB_PORT=5432
 
 - name: 4. Jalankan Database Container menggunakan podman-compose
-  # Ganti command menjadi shell untuk mengatur PATH, atau temukan lokasi pip/podman-compose
+  become: yes
   shell: |
-    # Mencoba menemukan lokasi bin lokal user (misalnya: /home/db/.local/bin)
-    export PATH=$PATH:$HOME/.local/bin
+    export PATH=$PATH:/home/{{ ansible_user }}/.local/bin
     podman-compose up -d
   args:
     chdir: "{{ remote_db_dir }}"
