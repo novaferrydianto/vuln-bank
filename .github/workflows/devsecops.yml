@@ -11,9 +11,6 @@ permissions:
   pull-requests: write
   security-events: write
 
-env:
-  REPORT_DIR: security-reports
-
 jobs:
   security-pipeline:
     name: Security & Deployment Pipeline
@@ -25,10 +22,6 @@ jobs:
       # ====================================================
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Prepare report directories
-        run: |
-          mkdir -p "${REPORT_DIR}/"{snyk,trivy,semgrep,zap,sbom}
 
       # ====================================================
       # 2. SECRET SCANNING (TRUFFLEHOG)
@@ -49,9 +42,10 @@ jobs:
         uses: snyk/actions/docker@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }} 
         with:
-          image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank@${{ env.IMAGE_REFERENCE_DIGEST }}
-          args: --severity-threshold=high --json-file-output=${{ env.REPORT_DIR }}/snyk/results.json
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest 
+          args: --file=containers/app/Dockerfile --severity-threshold=high --json-file-output=snyk-results.json
         continue-on-error: true
 
       - name: SCA & Misconfig Scan (Trivy)
@@ -60,7 +54,7 @@ jobs:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'json'
-          output: '${{ env.REPORT_DIR }}/trivy/results.json'
+          output: 'trivy-results.json'
           severity: 'CRITICAL,HIGH'
         continue-on-error: true
 
@@ -70,7 +64,7 @@ jobs:
       - name: SAST Scan (Semgrep)
         run: |
           export PATH=$PATH:$HOME/.local/bin
-          semgrep scan --config=p/security-audit --json --output="${REPORT_DIR}/semgrep/results.json"
+          semgrep scan --config=p/security-audit --json --output=semgrep-results.json
         continue-on-error: true
 
       - name: SAST Scan (SonarQube)
@@ -132,7 +126,7 @@ jobs:
         with:
           image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank@${{ env.IMAGE_REFERENCE_DIGEST }}
           format: spdx-json
-          output-file: ${{ env.REPORT_DIR }}/sbom/sbom.spdx.json
+          output-file: sbom.spdx.json
 
       # ====================================================
       # 6. DEPLOYMENT (ANSIBLE) - Menggunakan Digest & Kunci Publik
@@ -145,9 +139,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
-
           export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r')"
-
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
@@ -165,64 +157,61 @@ jobs:
       # ====================================================
       # 7. DAST (OWASP ZAP)
       # ====================================================
+      - name: Login ke Docker Hub untuk Pre-pull ZAP Image
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
       - name: DAST Scan (OWASP ZAP)
         uses: zaproxy/action-baseline@v0.7.0
         with:
           target: 'http://192.168.107.135:5000'
-          fail_action: false
-          issue_title: false
           cmd_options: '-a'
-          docker_name: 'ghcr.io/zaproxy/zaproxy'
-        env:
-          ZAP_DOCKER_USER: "${{ runner.os != 'Windows' && format('{0}:{1}', '$(id -u)', '$(id -g)') || '' }}"
+          allow_issue_writing: false
+          # KRITIS: Gunakan image ZAP resmi yang lebih modern jika Docker Hub bermasalah
+          docker_name: 'ghcr.io/zaproxy/zaproxy' # Menggunakan GHCR (GitHub Container Registry)
         continue-on-error: true
-
-      - name: Copy ZAP Reports to Report Directory
-        run: |
-          cp report_json.json ${{ env.REPORT_DIR }}/zap/report.json
 
       # ====================================================
       # 8. REPORTING & NOTIFICATION
       # ====================================================
       - name: Upload All Reports to DefectDojo
         env:
-          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
-          DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+          DOJO_URL: "http://192.168.107.132:8080"
+          DOJO_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
         run: |
           upload_scan() {
-            FILE="$1"
-            SCAN_TYPE="$2"
-
-            if [ ! -f "$FILE" ]; then
-              echo "[SKIP] $FILE not found"
-              return
-            fi
-
-            echo "Uploading $SCAN_TYPE to DefectDojo..."
-            curl -sS -X POST "$DEFECTDOJO_URL/api/v2/import-scan/" \
-              -H "Authorization: Token $DEFECTDOJO_API_KEY" \
-              -F "scan_type=$SCAN_TYPE" \
-              -F "file=@$FILE" \
-              -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID" \
+            FILE=$1
+            SCAN_TYPE=$2
+            if [ -f "$FILE" ]; then
+              echo "Uploading $SCAN_TYPE..."
+              curl -X POST "$DOJO_URL/api/v2/import-scan/" \
+              -H "Authorization: Token $DOJO_KEY" \
               -F "active=true" \
               -F "verified=true" \
-              -F "minimum_severity=High"
+              -F "scan_type=$SCAN_TYPE" \
+              -F "minimum_severity=High" \
+              -F "engagement=1" \
+              -F "file=@$FILE"
+            else
+              echo "File $FILE not found (Skipping)"
+            fi
           }
-
-          upload_scan "security-reports/trivy/results.json" "Trivy Scan"
-          upload_scan "security-reports/snyk/results.json" "Snyk Scan"
-          upload_scan "security-reports/semgrep/results.json" "Semgrep JSON Report"
-          upload_scan "security-reports/zap/report.json" "ZAP Scan"
-          upload_scan "security-reports/sbom/sbom.spdx.json" "Generic Header Analysis"
+          upload_scan "trivy-results.json" "Trivy Scan"
+          upload_scan "snyk-results.json" "Snyk Scan"
+          upload_scan "semgrep-results.json" "Semgrep JSON Report"
+          
+          # Upload SBOM ke DefectDojo
+          upload_scan "sbom.spdx.json" "Generic Header Analysis" 
 
       - name: Slack Notification
         if: always()
         run: |
           # Note: jq is needed on the self-hosted runner for this.
-          TRIVY_CRIT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "${REPORT_DIR}/trivy/results.json" 2>/dev/null || echo 0)
-          SNYK_CRIT=$(jq '[.vulnerabilities[]? | select(.severity=="high")] | length' "${REPORT_DIR}/snyk/results.json" 2>/dev/null || echo 0)
-          SEMGREP_CRIT=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' "${REPORT_DIR}/semgrep/results.json" 2>/dev/null || echo 0)
+          TRIVY_CRIT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json || echo 0)
+          SNYK_CRIT=$(jq '[.vulnerabilities[]? | select(.severity=="high")] | length' snyk-results.json || echo 0)
+          SEMGREP_CRIT=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' semgrep-results.json || echo 0)
           TOTAL_CRIT=$((TRIVY_CRIT + SNYK_CRIT + SEMGREP_CRIT))
           
           if [ "$TOTAL_CRIT" -gt "0" ]; then
