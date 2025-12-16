@@ -165,10 +165,14 @@ jobs:
         run: |
           docker run --rm --network host \
             -v "$PWD:/zap/wrk" \
-            owasp/zap2docker-stable zap-baseline.py \
+            ghcr.io/zaproxy/zap-stable \
+            zap-baseline.py \
             -t ${DAST_TARGET_URL} \
             -J ${REPORT_DIR}/zap/zap_alerts.json \
             -r ${REPORT_DIR}/zap/zap_report.html || true
+
+          echo "== ZAP outputs =="
+          ls -lah ${REPORT_DIR}/zap || true
 
       # ------------------------------------------------------
       # Import ZAP to DefectDojo
