@@ -119,7 +119,7 @@ jobs:
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.IMAGE_REFERENCE_DIGEST }}
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank@${{ env.IMAGE_REFERENCE_DIGEST }}
           format: spdx-json
           output-file: sbom.spdx.json
 
@@ -134,13 +134,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
-          
-          # **SOLUSI HILANGKAN KARAKTER RUSAK**
-          # Tulis Secret, lalu gunakan 'tr' untuk menghapus karakter carriage return (CR)
-          # yang mungkin merusak decoding PEM.
-          echo "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r' > /tmp/cosign_pub_key_temp
 
-          # Eksekusi Ansible dengan injeksi semua Secret sebagai extra-vars
+          export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r')"
+
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
@@ -148,11 +144,9 @@ jobs:
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
             -e "image_digest=${{ env.IMAGE_REFERENCE_DIGEST }}" \
-            -e "cosign_pub_key=@/tmp/cosign_pub_key_temp" \
             -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}"
             
-          rm -f /tmp/cosign_pub_key_temp
           rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible/ansible.cfg

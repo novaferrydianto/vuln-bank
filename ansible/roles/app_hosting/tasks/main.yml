@@ -20,10 +20,10 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
-    # Menggunakan filter | trim untuk membersihkan whitespace/newline yang mungkin merusak PEM
-    content: "{{ cosign_pub_key | trim }}" 
-    dest: "/tmp/cosign.pub"
+    content: "{{ lookup('env', 'COSIGN_PUBLIC_KEY_CLEAN') | trim }}"
+    dest: /tmp/cosign.pub
     mode: '0644'
+  no_log: true
 
 # ---------------------------------------------------------
 # DIAGNOSTIK KRITIS: Tampilkan Kunci Publik RAW
