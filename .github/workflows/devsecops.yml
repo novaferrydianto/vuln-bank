@@ -1,0 +1,155 @@
+name: VulnBank DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  security-pipeline:
+    name: Security & Deployment Pipeline
+    runs-on: self-hosted
+    
+    steps:
+      # 1. Checkout Code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ====================================================
+      # TAHAP 1: SECRET SCANNING
+      # ====================================================
+      - name: Secret Scanning (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+        continue-on-error: true
+
+      # ====================================================
+      # TAHAP 2: SOFTWARE COMPOSITION ANALYSIS (SCA)
+      # ====================================================
+      
+      # Snyk SCA - Analisis Dependensi mendalam
+      - name: SCA Scan (Snyk)
+        uses: snyk/actions/node@master # Menggunakan wrapper node karena umum utk web
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --all-projects --severity-threshold=high --json-file-output=snyk-results.json
+        continue-on-error: true
+
+      # Trivy SCA & Config (Backup & Misconfiguration check)
+      - name: SCA & Misconfig Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'json'
+          output: 'trivy-results.json'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      # ====================================================
+      # TAHAP 3: STATIC APPLICATION SECURITY TESTING (SAST)
+      # ====================================================
+
+      # [BARU] Semgrep SAST - Scan pola kode tidak aman
+      - name: SAST Scan (Semgrep)
+        run: |
+          # Install semgrep via pip (lebih ringan untuk self-hosted daripada docker image penuh)
+          pip3 install semgrep
+          # Jalankan scan dengan ruleset security audit
+          semgrep scan --config=p/security-audit --json --output=semgrep-results.json
+        continue-on-error: true
+
+      # SonarQube SAST (Deep Analysis)
+      - name: SAST Scan (SonarQube)
+        env:
+          SONAR_HOST_URL: "http://192.168.107.132:9000"
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey=vuln-bank \
+            -Dsonar.sources=. \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.login=$SONAR_TOKEN
+        continue-on-error: true
+
+      # ====================================================
+      # TAHAP 4: DEPLOYMENT & DAST
+      # ====================================================
+      - name: Deploy to Hosting VM
+        run: |
+          chmod 600 /home/bastion/.ssh/id_runner
+          ansible-playbook -i inventory.ini playbooks/deploy.yml 
+        env:
+          ANSIBLE_CONFIG: ./ansible.cfg
+
+      - name: DAST Scan (OWASP ZAP)
+        uses: zaproxy/action-baseline@v0.7.0
+        with:
+          target: 'http://192.168.107.135'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+          allow_issue_writing: false
+        continue-on-error: true
+
+      # ====================================================
+      # TAHAP 5: REPORTING (DEFECTDOJO)
+      # ====================================================
+      - name: Upload All Reports to DefectDojo
+        env:
+          DOJO_URL: "http://192.168.107.132:8080"
+          DOJO_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+          # Helper function untuk curl agar tidak berulang
+        run: |
+          upload_scan() {
+            FILE=$1
+            SCAN_TYPE=$2
+            if [ -f "$FILE" ]; then
+              echo "Uploading $SCAN_TYPE..."
+              curl -X POST "$DOJO_URL/api/v2/import-scan/" \
+              -H "Authorization: Token $DOJO_KEY" \
+              -F "active=true" \
+              -F "verified=true" \
+              -F "scan_type=$SCAN_TYPE" \
+              -F "minimum_severity=High" \
+              -F "engagement=1" \
+              -F "file=@$FILE"
+            else
+              echo "File $FILE not found, skipping $SCAN_TYPE."
+            fi
+          }
+
+          # Upload Trivy
+          upload_scan "trivy-results.json" "Trivy Scan"
+          
+          # Upload Snyk
+          upload_scan "snyk-results.json" "Snyk Scan"
+
+          # Upload Semgrep
+          upload_scan "semgrep-results.json" "Semgrep JSON Report"
+
+      # ====================================================
+      # TAHAP 6: NOTIFICATION
+      # ====================================================
+      - name: Slack Notification
+        if: always()
+        run: |
+          # Hitung total critical dari Trivy, Snyk, dan Semgrep
+          TRIVY_CRIT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json || echo 0)
+          SNYK_CRIT=$(jq '[.vulnerabilities[]? | select(.severity=="high")] | length' snyk-results.json || echo 0)
+          SEMGREP_CRIT=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' semgrep-results.json || echo 0)
+          
+          TOTAL_CRIT=$((TRIVY_CRIT + SNYK_CRIT + SEMGREP_CRIT))
+          
+          if [ "$TOTAL_CRIT" -gt "0" ]; then
+            curl -X POST -H 'Content-type: application/json' --data "{
+              'text': '🚨 *Security Alert Vuln Bank* 🚨\nTotal Temuan Critical/High: *$TOTAL_CRIT*\n- Trivy: $TRIVY_CRIT\n- Snyk: $SNYK_CRIT\n- Semgrep: $SEMGREP_CRIT\nMohon cek DefectDojo segera.'
+            }" ${{ secrets.SLACK_WEBHOOK_URL }}
+          else
+            echo "Pipeline aman. Tidak ada temuan Critical baru."
+          fi
