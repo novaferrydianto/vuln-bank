@@ -126,12 +126,10 @@ jobs:
       - name: Setup SSH Key & Deploy
         run: |
           ansible-galaxy collection install community.docker
-          
+    
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
-
-          export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r')"
 
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
@@ -139,10 +137,10 @@ jobs:
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
-            -e "image_digest=${{ env.IMAGE_REFERENCE_DIGEST }}" \
-            -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" \
-            -e "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}"
-            
+            -e "image_ref=${IMAGE_REF}" \
+            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
+          
           rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible/ansible.cfg
