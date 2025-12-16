@@ -55,16 +55,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push Image
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push (FAST CACHE)
         id: build
         uses: docker/build-push-action@v4
         with:
+          context: .
+          file: containers/app/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
+          tags: |
+            ${{ env.IMAGE_REPO }}:latest
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
+          provenance: false
 
       - name: Capture Image Digest
         run: |
-          echo "IMAGE_REF=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
+          echo "IMAGE_REF=${{ env.IMAGE_REPO }}@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
+          echo "Using image: $IMAGE_REF"
 
       # ====================================================
       # 5. SCA (IMAGE)
@@ -113,11 +123,14 @@ jobs:
       - name: Ansible Deploy
         run: |
           ansible-galaxy collection install community.docker
+
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > key.pem
           chmod 600 key.pem
+
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key key.pem \
-            -e image_ref=${IMAGE_REF}
+            -e "db_password=${{ secrets.DB_PASSWORD }}" \
+            -e "image_ref=${IMAGE_REF}"
 
       # ====================================================
       # 8. DAST (ZAP SAFE MODE)
