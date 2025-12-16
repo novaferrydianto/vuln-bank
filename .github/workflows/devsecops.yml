@@ -14,7 +14,7 @@ jobs:
     steps:
       # 1. Checkout Code
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       # ====================================================
       # TAHAP 1: SECRET SCANNING
@@ -29,19 +29,16 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 2: SOFTWARE COMPOSITION ANALYSIS (SCA)
+      # TAHAP 2: SCA (Snyk & Trivy)
       # ====================================================
-      
-      # Snyk SCA - Analisis Dependensi mendalam
       - name: SCA Scan (Snyk)
-        uses: snyk/actions/node@master # Menggunakan wrapper node karena umum utk web
+        uses: snyk/actions/node@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --all-projects --severity-threshold=high --json-file-output=snyk-results.json
         continue-on-error: true
 
-      # Trivy SCA & Config (Backup & Misconfiguration check)
       - name: SCA & Misconfig Scan (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
@@ -53,24 +50,22 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 3: STATIC APPLICATION SECURITY TESTING (SAST)
+      # TAHAP 3: SAST (Semgrep & SonarQube)
       # ====================================================
-
-      # [BARU] Semgrep SAST - Scan pola kode tidak aman
       - name: SAST Scan (Semgrep)
         run: |
-          # Install semgrep via pip  <-- HAPUS BARIS INI
-          pip3 install semgrep       <-- HAPUS BARIS INI
-          # Jalankan scan dengan ruleset security audit
+          # Pastikan path user terbaca
+          export PATH=$PATH:$HOME/.local/bin
+          # Jalankan scan (Tanpa install ulang karena sudah di VM)
           semgrep scan --config=p/security-audit --json --output=semgrep-results.json
         continue-on-error: true
 
-      # SonarQube SAST (Deep Analysis)
       - name: SAST Scan (SonarQube)
         env:
           SONAR_HOST_URL: "http://192.168.107.132:9000"
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
+          # Tool sonar-scanner diambil dari /usr/local/bin (hasil install manual)
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.sources=. \
@@ -79,15 +74,30 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 4: DEPLOYMENT & DAST
+      # TAHAP 4: DEPLOYMENT
       # ====================================================
-      - name: Deploy to Hosting VM
+      - name: Setup SSH Key & Deploy
         run: |
-          chmod 600 /home/bastion/.ssh/id_runner
-          ansible-playbook -i inventory.ini playbooks/deploy.yml 
+          # 1. Buat file key sementara dari GitHub Secrets
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
+          chmod 600 ~/.ssh/id_runner_temp
+          
+          # 2. Update ansible.cfg sementara untuk menunjuk ke key baru
+          # Kita override private_key_file lewat command line agar tidak merubah file config asli
+          
+          # 3. Jalankan Ansible
+          ansible-playbook -i inventory.ini playbooks/deploy.yml \
+            --private-key ~/.ssh/id_runner_temp
+            
+          # 4. Hapus key setelah selesai (Security Practice)
+          rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible.cfg
 
+      # ====================================================
+      # TAHAP 5: DAST (OWASP ZAP)
+      # ====================================================
       - name: DAST Scan (OWASP ZAP)
         uses: zaproxy/action-baseline@v0.7.0
         with:
@@ -98,13 +108,12 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # TAHAP 5: REPORTING (DEFECTDOJO)
+      # TAHAP 6: REPORTING & NOTIFICATION
       # ====================================================
       - name: Upload All Reports to DefectDojo
         env:
           DOJO_URL: "http://192.168.107.132:8080"
           DOJO_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
-          # Helper function untuk curl agar tidak berulang
         run: |
           upload_scan() {
             FILE=$1
@@ -120,30 +129,19 @@ jobs:
               -F "engagement=1" \
               -F "file=@$FILE"
             else
-              echo "File $FILE not found, skipping $SCAN_TYPE."
+              echo "File $FILE not found (Skipping)"
             fi
           }
-
-          # Upload Trivy
           upload_scan "trivy-results.json" "Trivy Scan"
-          
-          # Upload Snyk
           upload_scan "snyk-results.json" "Snyk Scan"
-
-          # Upload Semgrep
           upload_scan "semgrep-results.json" "Semgrep JSON Report"
 
-      # ====================================================
-      # TAHAP 6: NOTIFICATION
-      # ====================================================
       - name: Slack Notification
         if: always()
         run: |
-          # Hitung total critical dari Trivy, Snyk, dan Semgrep
           TRIVY_CRIT=$(jq '[.Results[] | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json || echo 0)
           SNYK_CRIT=$(jq '[.vulnerabilities[]? | select(.severity=="high")] | length' snyk-results.json || echo 0)
           SEMGREP_CRIT=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' semgrep-results.json || echo 0)
-          
           TOTAL_CRIT=$((TRIVY_CRIT + SNYK_CRIT + SEMGREP_CRIT))
           
           if [ "$TOTAL_CRIT" -gt "0" ]; then
