@@ -109,11 +109,10 @@ jobs:
       # Sign Image menggunakan Digest (Fix UNAUTHORIZED dengan DOCKER_USER)
       - name: Sign image with a key
         run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ env.IMAGE_REFERENCE_DIGEST }}"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$DOCKER_USER/vuln-bank@${{ env.IMAGE_REFERENCE_DIGEST }}"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          # DOCKER_USER digunakan oleh Cosign untuk auth
           DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }} 
 
       # Generate SBOM menggunakan Digest
