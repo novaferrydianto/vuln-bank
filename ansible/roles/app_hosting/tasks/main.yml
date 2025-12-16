@@ -39,7 +39,8 @@
     chdir: "{{ remote_app_dir }}"
 
 - name: 5. Verifikasi Image Docker menggunakan Digest
-  shell: cosign verify --key /tmp/cosign.pub {{ DOCKERHUB_USERNAME }}/vuln-bank@{{ image_digest }}
+  # Gunakan modul shell dengan full path ke Cosign
+  shell: /usr/local/bin/cosign verify --key /tmp/cosign.pub {{ DOCKERHUB_USERNAME }}/vuln-bank@{{ image_digest }}
   args:
     chdir: "{{ remote_app_dir }}"
 
