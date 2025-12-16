@@ -5,7 +5,6 @@
   file:
     path: "{{ remote_app_dir }}"
     state: directory
-    # Owner adalah user 'hosting'
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
     mode: '0750'
@@ -21,18 +20,22 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
+    # Menggunakan filter | trim untuk membersihkan whitespace/newline yang mungkin merusak PEM
     content: "{{ cosign_pub_key | trim }}" 
     dest: "/tmp/cosign.pub"
     mode: '0644'
 
+# ---------------------------------------------------------
+# DIAGNOSTIK KRITIS: Tampilkan Kunci Publik RAW (Ganti Task Diagnostik Lama)
+# ---------------------------------------------------------
 - name: DIAGNOSTIK: Tampilkan Konten /tmp/cosign.pub (Verifikasi Integritas)
-  ansible.builtin.command: cat /tmp/cosign.pub
+  ansible.builtin.shell: cat /tmp/cosign.pub
   register: cosign_pub_content
 
-- name: DEBUG: Kunci Publik yang Digunakan (Cek Integritas PEM)
+- name: DEBUG: Kunci Publik yang Digunakan (Cek Integritas PEM RAW)
   ansible.builtin.debug:
-    msg: "KUNCI PUBLIK YANG DITULIS:\n{{ cosign_pub_content.stdout_lines }}"
-
+    # Output ini akan menunjukkan raw string kunci yang dibaca Cosign, kita cari spasi/newline rusak di sini
+    msg: "KUNCI PUBLIK RAW:\n{{ cosign_pub_content.stdout }}"
 # ---------------------------------------------------------
 
 - name: 3.5 Login ke Docker Hub pada Host Target (KRITIS)
