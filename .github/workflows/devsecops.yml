@@ -154,16 +154,10 @@ jobs:
       # ====================================================
       # 7. DAST (OWASP ZAP)
       # ====================================================
-      - name: Login ke Docker Hub untuk Pre-pull ZAP Image
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Fix permissions for ZAP workspace
         run: |
-          sudo chown -R 1000:1000 $GITHUB_WORKSPACE
-          sudo chmod -R u+rwX,g+rwX $GITHUB_WORKSPACE
+          sudo chown -R 1000:1000 "$GITHUB_WORKSPACE"
+          sudo chmod -R u+rwX,g+rwX "$GITHUB_WORKSPACE"
 
       - name: Pull ZAP Image (GHCR)
         run: docker pull ghcr.io/zaproxy/zaproxy:stable
@@ -174,7 +168,7 @@ jobs:
           target: 'http://192.168.107.135:5000'
           cmd_options: '-a'
           allow_issue_writing: false
-          continue-on-error: true
+        continue-on-error: true
 
       # ====================================================
       # 8. REPORTING & NOTIFICATION
