@@ -92,10 +92,11 @@ jobs:
       # ====================================================
       - uses: sigstore/cosign-installer@v3
 
-      - name: Cosign Sign
-        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY $IMAGE_REF
+      - name: Cosign Sign Image
+        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE_REF"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
