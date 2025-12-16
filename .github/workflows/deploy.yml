@@ -146,7 +146,11 @@ jobs:
           docker run --rm \
             -e SNYK_TOKEN=${SNYK_TOKEN} \
             -v "$PWD:/project" -w /project \
-            snyk/snyk-cli snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
+            ghcr.io/snyk/snyk-cli \
+            snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
+
+          echo "== Snyk output =="
+          ls -lah ${REPORT_DIR}/snyk-sca.json || true
 
       # ------------------------------------------------------
       # EPSS RISK GATE (HARD FAIL)
@@ -161,6 +165,10 @@ jobs:
       # ------------------------------------------------------
       # DAST — OWASP ZAP
       # ------------------------------------------------------
+      - name: Login to GHCR (for ZAP image)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
       - name: DAST Scan (OWASP ZAP)
         run: |
           docker run --rm --network host \
