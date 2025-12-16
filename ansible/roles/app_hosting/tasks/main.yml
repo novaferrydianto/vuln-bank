@@ -26,15 +26,15 @@
     mode: '0644'
 
 # ---------------------------------------------------------
-# DIAGNOSTIK KRITIS: Tampilkan Kunci Publik RAW (Ganti Task Diagnostik Lama)
+# DIAGNOSTIK KRITIS: Tampilkan Kunci Publik RAW
 # ---------------------------------------------------------
-- name: DIAGNOSTIK: Tampilkan Konten /tmp/cosign.pub (Verifikasi Integritas)
+- name: "DIAGNOSTIK: Tampilkan Konten /tmp/cosign.pub (Verifikasi Integritas)"
   ansible.builtin.shell: cat /tmp/cosign.pub
   register: cosign_pub_content
+  changed_when: false
 
-- name: DEBUG: Kunci Publik yang Digunakan (Cek Integritas PEM RAW)
+- name: "DEBUG: Kunci Publik yang Digunakan (Cek Integritas PEM RAW)"
   ansible.builtin.debug:
-    # Output ini akan menunjukkan raw string kunci yang dibaca Cosign, kita cari spasi/newline rusak di sini
     msg: "KUNCI PUBLIK RAW:\n{{ cosign_pub_content.stdout }}"
 # ---------------------------------------------------------
 
