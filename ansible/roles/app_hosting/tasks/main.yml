@@ -21,22 +21,18 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
-    # Menggunakan filter | trim untuk membersihkan whitespace/newline yang mungkin merusak PEM
-    content: "{{ cosign_pub_key | trim }}"
+    content: "{{ cosign_pub_key | trim }}" 
     dest: "/tmp/cosign.pub"
     mode: '0644'
 
-# ---------------------------------------------------------
-# DIAGNOSTIK KRITIS: Tampilkan Kunci Publik yang DITULIS di VM HOSTING
-# ---------------------------------------------------------
 - name: DIAGNOSTIK: Tampilkan Konten /tmp/cosign.pub (Verifikasi Integritas)
   ansible.builtin.command: cat /tmp/cosign.pub
   register: cosign_pub_content
 
 - name: DEBUG: Kunci Publik yang Digunakan (Cek Integritas PEM)
   ansible.builtin.debug:
-    # Output ini akan menunjukkan raw string yang dibaca Cosign, cari apakah ada spasi/newline ekstra
     msg: "KUNCI PUBLIK YANG DITULIS:\n{{ cosign_pub_content.stdout_lines }}"
+
 # ---------------------------------------------------------
 
 - name: 3.5 Login ke Docker Hub pada Host Target (KRITIS)
