@@ -21,10 +21,8 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
-    # Ubah ke YAML block literal (|) untuk menjamin content ditulis RAW, 
-    # tanpa interpretasi atau escaping tambahan.
-    content: |
-      {{ cosign_pub_key }}
+    # GUNAKAN FILTER | trim UNTUK MENGHAPUS WHITESPACE DI AWAL/AKHIR VARIABEL
+    content: "{{ cosign_pub_key | trim }}"
     dest: "/tmp/cosign.pub"
     mode: '0644'
 
