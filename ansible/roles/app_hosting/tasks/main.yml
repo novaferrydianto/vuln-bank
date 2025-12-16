@@ -21,7 +21,10 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
-    content: "{{ cosign_pub_key }}"
+    # Ubah ke YAML block literal (|) untuk menjamin content ditulis RAW, 
+    # tanpa interpretasi atau escaping tambahan.
+    content: |
+      {{ cosign_pub_key }}
     dest: "/tmp/cosign.pub"
     mode: '0644'
 
