@@ -1,0 +1,30 @@
+---
+# Deployment PostgreSQL di VM DB (User: db)
+
+- name: 1. Buat direktori project DB
+  file:
+    path: "{{ remote_db_dir }}"
+    state: directory
+    # Owner adalah user 'db'
+    owner: "{{ ansible_user }}" 
+    group: "{{ ansible_user }}"
+    mode: '0750'
+
+- name: 2. Copy docker-compose.yml DB
+  copy:
+    src: "../containers/db/docker-compose.yml"
+    dest: "{{ remote_db_dir }}/docker-compose.yml"
+
+- name: 3. Buat file .env untuk Database
+  copy:
+    dest: "{{ remote_db_dir }}/.env"
+    content: |
+      POSTGRES_DB=vulnerable_bank
+      POSTGRES_USER=postgres
+      POSTGRES_PASSWORD={{ db_password }}
+      DB_PORT=5432
+
+- name: 4. Jalankan Database Container
+  community.docker.docker_compose_v2:
+    project_src: "{{ remote_db_dir }}"
+    state: present

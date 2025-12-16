@@ -1,31 +1,68 @@
 ---
-- name: CIS | Disable root SSH login
+# Security Hardening dan OpenSCAP diterapkan ke kedua VM (Rocky Linux 7.6)
+
+- name: 1. Install Docker, Firewalld, dan OpenSCAP Tools
+  yum:
+    name:
+      - docker
+      - docker-compose-plugin
+      - firewalld
+      - scap-security-guide
+      - openscap-scanner
+      - openscap-utils
+    state: latest
+
+- name: 2. Start dan enable Docker dan Firewalld
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - docker
+    - firewalld
+
+# NOTE: {{ ansible_user }} akan menjadi 'hosting' di VM Hosting dan 'db' di VM DB.
+- name: 3. Tambahkan user Ansible ke grup docker
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: true
+    
+- name: 4. Disable root SSH login
   lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PermitRootLogin'
     line: 'PermitRootLogin no'
   notify: restart ssh
 
-- name: CIS | Disable password auth
+- name: 5. Disable password authentication
   lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PasswordAuthentication'
     line: 'PasswordAuthentication no'
   notify: restart ssh
 
-- name: CIS | Set sysctl protections
-  sysctl:
-    name: "{{ item.key }}"
-    value: "{{ item.value }}"
-    state: present
-    reload: yes
-  loop:
-    - { key: net.ipv4.ip_forward, value: 0 }
-    - { key: net.ipv4.conf.all.accept_redirects, value: 0 }
-    - { key: net.ipv4.conf.all.send_redirects, value: 0 }
+# =========================================================
+# OPENSCAP AUDIT & REMEDIATION (CIS/STIG Level 1)
+# =========================================================
 
-handlers:
-  - name: restart ssh
-    service:
-      name: sshd
-      state: restarted
+- name: 6. Menemukan Path ke SCAP Content File (RHEL 7)
+  find:
+    paths: /usr/share/xml/scap/ssg/content/
+    patterns: 'ssg-rhel7-ds.xml'
+    recurse: yes
+  register: scap_content_file
+
+- name: 7. Terapkan Remediasi Level 1 (Otomatis memperbaiki masalah)
+  when: scap_content_file.files | length > 0
+  command: >
+    oscap xccdf eval 
+    --remediate
+    --profile xccdf_org.ssgproject.content_profile_rhel7_server_stig_server
+    {{ scap_content_file.files | map(attribute='path') | first }}
+  register: scap_remediation_result
+  ignore_errors: true 
+  
+- name: 8. Tampilkan status OpenSCAP Remediasi (Debug)
+  debug:
+    msg: "OpenSCAP Remediation Status: {{ scap_remediation_result.stdout | default('N/A') }}"

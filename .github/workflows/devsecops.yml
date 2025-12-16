@@ -34,11 +34,14 @@ jobs:
       # 3. SCA (SNYK & TRIVY)
       # ====================================================
       - name: SCA Scan (Snyk)
-        uses: snyk/actions/node@master
+        # GANTI DARI uses: snyk/actions/node@master
+        uses: snyk/actions/docker@master 
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }} 
         with:
-          args: --all-projects --severity-threshold=high --json-file-output=snyk-results.json
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest 
+          args: --file=containers/app/Dockerfile --severity-threshold=high --json-file-output=snyk-results.json
         continue-on-error: true
 
       - name: SCA & Misconfig Scan (Trivy)

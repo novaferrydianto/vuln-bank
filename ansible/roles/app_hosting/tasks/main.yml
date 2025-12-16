@@ -1,19 +1,70 @@
 ---
-- name: Create app directory
+# Deployment Aplikasi di VM Hosting (User: hosting)
+
+- name: 1. Buat direktori project App
   file:
-    path: /opt/vuln-bank-app
+    path: "{{ remote_app_dir }}"
     state: directory
-    owner: hosting
-    group: hosting
+    # Owner adalah user 'hosting'
+    owner: "{{ ansible_user }}" 
+    group: "{{ ansible_user }}"
     mode: '0750'
+    
+- name: 2. Copy docker-compose.yml App
+  copy:
+    src: "../containers/app/docker-compose.yml"
+    dest: "{{ remote_app_dir }}/docker-compose.yml"
 
-- name: Install docker-compose plugin
-  dnf:
-    name: docker-compose-plugin
+# =========================================================
+# COSIGN VERIFICATION
+# =========================================================
+
+- name: 3. Buat file Kunci Publik Cosign
+  copy:
+    content: "{{ cosign_pub_key }}"
+    dest: "/tmp/cosign.pub"
+    mode: '0644'
+  
+- name: 4. Pull Image Terbaru Berdasarkan Digest
+  # Menggunakan Digest: [USER]/[IMAGE_NAME]@[DIGEST]
+  command: docker pull {{ docker_repo_user }}/vuln-bank@{{ image_digest }}
+  args:
+    chdir: "{{ remote_app_dir }}"
+
+- name: 5. Verifikasi Image Docker menggunakan Digest
+  # Memastikan image yang ditarik ditandatangani oleh kunci yang benar
+  command: cosign verify --key /tmp/cosign.pub {{ docker_repo_user }}/vuln-bank@{{ image_digest }}
+  args:
+    chdir: "{{ remote_app_dir }}"
+
+# =========================================================
+# DEPLOYMENT
+# =========================================================
+
+- name: 6. Buat file .env untuk Aplikasi
+  copy:
+    dest: "{{ remote_app_dir }}/.env"
+    content: |
+      DB_HOST={{ db_host }}
+      DB_PORT=5432
+      DB_NAME=vulnerable_bank
+      DB_USER=postgres
+      DB_PASSWORD={{ db_password }}
+      
+      FLASK_SECRET_KEY={{ app_secret }}
+      JWT_SECRET_KEY={{ jwt_secret }}
+      DEEPSEEK_API_KEY={{ deepseek_key }}
+      
+      APP_PORT=80
+      DEBUG=false
+
+- name: 7. Restart Container Aplikasi
+  community.docker.docker_compose_v2:
+    project_src: "{{ remote_app_dir }}"
     state: present
+    pull: never 
 
-- name: Add hosting user to docker group
-  user:
-    name: hosting
-    groups: docker
-    append: true
+- name: 8. Hapus Kunci Publik (Pembersihan)
+  file:
+    path: "/tmp/cosign.pub"
+    state: absent
