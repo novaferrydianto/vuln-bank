@@ -97,15 +97,14 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.3.0
 
-      # B. Sign Docker Image (Memastikan Image Asli)
       - name: Sign image with a key
         run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ secrets.DOCKER_USERNAME }}/vuln-bank:latest"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$DOCKER_USER/vuln-bank:latest"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }} 
 
-      # C. Generate SBOM (Software Bill of Materials) pakai Syft
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
@@ -122,7 +121,8 @@ jobs:
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
           
-          ansible-playbook -i inventory.ini playbooks/deploy.yml \
+          # MENGGUNAKAN PATH ANSIBLE/ UNTUK INVENTORY DAN SITE.YML
+          ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
             -e "db_password=${{ secrets.APP_DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
@@ -131,7 +131,8 @@ jobs:
             
           rm -f ~/.ssh/id_runner_temp
         env:
-          ANSIBLE_CONFIG: ./ansible.cfg
+          # MENGGUNAKAN PATH KE ANSIBLE.CFG DI DALAM FOLDER ANSIBLE/
+          ANSIBLE_CONFIG: ./ansible/ansible.cfg
 
       # ====================================================
       # 7. DAST (OWASP ZAP)
