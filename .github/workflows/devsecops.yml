@@ -59,8 +59,8 @@ jobs:
       # [BARU] Semgrep SAST - Scan pola kode tidak aman
       - name: SAST Scan (Semgrep)
         run: |
-          # Install semgrep via pip (lebih ringan untuk self-hosted daripada docker image penuh)
-          pip3 install semgrep
+          # Install semgrep via pip  <-- HAPUS BARIS INI
+          pip3 install semgrep       <-- HAPUS BARIS INI
           # Jalankan scan dengan ruleset security audit
           semgrep scan --config=p/security-audit --json --output=semgrep-results.json
         continue-on-error: true
