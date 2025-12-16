@@ -1,12 +1,11 @@
 ---
-# Deployment PostgreSQL di VM DB (User: db)
+# Deployment PostgreSQL di VM DB (User: db, Container Tool: Podman)
 
 - name: 1. Buat direktori project DB
   file:
     path: "{{ remote_db_dir }}"
     state: directory
-    # Owner adalah user 'db'
-    owner: "{{ ansible_user }}" 
+    owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
     mode: '0750'
 
@@ -24,7 +23,8 @@
       POSTGRES_PASSWORD={{ db_password }}
       DB_PORT=5432
 
-- name: 4. Jalankan Database Container
-  community.docker.docker_compose_v2:
-    project_src: "{{ remote_db_dir }}"
-    state: present
+- name: 4. Jalankan Database Container menggunakan podman-compose
+  # Menggunakan podman-compose untuk kompatibilitas dengan file docker-compose.yml
+  command: podman-compose up -d
+  args:
+    chdir: "{{ remote_db_dir }}"

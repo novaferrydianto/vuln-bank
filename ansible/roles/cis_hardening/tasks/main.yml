@@ -1,59 +1,100 @@
 ---
-# Security Hardening dan OpenSCAP diterapkan ke kedua VM (Rocky Linux 7.6)
+# Security Hardening, OpenSCAP, dan Container Runtime Setup untuk Rocky Linux 7.6
 
-- name: 1. Install Docker, Firewalld, dan OpenSCAP Tools
+- name: 1. Install Utilitas Dasar, Firewalld, dan OpenSCAP Tools
   yum:
     name:
-      - docker
-      - docker-compose-plugin
       - firewalld
       - scap-security-guide
       - openscap-scanner
       - openscap-utils
+      - python3-pip # Diperlukan untuk podman-compose
+      - policycoreutils-python-utils # Utilitas SELinux
     state: latest
+  tags: [install]
 
-- name: 2. Start dan enable Docker dan Firewalld
+- name: 2. Start dan enable Firewalld
   service:
-    name: "{{ item }}"
+    name: firewalld
     state: started
     enabled: yes
-  loop:
-    - docker
-    - firewalld
+  tags: [config]
 
-# NOTE: {{ ansible_user }} akan menjadi 'hosting' di VM Hosting dan 'db' di VM DB.
-- name: 3. Tambahkan user Ansible ke grup docker
-  user:
-    name: "{{ ansible_user }}"
-    groups: docker
-    append: true
-    
-- name: 4. Disable root SSH login
+# =========================================================
+# CONTAINER SETUP (KONDISIONAL)
+# =========================================================
+
+- name: 3. Setup Podman (Hanya untuk Host DB)
+  when: ansible_host == '192.168.107.129' # Hanya VM DB
+  block:
+    - name: 3.1 Install Podman
+      yum:
+        name: 
+          - podman
+          - podman-docker # Wrapper CLI
+        state: latest
+
+    - name: 3.2 Install podman-compose via PIP3
+      pip:
+        name: podman-compose
+        executable: pip3
+
+- name: 4. Setup Docker-CE (Hanya untuk Host Hosting)
+  when: ansible_host == '192.168.107.135' # Hanya VM Hosting
+  block:
+    - name: 4.1 Install Docker-CE dan atasi konflik Podman
+      yum:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: latest
+        # Harap pastikan repo docker-ce sudah ditambahkan ke VM target!
+        disablerepo: '*' 
+        enablerepo: 'extras,base,updates,docker-ce-stable' 
+
+    - name: 4.2 Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: 4.3 Tambahkan user 'hosting' ke grup docker
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+      # Perubahan grup memerlukan login ulang (reboot/shell restart)
+
+# =========================================================
+# CIS HARDENING & OPENSCAP
+# =========================================================
+
+- name: 5. Disable root SSH login
   lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PermitRootLogin'
     line: 'PermitRootLogin no'
   notify: restart ssh
+  tags: [security]
 
-- name: 5. Disable password authentication
+- name: 6. Disable password authentication
   lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PasswordAuthentication'
     line: 'PasswordAuthentication no'
   notify: restart ssh
+  tags: [security]
 
-# =========================================================
-# OPENSCAP AUDIT & REMEDIATION (CIS/STIG Level 1)
-# =========================================================
-
-- name: 6. Menemukan Path ke SCAP Content File (RHEL 7)
+- name: 7. Menemukan Path ke SCAP Content File (RHEL 7)
   find:
     paths: /usr/share/xml/scap/ssg/content/
     patterns: 'ssg-rhel7-ds.xml'
     recurse: yes
   register: scap_content_file
+  tags: [compliance]
 
-- name: 7. Terapkan Remediasi Level 1 (Otomatis memperbaiki masalah)
+- name: 8. Terapkan Remediasi Level 1 (Otomatis memperbaiki masalah)
   when: scap_content_file.files | length > 0
   command: >
     oscap xccdf eval 
@@ -62,7 +103,4 @@
     {{ scap_content_file.files | map(attribute='path') | first }}
   register: scap_remediation_result
   ignore_errors: true 
-  
-- name: 8. Tampilkan status OpenSCAP Remediasi (Debug)
-  debug:
-    msg: "OpenSCAP Remediation Status: {{ scap_remediation_result.stdout | default('N/A') }}"
+  tags: [compliance]

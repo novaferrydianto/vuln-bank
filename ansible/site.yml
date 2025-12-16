@@ -4,30 +4,31 @@
 # ==========================================
 - name: 1. Setup dan CIS Hardening pada Semua Host (Rocky Linux 7.6)
   hosts: all
-  become: yes # Diperlukan untuk instalasi paket dan hardening (Menggunakan sudo user hosting/db)
+  become: yes # Diperlukan untuk instalasi paket, hardening, dan service
   roles:
     - cis_hardening
 
 # ==========================================
-# PLAY 2: Deployment Database
+# PLAY 2: Deployment Database (Menggunakan Podman)
 # ==========================================
 - name: 2. Deployment Database Component
   hosts: db
   become: yes
   vars:
     remote_db_dir: "/opt/vuln-bank/db"
+    container_tool: podman # Variabel penanda untuk Role db_setup
   roles:
     - db_setup
 
 # ==========================================
-# PLAY 3: Deployment Aplikasi Web
+# PLAY 3: Deployment Aplikasi Web (Menggunakan Docker-CE)
 # ==========================================
 - name: 3. Deployment Application Component
   hosts: hosting
   become: yes
   vars:
     remote_app_dir: "/opt/vuln-bank/app"
-    db_host: "192.168.107.129" # IP DB (Diambil dari grup db)
-    docker_repo_user: YOUR_DOCKERHUB_USERNAME # Ganti dengan username Docker Anda
+    db_host: "192.168.107.129"
+    docker_repo_user: YOUR_DOCKERHUB_USERNAME # Pastikan ini diset di pipeline/extra-vars
   roles:
     - app_hosting
