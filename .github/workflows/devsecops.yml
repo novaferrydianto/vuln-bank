@@ -73,7 +73,7 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # 5. BUILD & PUSH IMAGE (DOCKER HUB)
+      # 5. BUILD & PUSH IMAGE (DOCKER HUB) - Capture Digest
       # ====================================================
       - name: Login to Docker Hub
         uses: docker/login-action@v2
@@ -82,38 +82,50 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and Push Docker Image
+        id: docker_build # Digunakan untuk merekam output
         uses: docker/build-push-action@v4
         with:
-          context: . 
+          context: .
           file: containers/app/Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
+          # Output Digest Image yang Immutable
+          outputs: type=image,names=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest,digest=true
+      
+      # Set Digest sebagai Environment Variable untuk langkah selanjutnya
+      - name: Set Image Digest Variable
+        run: |
+          IMAGE_DIGEST="${{ steps.docker_build.outputs.digest }}"
+          echo "IMAGE_REFERENCE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+          echo "Digest yang Digunakan: $IMAGE_DIGEST"
 
       # ====================================================
-      # 5.5 SUPPLY CHAIN SECURITY (SBOM & COSIGN) - [BARU]
+      # 5.5 SUPPLY CHAIN SECURITY (SBOM & COSIGN) - Menggunakan Digest
       # ====================================================
       
-      # A. Install Cosign Tool
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.3.0
 
+      # Sign Image menggunakan Digest (Fix UNAUTHORIZED dengan DOCKER_USER)
       - name: Sign image with a key
         run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$DOCKER_USER/vuln-bank:latest"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ env.IMAGE_REFERENCE_DIGEST }}"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          # DOCKER_USER digunakan oleh Cosign untuk auth
           DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }} 
 
+      # Generate SBOM menggunakan Digest
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
+          image: ${{ env.IMAGE_REFERENCE_DIGEST }}
           format: spdx-json
           output-file: sbom.spdx.json
 
       # ====================================================
-      # 6. DEPLOYMENT (ANSIBLE)
+      # 6. DEPLOYMENT (ANSIBLE) - Menggunakan Digest & Kunci Publik
       # ====================================================
       - name: Setup SSH Key & Deploy
         run: |
@@ -121,17 +133,18 @@ jobs:
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
           
-          # MENGGUNAKAN PATH ANSIBLE/ UNTUK INVENTORY DAN SITE.YML
+          # Eksekusi Ansible dengan path yang benar (ansible/) dan injeksi semua secret
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
             -e "db_password=${{ secrets.APP_DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
-            -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
+            -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
+            -e "image_digest=${{ env.IMAGE_REFERENCE_DIGEST }}" \
+            -e "cosign_pub_key=${{ secrets.COSIGN_PUBLIC_KEY }}" # Kunci untuk verifikasi
             
           rm -f ~/.ssh/id_runner_temp
         env:
-          # MENGGUNAKAN PATH KE ANSIBLE.CFG DI DALAM FOLDER ANSIBLE/
           ANSIBLE_CONFIG: ./ansible/ansible.cfg
 
       # ====================================================
@@ -175,11 +188,8 @@ jobs:
           upload_scan "snyk-results.json" "Snyk Scan"
           upload_scan "semgrep-results.json" "Semgrep JSON Report"
           
-          # [BARU] Upload SBOM ke DefectDojo (Opsional, tapi bagus)
-          # DefectDojo bisa membaca format SBOM untuk tracking komponen
+          # Upload SBOM ke DefectDojo
           upload_scan "sbom.spdx.json" "Generic Header Analysis" 
-          # Note: DefectDojo punya scan type khusus SBOM, tapi kadang perlu config plugin
-          # Jika error di step ini, bisa di-comment dulu.
 
       - name: Slack Notification
         if: always()
