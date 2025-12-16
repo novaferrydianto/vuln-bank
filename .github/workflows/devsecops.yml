@@ -142,7 +142,8 @@ jobs:
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
             -e "image_digest=${{ env.IMAGE_REFERENCE_DIGEST }}" \
             -e "cosign_pub_key=${{ secrets.COSIGN_PUBLIC_KEY }}" \
-            -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" # <--- TAMBAHAN KRUSIAL
+            -e "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}"
 
           rm -f ~/.ssh/id_runner_temp
         env:
