@@ -29,7 +29,7 @@ env:
   # =========================
   # DAST TARGET
   # =========================
-  DAST_TARGET_URL: http://192.168.107.135:5000
+  DAST_TARGET_URL: http://192.168.107.135:5500
 
   # =========================
   # SLACK
@@ -176,6 +176,11 @@ jobs:
       - name: Import ZAP to DefectDojo
         if: env.DEFECTDOJO_URL != ''
         run: |
+          if [ ! -f "${REPORT_DIR}/zap/zap_alerts.json" ]; then
+            echo "[SKIP] ZAP report not found, skipping DefectDojo import"
+            exit 0
+          fi
+
           curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
             -F "scan_type=ZAP Scan" \

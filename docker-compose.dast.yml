@@ -1,15 +1,15 @@
-version: "3.9"
-
 services:
   vuln-bank-dast:
-    image: vuln-bank:ci
+    image: xbash81/vuln-bank:latest
     container_name: vuln-bank-dast
     ports:
-      - "5000:5000"
+      - "5500:5000"
     environment:
       DB_HOST: db
       DB_USER: postgres
       DB_PASSWORD: dast
+    depends_on:
+      - db
     networks:
       - dastnet
 
