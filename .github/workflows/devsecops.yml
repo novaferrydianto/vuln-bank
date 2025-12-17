@@ -63,14 +63,10 @@ jobs:
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         run: |
-          if [ -z "${{ secrets.SONARQUBE_TOKEN }}" ]; then
-            echo "ERROR: SONARQUBE_TOKEN is empty!"
-            exit 1
-          fi
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
-            -Dsonar.host.url=http://192.168.107.132:9000 \
-            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -85,21 +81,42 @@ jobs:
     runs-on: self-hosted
     if: always()
     steps:
-      - name: Download Artifacts
+      - name: Download All Artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: all-reports # Mengumpulkan semua artifact ke satu folder utama
+
       - name: Push to DefectDojo API
+        env:
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DD_URL: "http://192.168.107.132:8080"
         run: |
-          upload() {
-            curl -X POST "http://192.168.107.132:8080/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
-            -F "active=true" -F "verified=true" \
-            -F "scan_type=$2" -F "product_name=Vuln Bank Python" \
-            -F "engagement_name=Build-${{ github.run_number }}" -F "file=@$1"
+          # Fungsi upload dengan pengecekan file
+          upload_to_dd() {
+            local FILE_PATH=$1
+            local SCAN_TYPE=$2
+            
+            if [ -f "$FILE_PATH" ]; then
+              echo "Uploading $SCAN_TYPE from $FILE_PATH..."
+              curl -X POST "$DD_URL/api/v2/import-scan/" \
+                -H "Authorization: Token $DD_TOKEN" \
+                -F "active=true" \
+                -F "verified=true" \
+                -F "scan_type=$SCAN_TYPE" \
+                -F "product_name=Vuln Bank Python" \
+                -F "engagement_name=Build-${{ github.run_number }}" \
+                -F "file=@$FILE_PATH"
+            else
+              echo "Warning: File $FILE_PATH not found, skipping $SCAN_TYPE."
+            fi
           }
-          upload "reports-trufflehog/trufflehog-report.json" "Trufflehog Scan"
-          upload "reports-safety/safety-report.json" "Safety Scan"
-          upload "reports-semgrep/semgrep-report.json" "Semgrep JSON Report"
-          upload "reports-trivy/trivy-report.json" "Trivy Scan"
+
+          # Sesuaikan path berdasarkan struktur download-artifact v4
+          # v4 biasanya membuat subfolder berdasarkan nama artifact
+          upload_to_dd "all-reports/reports-trufflehog/trufflehog-report.json" "Trufflehog Scan"
+          upload_to_dd "all-reports/reports-safety/safety-report.json" "Safety Scan"
+          upload_to_dd "all-reports/reports-semgrep/semgrep-report.json" "Semgrep JSON Report"
+          upload_to_dd "all-reports/reports-trivy/trivy-report.json" "Trivy Scan"
 
   # 4. TAHAP NOTIFIKASI & GUARDRAIL
   notifications:
