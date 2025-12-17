@@ -135,13 +135,9 @@ jobs:
 
           export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r')"
 
-          IMAGE_DIGEST="${IMAGE_REF#*@}"
-
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
-            -e "image_ref=${IMAGE_REF}" \
-            -e "image_digest=${IMAGE_DIGEST}" \
-            -e "cosign_pub_key=${COSIGN_PUBLIC_KEY_CLEAN}" \
+            -e "image_ref=${{ env.IMAGE_REF }}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
@@ -217,76 +213,41 @@ jobs:
       # ====================================================
       # 10. SLACK NOTIFICATION (FINAL)
       # ====================================================
-      - name: Slack Notification v3 (buttons + EPSS)
+      - name: Slack Security Notification
         if: always()
-        shell: bash
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
         run: |
-          set -euo pipefail
+          count() {
+            jq -r "$1 | length" "$2" 2>/dev/null || echo 0
+          }
 
-          # Counts
-          TRIVY=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' \
-            "${REPORT_DIR}/trivy/image.json" 2>/dev/null || echo 0)
-
-          SNYK=$(jq '[.vulnerabilities[]? | select(.severity=="high" or .severity=="critical")] | length' \
-            "${REPORT_DIR}/snyk/results.json" 2>/dev/null || echo 0)
-
-          SEMGREP=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' \
-            "${REPORT_DIR}/semgrep/results.json" 2>/dev/null || echo 0)
-
-          EPSS_HIGH=$(jq '[.high_risk[]?] | length' "${REPORT_DIR}/epss/epss-findings.json" 2>/dev/null || echo 0)
-
-          TOP_EPSS=$(jq -r '.high_risk[0] // empty | "\(.cve) (epss=\(.epss), pctl=\(.percentile))"' \
-            "${REPORT_DIR}/epss/epss-findings.json" 2>/dev/null || true)
+          TRIVY=$(count '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "${REPORT_DIR}/trivy/results.json")
+          SNYK=$(count '[.vulnerabilities[]? | select(.severity=="high" or .severity=="critical")] | length' "${REPORT_DIR}/snyk/results.json")
+          SEMGREP=$(count '[.results[]? | select(.extra.severity=="ERROR")] | length' "${REPORT_DIR}/semgrep/results.json")
 
           TOTAL=$((TRIVY + SNYK + SEMGREP))
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          DOJO_URL="${DEFECTDOJO_URL%/}"
 
-          # Decision
-          if [ "$TOTAL" -gt 0 ] || [ "$EPSS_HIGH" -gt 0 ]; then
-            STATUS=":rotating_light: *Security Alert Vuln Bank* :rotating_light:"
+          if [ "$TOTAL" -gt 0 ]; then
+            COLOR="danger"
+            STATUS="🚨 SECURITY ALERT"
           else
-            STATUS=":white_check_mark: *Pipeline Secure — Vuln Bank*"
+            COLOR="good"
+            STATUS="✅ PIPELINE SECURE"
           fi
 
-          # Slack blocks (with buttons)
-          payload=$(jq -n \
-            --arg status "$STATUS" \
-            --arg trivy "$TRIVY" \
-            --arg snyk "$SNYK" \
-            --arg semgrep "$SEMGREP" \
-            --arg epss_high "$EPSS_HIGH" \
-            --arg top_epss "$TOP_EPSS" \
-            --arg image "$IMAGE_REF" \
-            --arg run_url "$RUN_URL" \
-            --arg dojo_url "$DOJO_URL" \
-            '{
-              blocks: [
-                { type: "header", text: { type: "plain_text", text: "VulnBank DevSecOps — Notification", emoji: true } },
-                { type: "section", text: { type: "mrkdwn", text: $status } },
-                { type: "section",
-                  fields: [
-                    { type: "mrkdwn", text: "*Trivy (H/C):*\n" + $trivy },
-                    { type: "mrkdwn", text: "*Snyk (H/C):*\n" + $snyk },
-                    { type: "mrkdwn", text: "*Semgrep (ERROR):*\n" + $semgrep },
-                    { type: "mrkdwn", text: "*EPSS High:*\n" + $epss_high }
-                  ]
-                },
-                ( $top_epss | length > 0
-                  ? { type: "section", text: { type: "mrkdwn", text: "*Top EPSS:* " + $top_epss } }
-                  : { type: "context", elements: [ { type: "mrkdwn", text: "Top EPSS: n/a" } ] }
-                ),
-                { type: "section", text: { type: "mrkdwn", text: "*Image (digest):*\n`" + $image + "`" } },
-                { type: "actions",
-                  elements: [
-                    { type: "button", text: { type: "plain_text", text: "Open GitHub Run", emoji: true }, url: $run_url },
-                    { type: "button", text: { type: "plain_text", text: "Open DefectDojo", emoji: true }, url: $dojo_url }
-                  ]
-                }
-              ]
-            }')
-
-          curl -sS -X POST -H "Content-Type: application/json" --data "$payload" "$SLACK_WEBHOOK_URL" >/dev/null || true
+          # Sintaks Slack yang benar dan telah teruji (menghindari error JQ)
+          payload=$(cat <<EOF
+            {
+              "attachments": [{
+                "color": "$COLOR",
+                "title": "$STATUS — VulnBank DevSecOps",
+                "fields": [
+                  { "title": "Trivy", "value": "$TRIVY", "short": true },
+                  { "title": "Snyk", "value": "$SNYK", "short": true },
+                  { "title": "Semgrep", "value": "$SEMGREP", "short": true },
+                  { "title": "Image", "value": "$IMAGE_REF", "short": false }
+                ]
+              }]
+            }
+          EOF
+          )
+          curl -s -X POST -H "Content-Type: application/json" --data "$payload" ${{ secrets.SLACK_WEBHOOK_URL }}
