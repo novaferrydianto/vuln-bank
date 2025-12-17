@@ -456,6 +456,20 @@ jobs:
           
           rm -f ~/.ssh/id_runner_temp
 
+      - name: Notify Slack on Success
+        # Hanya jalan jika step 'Execute Ansible' berhasil
+        if: success()
+        shell: bash
+        env:
+          SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
+        run: |
+          msg="🚀 *Deployment Success!* (Run #${{ github.run_number }})\n• *App:* ${{ env.APP_NAME }}\n• *Image:* \`${IMAGE_REF}\` \n• *Target:* ${{ env.APP_URL }}\n• *Status:* Successfully deployed via Ansible."
+          
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data "$(jq -n --arg text "$msg" '{text:$text}')" \
+            "$SLACK_URL" >/dev/null
+
   # ---------------------------------------------------------
   # 7. DAST
   # ---------------------------------------------------------
