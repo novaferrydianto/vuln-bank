@@ -13,7 +13,7 @@ permissions:
 
 env:
   REPORT_DIR: security-reports
-  ZAP_TARGET_URL: http://192.168.107.135:5000 # Target DAST yang di-deploy Ansible
+  ZAP_TARGET_URL: http://192.168.107.135:5000
 
 jobs:
   security-pipeline:
@@ -32,7 +32,7 @@ jobs:
       # ====================================================
       # 2. SECRET SCAN
       # ====================================================
-      - name: TruffleHog (Secret Scan)
+      - name: TruffleHog
         uses: trufflesecurity/trufflehog@main
         with:
           path: .
@@ -42,12 +42,12 @@ jobs:
       # ====================================================
       # 3. SAST
       # ====================================================
-      - name: Semgrep (SAST)
+      - name: Semgrep
         run: semgrep scan --config=p/security-audit --json > ${REPORT_DIR}/semgrep/results.json
         continue-on-error: true
 
       # ====================================================
-      # 4. BUILD & DIGEST (KRITIS)
+      # 4. BUILD & DIGEST
       # ====================================================
       - name: Login Docker Hub
         uses: docker/login-action@v2
@@ -72,9 +72,8 @@ jobs:
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:buildcache,mode=max
           provenance: false
 
-      - name: Capture Image Digest (Set ENV: IMAGE_REF)
+      - name: Capture Image Digest
         run: |
-          # IMAGE_REF akan berisi: user/repo@sha256:digest_value
           echo "IMAGE_REF=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
 
       # ====================================================
@@ -102,7 +101,7 @@ jobs:
         continue-on-error: true
 
       # ====================================================
-      # 6. SUPPLY CHAIN (COSIGN & SBOM)
+      # 6. SUPPLY CHAIN
       # ====================================================
       - uses: sigstore/cosign-installer@v3
 
@@ -153,7 +152,7 @@ jobs:
           ANSIBLE_CONFIG: ./ansible/ansible.cfg
 
       # ====================================================
-      # 8. DAST (ZAP - Custom Docker Run untuk mengatasi izin)
+      # 8. DAST (ZAP SAFE MODE)
       # ====================================================
       - name: ZAP Baseline Scan
         continue-on-error: true
@@ -161,7 +160,6 @@ jobs:
           ZAP_DIR="$RUNNER_TEMP/zap"
           mkdir -p "$ZAP_DIR"
 
-          # Menggunakan Docker Run dan Volume untuk mengatasi masalah izin Self-Hosted Runner
           docker run --rm --network=host \
             -v "$ZAP_DIR:/zap/wrk" \
             ghcr.io/zaproxy/zaproxy:stable \
@@ -170,11 +168,10 @@ jobs:
               -a \
               -J /zap/wrk/report.json
 
-          # Menyalin laporan ke direktori report pusat
           cp "$ZAP_DIR/report.json" ${REPORT_DIR}/zap/report.json
 
       # ====================================================
-      # 9. DEFECTDOJO (Upload Spesifik)
+      # 9. DEFECTDOJO (Perbaikan Final Scan Type)
       # ====================================================
       - name: Upload to DefectDojo
         env:
@@ -185,6 +182,7 @@ jobs:
           upload_file() {
             FILE=$1; SCAN_TYPE=$2
             
+            # Menggunakan DEFECTDOJO_URL & DEFECTDOJO_API_KEY yang sudah ada di env
             DOJO_URL="${DEFECTDOJO_URL}"
             DOJO_KEY="${DEFECTDOJO_API_KEY}"
             ENGAGEMENT_ID="${DEFECTDOJO_ENGAGEMENT_ID}"
@@ -192,7 +190,7 @@ jobs:
             [ -f "$FILE" ] || { echo "[SKIP] $FILE not found (Skipping $SCAN_TYPE)"; return; }
             
             echo "Uploading $SCAN_TYPE from $FILE..."
-            curl -sS -X POST \
+            curl -s -X POST \
               "$DOJO_URL/api/v2/import-scan/" \
               -H "Authorization: Token $DOJO_KEY" \
               -F "file=@$FILE" \
@@ -208,7 +206,7 @@ jobs:
           upload_file "${REPORT_DIR}/trivy/results.json" "Trivy Scan"
           upload_file "${REPORT_DIR}/semgrep/results.json" "Semgrep JSON Report"
 
-          # 2. ZAP DAST (Menggunakan ZAP Scan untuk JSON)
+          # 2. ZAP DAST (Wajib menggunakan ZAP Scan, mencoba JSON)
           upload_file "${REPORT_DIR}/zap/report.json" "ZAP Scan"
 
           # 3. SBOM (Wajib menggunakan SPDX Scan)
