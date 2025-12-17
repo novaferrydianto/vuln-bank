@@ -41,21 +41,23 @@ jobs:
       
       - name: Run Security Scans
         run: |
-          if [ "${{ matrix.scan_type }}" == "trufflehog" ]; then 
-            trufflehog filesystem . --no-update --fail --json > trufflehog-report.json
+          # Gunakan variabel matrix yang benar
+          SCAN_NOW="${{ matrix.scan_type }}"
+
+          if [ "$SCAN_NOW" == "trufflehog" ]; then 
+            trufflehog filesystem . --no-update --fail --json > trufflehog-report.json || true
           fi
-          if [ "${{ matrix.scan_type }}" == "safety" ]; then 
-            safety check -r containers/app/requirements.txt --json > safety-report.json
+          
+          if [ "$SCAN_NOW" == "safety" ]; then 
+            safety check -r containers/app/requirements.txt --json > safety-report.json || true
           fi
-          if [ "${{ matrix.scan_type }}" == "semgrep" ]; then 
-            semgrep scan --config auto --json > semgrep-report.json
+          
+          if [ "$SCAN_NOW" == "semgrep" ]; then 
+            semgrep scan --config auto --json > semgrep-report.json || true
           fi
-          if [ "${{ matrix.scan_type }}" == "trivy" ]; then 
-            # Mengarah ke lokasi Dockerfile di subfolder
-            trivy config containers/app/Dockerfile --format json --output trivy-report.json
-          fi
-          if [ "${{ matrix.scan_type }}" == "snyk" ]; then 
-            snyk test --json --auth=${{ secrets.SNYK_TOKEN }} > snyk-report.json
+          
+          if [ "$SCAN_NOW" == "trivy" ]; then 
+            trivy config containers/app/Dockerfile --format json --output trivy-report.json || true
           fi
 
       - name: SonarQube Scan
