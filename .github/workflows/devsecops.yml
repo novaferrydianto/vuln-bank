@@ -6,10 +6,11 @@ on:
   pull_request:
     branches: ["main"]
 
+  # Konfigurasi Pemicu Manual
   workflow_dispatch:
     inputs:
       skip_deploy:
-        description: 'Lewati Deployment ke Ansible?'
+        description: 'Lewati Build & Deployment ke Ansible?'
         required: true
         default: 'false'
         type: choice
@@ -21,7 +22,7 @@ permissions:
   contents: read
   security-events: write
   issues: write
-  id-token: write
+  id-token: write # WAJIB untuk Cosign Keyless signing
 
 concurrency:
   group: vuln-bank-${{ github.workflow }}-${{ github.ref }}
@@ -34,7 +35,7 @@ env:
 
   # Docker
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
-  IMAGE_TAG: ${{ github.sha }} # immutable tag
+  IMAGE_TAG: ${{ github.sha }} 
   DOCKERFILE_PATH: containers/app/Dockerfile
   REQUIREMENTS_PATH: containers/app/requirements.txt
 
@@ -46,8 +47,6 @@ env:
 
   # Slack
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-  # Policy (tune thresholds)
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
 
 jobs:
@@ -347,6 +346,10 @@ jobs:
     name: Build + Push + Sign + SBOM
     needs: security_scans
     runs-on: self-hosted
+    if: |
+      always() && 
+      needs.build_and_sign.result == 'success' && 
+      github.event.inputs.skip_deploy != 'true'
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
     steps:
