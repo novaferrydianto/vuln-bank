@@ -41,3 +41,16 @@
     podman-compose up -d
   args:
     chdir: "{{ remote_db_dir }}"
+
+- name: 5. Allow PostgreSQL from Hosting VM
+  become: yes
+  firewalld:
+    rich_rule: 'rule family="ipv4" source address="192.168.107.135" port port="5432" protocol="tcp" accept'
+    permanent: yes
+    state: enabled
+
+- name: 6. Reload firewalld agar aturan aktif
+  become: yes
+  service:
+    name: firewalld
+    state: reloaded
