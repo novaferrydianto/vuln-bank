@@ -67,7 +67,17 @@ jobs:
           fi
 
           # Common scanners
-          pip install -q safety semgrep
+          pip install -q safety
+
+          # Semgrep via pipx (isolated & stable)
+          if ! command -v semgrep >/dev/null 2>&1; then
+            if ! command -v pipx >/dev/null 2>&1; then
+              sudo dnf install -y pipx
+            fi
+
+            export PATH="$HOME/.local/bin:$PATH"
+            pipx install --force semgrep
+          fi
 
           # Ensure tools exist on runner (recommend pre-baked runner image)
           command -v trivy >/dev/null 2>&1 || echo "[WARN] trivy not found on runner"
@@ -235,7 +245,7 @@ jobs:
 
           # TruffleHog: count verified findings roughly by counting JSON objects
           if [ -f "$TRUFFLE" ]; then
-            c=$(jq -s 'length' "$TRUFFLE" 2>/dev/null || echo 0)
+            c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l || echo 0)
             if [ "$c" -gt 0 ]; then
               crit=$((crit + c))
               notes+=("TruffleHog verified secrets: $c")
@@ -331,6 +341,10 @@ jobs:
             exit 0
           fi
 
+          # Hard fail if IDs are missing (prevents silent bad uploads)
+          : "${DEFECTDOJO_PRODUCT_ID:?DEFECTDOJO_PRODUCT_ID is required}"
+          : "${DEFECTDOJO_ENGAGEMENT_ID:?DEFECTDOJO_ENGAGEMENT_ID is required}"
+
           upload_to_dd() {
             local file="$1"
             local scan_type="$2"
@@ -338,10 +352,11 @@ jobs:
               echo "Uploading $scan_type from $file"
               curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
                 -H "Authorization: Token ${DD_TOKEN}" \
-                -F "active=true" -F "verified=true" \
+                -F "active=true" \
+                -F "verified=true" \
                 -F "scan_type=${scan_type}" \
-                -F "product_name=${DEFECTDOJO_PRODUCT_NAME}" \
-                -F "engagement_name=${DEFECTDOJO_ENGAGEMENT_NAME}" \
+                -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+                -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
                 -F "file=@${file}" >/dev/null
             else
               echo "[WARN] Missing: $file"
