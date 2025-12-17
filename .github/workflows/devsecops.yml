@@ -9,8 +9,8 @@ on:
   # Konfigurasi Pemicu Manual
   workflow_dispatch:
     inputs:
-      skip_deploy:
-        description: 'Lewati Build & Deployment ke Ansible?'
+      run_full_deploy:
+        description: 'Konfirmasi: Jalankan Build, Push & Deploy ke Ansible?'
         required: true
         default: 'false'
         type: choice
@@ -101,7 +101,7 @@ jobs:
     name: Security Scans (Parallel)
     needs: setup
     runs-on: self-hosted
-    continue-on-error: true
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:
@@ -204,7 +204,7 @@ jobs:
     name: Gate + Slack + Step Summary
     needs: security_scans
     runs-on: self-hosted
-    continue-on-error: true
+    continue-on-error: false
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -347,9 +347,9 @@ jobs:
     needs: security_scans
     runs-on: self-hosted
     if: |
-      always() && 
-      needs.build_and_sign.result == 'success' && 
-      github.event.inputs.skip_deploy != 'true'
+      always() &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.run_full_deploy == 'true'
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
     steps:
@@ -423,10 +423,7 @@ jobs:
     name: Deploy (Ansible)
     needs: build_and_sign
     runs-on: self-hosted
-    if: |
-      always() && 
-      needs.build_and_sign.result == 'success' && 
-      github.event.inputs.skip_deploy != 'true'
+    if: needs.build_and_sign.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
