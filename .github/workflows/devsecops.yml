@@ -98,7 +98,7 @@ jobs:
               curl -X POST "$DD_URL/api/v2/import-scan/" \
                 -H "Authorization: Token $DD_TOKEN" \
                 -F "active=true" -F "verified=true" \
-                -F "scan_type=$2" -F "product_name=Vuln Bank Python" \
+                -F "scan_type=$2" -F "product_name=Vuln Bank" \
                 -F "engagement_name=Build-${{ github.run_number }}" -F "file=@$1"
             fi
           }
