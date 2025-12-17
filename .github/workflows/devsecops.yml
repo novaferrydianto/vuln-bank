@@ -133,20 +133,19 @@ jobs:
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
 
-          # Membersihkan kunci publik untuk diteruskan ke VM hosting
           COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r')"
 
-          # KRITIS: Menggunakan image_ref sebagai variabel Ansible untuk sinkronisasi
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
-            -e "image_ref=${{ env.IMAGE_REF }}" \ # Variabel yang dicari Ansible Playbook yang sudah diperbaiki
+            -e "image_ref=${{ env.IMAGE_REF }}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
-            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}"
-
+            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" 
+            # KRITIS: Baris ini adalah argumen terakhir. Hapus semua '\' setelahnya.
+            
           rm -f ~/.ssh/id_runner_temp
         env:
           ANSIBLE_CONFIG: ./ansible/ansible.cfg
