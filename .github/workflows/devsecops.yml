@@ -356,23 +356,30 @@ jobs:
   # 6. DEPLOY (uses needs output, falls back to artifact)
   # ---------------------------------------------------------
   deploy:
+    name: Deploy (Ansible) + Verify Signature
     needs: build_and_sign
     runs-on: self-hosted
     steps:
-      - name: Deploy via Ansible
+      - uses: actions/checkout@v4
+
+      - name: Execute Ansible deployment
         shell: bash
         env:
-          # Ambil dari outputs job build_and_sign
+          # Pastikan mengambil dari output job sebelumnya
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
-          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
           set -euo pipefail
-
-          IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
+          
+          # JANGAN tambahkan IMAGE_REF="" di sini!
           echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
+          
+          # Validasi apakah variabel sampai
+          if [ -z "${IMAGE_REF}" ]; then
+            echo "[FATAL] IMAGE_REF is still empty from GitHub Outputs."
+            exit 1
+          fi
 
-          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
+          ansible-galaxy collection install community.docker
 
           ansible-galaxy collection install community.docker
 
