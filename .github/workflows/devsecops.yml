@@ -334,10 +334,11 @@ jobs:
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
   # ---------------------------------------------------------
   build_and_sign:
-    name: Build + Push + Resolve Digest
+    name: Build + Push (authoritative digest)
     runs-on: self-hosted
     outputs:
-      image_ref: ${{ steps.resolve.outputs.image_ref }}
+      image_ref: ${{ steps.export.outputs.image_ref }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -351,6 +352,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and Push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -359,18 +361,14 @@ jobs:
           tags: |
             ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
 
-      - name: Resolve digest (SAFE)
-        id: resolve
+      - name: Export immutable image ref (OFFICIAL)
+        id: export
         shell: bash
         run: |
           set -euo pipefail
 
-          DIGEST="$(docker buildx imagetools inspect \
-            "${DOCKERHUB_REPO}:${IMAGE_TAG}" \
-            --format '{{.Manifest.Digest}}' | tr -d '\n')"
-
-          echo "Resolved DIGEST=${DIGEST}"
-          test -n "${DIGEST}"
+          DIGEST="${{ steps.build.outputs.digest }}"
+          test -n "${DIGEST}" || { echo "[FATAL] digest empty"; exit 1; }
 
           IMAGE_REF="${DOCKERHUB_REPO}@${DIGEST}"
           echo "IMAGE_REF=${IMAGE_REF}"
@@ -393,7 +391,8 @@ jobs:
 
           IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
           echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
-          test -n "${IMAGE_REF}"
+
+          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
 
           ansible-galaxy collection install community.docker
 
