@@ -42,11 +42,10 @@
     username: "{{ dockerhub_username }}"
     password: "{{ dockerhub_token }}"
 
-- name: 4. Pull Image Terbaru Berdasarkan Digest
-  # KRITIS: Menggunakan {{ image_ref }} yang dikirim dari GitHub Actions
-  command: docker pull {{ image_ref }}
-  args:
-    chdir: "{{ remote_app_dir }}"
+- name: 4. Pull Image Terbaru Berdasarkan Digest (Module)
+  community.docker.docker_image:
+    name: "{{ image_ref }}"
+    source: pull
 
 - name: 5. Verifikasi Image Docker menggunakan Digest
   # KRITIS: Menggunakan {{ image_ref }}
@@ -105,3 +104,7 @@
   file:
     path: "/tmp/cosign.pub"
     state: absent
+
+- name: 9. Hapus Image Tak Terpakai (Dangling)
+  shell: docker image prune -f
+  tags: cleanup
