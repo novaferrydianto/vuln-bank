@@ -350,9 +350,18 @@ jobs:
 
       - name: Install Tools (Cosign & Syft)
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
+          # Buat direktori bin lokal di home user
+          mkdir -p $HOME/.local/bin
+          
+          # Install Syft ke direktori lokal
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
+          
+          # Install Cosign ke direktori lokal
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o $HOME/.local/bin/cosign
+          chmod +x $HOME/.local/bin/cosign
+          
+          # Tambahkan ke PATH agar bisa dipanggil di step berikutnya
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Build and Push
         id: build
