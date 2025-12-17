@@ -401,9 +401,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v syft >/dev/null 2>&1; then
-            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
-          fi
+          mkdir -p $HOME/.local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Docker Login
         uses: docker/login-action@v3
