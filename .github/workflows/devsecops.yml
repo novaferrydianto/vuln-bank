@@ -5,7 +5,17 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+
   workflow_dispatch:
+    inputs:
+      skip_deploy:
+        description: 'Lewati Deployment ke Ansible?'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 permissions:
   contents: read
@@ -410,6 +420,10 @@ jobs:
     name: Deploy (Ansible)
     needs: build_and_sign
     runs-on: self-hosted
+    if: |
+      always() && 
+      needs.build_and_sign.result == 'success' && 
+      github.event.inputs.skip_deploy != 'true'
     steps:
       - uses: actions/checkout@v4
 
