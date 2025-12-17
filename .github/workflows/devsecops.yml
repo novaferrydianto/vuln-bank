@@ -24,7 +24,7 @@ jobs:
             pip install -r containers/app/requirements.txt
           fi
           pip install safety semgrep
-
+          
   # 2. TAHAP SECURITY SCANNING (PARALLEL)
   security_scans:
     name: Security Analysis
@@ -42,13 +42,9 @@ jobs:
       # --- TRUFFLEHOG OFFICIAL ACTION ---
       - name: TruffleHog Secret Scan
         if: matrix.scan_type == 'trufflehog'
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: .
-          base: "" 
-          head: HEAD
-          extra_args: --json --only-verified | tee trufflehog-report.json
-
+        run: |
+          # Menggunakan binary lokal agar pipe '|' berfungsi mengalihkan output ke file
+          trufflehog git file://$(pwd) --json --only-verified --fail --no-update > trufflehog-report.json || true
       # --- TOOLS LAINNYA ---
       - name: Run Security Scans
         if: matrix.scan_type != 'trufflehog' && matrix.scan_type != 'sonarqube'
@@ -67,7 +63,6 @@ jobs:
               snyk test --json --auth=${{ secrets.SNYK_TOKEN }} > snyk-report.json || true
               ;;
           esac
-
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         run: |
@@ -75,7 +70,6 @@ jobs:
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
             -Dsonar.login=${{ secrets.SONAR_TOKEN }}
-
       - name: Upload Artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
