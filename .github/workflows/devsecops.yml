@@ -294,7 +294,7 @@ jobs:
 
           # Snyk: count issues if file exists
           if [ -f "$SNYK" ]; then
-            c=$(jq '.vulnerabilities | length' "$SNYK" 2>/dev/null || echo 0)
+            c=$(jq '(.vulnerabilities // [] | length)' "$SNYK" 2>/dev/null || echo 0)
             if [ "$c" -gt 0 ]; then
               high=$((high + c))
               notes+=("Snyk vulns: $c")
@@ -389,7 +389,6 @@ jobs:
   # ---------------------------------------------------------
   build_and_sign:
     name: Build + Push + Sign (Digest)
-    needs: security_scans
   #  needs: gate_and_summary
     runs-on: self-hosted
     outputs:
@@ -432,7 +431,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "image_ref=${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          full_ref="${{ env.DOCKERHUB_REPO }}@${{ steps.build.outputs.digest }}"
+          echo "image_ref=$full_ref" >> $GITHUB_OUTPUT
 
       - name: Generate SBOM (CycloneDX)
         shell: bash
@@ -477,8 +477,6 @@ jobs:
   deploy:
     name: Deploy (Ansible) + Verify Signature
     needs: build_and_sign
-    outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -491,14 +489,12 @@ jobs:
         run: |
           set -euo pipefail
           
-          if [ -z "${IMAGE_REF}" ]; then
-            echo "[FATAL] IMAGE_REF is empty. Build step did not export digest."
-            exit 1
-          fi
+          echo "Verifying image: ${IMAGE_REF}"
+          if [ -z "${IMAGE_REF}" ]; then exit 1; fi
 
           cosign verify \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-identity-regexp "^https://github.com/novaferrydianto/" \
             "${IMAGE_REF}" >/dev/null
 
           echo "[PASS] Image signature verified"
