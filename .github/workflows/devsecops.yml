@@ -37,14 +37,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Penting untuk TruffleHog scan history
+          fetch-depth: 0 
 
       # --- TRUFFLEHOG OFFICIAL ACTION ---
       - name: TruffleHog Secret Scan
         if: matrix.scan_type == 'trufflehog'
         run: |
-          # Menggunakan binary lokal agar pipe '|' berfungsi mengalihkan output ke file
           trufflehog git file://$(pwd) --json --only-verified --fail --no-update > trufflehog-report.json || true
+
       # --- TOOLS LAINNYA ---
       - name: Run Security Scans
         if: matrix.scan_type != 'trufflehog' && matrix.scan_type != 'sonarqube'
@@ -63,6 +63,7 @@ jobs:
               snyk test --json --auth=${{ secrets.SNYK_TOKEN }} > snyk-report.json || true
               ;;
           esac
+
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         run: |
@@ -70,6 +71,7 @@ jobs:
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
             -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+
       - name: Upload Artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
@@ -91,15 +93,23 @@ jobs:
 
       - name: Push to DefectDojo API
         env:
+          # PASTIKAN DUA VARIABEL INI ADA DI SINI
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
+          DD_URL: "http://192.168.107.132:8080" 
         run: |
+          # Debugging singkat untuk memastikan URL terbaca
+          echo "Target URL: $DD_URL"
+          
           upload_to_dd() {
             if [ -f "$1" ]; then
+              echo "Uploading $2 from $1..."
               curl -X POST "$DD_URL/api/v2/import-scan/" \
                 -H "Authorization: Token $DD_TOKEN" \
                 -F "active=true" -F "verified=true" \
-                -F "scan_type=$2" -F "product_name=$DD_PRODUCT_NAME" \
+                -F "scan_type=$2" -F "product_name=Vuln Bank Python" \
                 -F "engagement_name=Build-${{ github.run_number }}" -F "file=@$1"
+            else
+              echo "File $1 tidak ditemukan."
             fi
           }
           upload_to_dd "all-reports/reports-trufflehog/trufflehog-report.json" "Trufflehog Scan"
