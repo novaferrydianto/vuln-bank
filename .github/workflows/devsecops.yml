@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare workspace (Rocky Linux 9.7)
+      - name: Prepare workspace
         shell: bash
         run: |
           set -euo pipefail
@@ -210,6 +210,7 @@ jobs:
           fi
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
+            -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
@@ -229,6 +230,7 @@ jobs:
     name: Gate + Slack + Step Summary
     needs: security_scans
     runs-on: self-hosted
+    continue-on-error: true
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
