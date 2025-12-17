@@ -20,6 +20,7 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
+    # Catatan: Variabel COSIGN_PUBLIC_KEY_CLEAN diekspor di run block GitHub Actions
     content: "{{ lookup('env', 'COSIGN_PUBLIC_KEY_CLEAN') | trim }}"
     dest: /tmp/cosign.pub
     mode: '0644'
@@ -28,30 +29,31 @@
 - name: Assert required deployment variables
   ansible.builtin.assert:
     that:
-      - image_ref is defined
+      # Variabel diubah dari 'image_digest' menjadi 'image_ref'
+      - image_ref is defined 
       - dockerhub_username is defined
       - dockerhub_token is defined
       - db_password is defined
     fail_msg: "Required deployment variables are missing"
 
 - name: 3.5 Login ke Docker Hub pada Host Target (KRITIS)
-  # Menjalankan login docker di VM hosting menggunakan user hosting
   community.docker.docker_login:
     registry_url: https://index.docker.io/v1/
     username: "{{ dockerhub_username }}"
     password: "{{ dockerhub_token }}"
 
 - name: 4. Pull Image Terbaru Berdasarkan Digest
-  # Menggunakan Digest: [USER]/[IMAGE_NAME]@[DIGEST]
-  command: docker pull {{ dockerhub_username }}/vuln-bank@{{ image_digest }}
+  # KRITIS: Menggunakan {{ image_ref }} yang dikirim dari GitHub Actions
+  command: docker pull {{ image_ref }}
   args:
     chdir: "{{ remote_app_dir }}"
 
 - name: 5. Verifikasi Image Docker menggunakan Digest
+  # KRITIS: Menggunakan {{ image_ref }}
   shell: >
     /usr/local/bin/cosign verify
     --key /tmp/cosign.pub
-    {{ dockerhub_username }}/vuln-bank@{{ image_digest }}
+    {{ image_ref }}
   args:
     chdir: "{{ remote_app_dir }}"
   register: cosign_verify
@@ -84,7 +86,8 @@
       # =========================
       # IMAGE (IMMUTABLE, DIGEST)
       # =========================
-      IMAGE_WITH_TAG={{ dockerhub_username }}/vuln-bank@{{ image_digest }}
+      # KRITIS: Menggunakan {{ image_ref }} yang memuat full image reference
+      IMAGE_WITH_TAG={{ image_ref }} 
 
       # =========================
       # APP CONFIG

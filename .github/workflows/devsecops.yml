@@ -137,14 +137,13 @@ jobs:
 
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_runner_temp \
+            -e "image_digest=${IMAGE_REF}" \
+            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
-            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
-            -e "image_ref=$IMAGE_REF" \
-            -e "cosign_pub_key=$COSIGN_PUBLIC_KEY_CLEAN" \
-            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
-            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
+            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}"
 
           rm -f ~/.ssh/id_runner_temp
         env:
@@ -170,7 +169,7 @@ jobs:
           cp "$ZAP_DIR/report.json" ${REPORT_DIR}/zap/report.json
 
       # ====================================================
-      # 9. DEFECTDOJO
+      # 9. DEFECTDOJO (Perbaikan Final Scan Type)
       # ====================================================
       - name: Upload to DefectDojo
         env:
@@ -178,15 +177,38 @@ jobs:
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
           DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
         run: |
-          for f in ${REPORT_DIR}/**/*.json; do
-            [ -f "$f" ] || continue
+          upload_file() {
+            FILE=$1; SCAN_TYPE=$2
+            
+            # Menggunakan DEFECTDOJO_URL & DEFECTDOJO_API_KEY yang sudah ada di env
+            DOJO_URL="${DEFECTDOJO_URL}"
+            DOJO_KEY="${DEFECTDOJO_API_KEY}"
+            ENGAGEMENT_ID="${DEFECTDOJO_ENGAGEMENT_ID}"
+            
+            [ -f "$FILE" ] || { echo "[SKIP] $FILE not found (Skipping $SCAN_TYPE)"; return; }
+            
+            echo "Uploading $SCAN_TYPE from $FILE..."
             curl -s -X POST \
-              "$DEFECTDOJO_URL/api/v2/import-scan/" \
-              -H "Authorization: Token $DEFECTDOJO_API_KEY" \
-              -F "file=@$f" \
-              -F "scan_type=Generic Findings Import" \
-              -F "engagement=$DEFECTDOJO_ENGAGEMENT_ID"
-          done
+              "$DOJO_URL/api/v2/import-scan/" \
+              -H "Authorization: Token $DOJO_KEY" \
+              -F "file=@$FILE" \
+              -F "scan_type=$SCAN_TYPE" \
+              -F "engagement=$ENGAGEMENT_ID" \
+              -F "active=true" \
+              -F "verified=true" \
+              -F "minimum_severity=High"
+          }
+
+          # 1. SAST/SCA Files (JSON)
+          upload_file "${REPORT_DIR}/snyk/results.json" "Snyk Scan"
+          upload_file "${REPORT_DIR}/trivy/results.json" "Trivy Scan"
+          upload_file "${REPORT_DIR}/semgrep/results.json" "Semgrep JSON Report"
+
+          # 2. ZAP DAST (Wajib menggunakan ZAP Scan, mencoba JSON)
+          upload_file "${REPORT_DIR}/zap/report.json" "ZAP Scan"
+
+          # 3. SBOM (Wajib menggunakan SPDX Scan)
+          upload_file "${REPORT_DIR}/sbom/sbom.spdx.json" "SPDX Scan"
 
       # ====================================================
       # 10. SLACK NOTIFICATION (FINAL)
