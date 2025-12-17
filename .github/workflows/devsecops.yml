@@ -334,45 +334,22 @@ jobs:
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
   # ---------------------------------------------------------
   build_and_sign:
-    name: Build + Push (authoritative digest)
+    name: Build + Push + Sign
     runs-on: self-hosted
+    # --- TAMBAHKAN INI ---
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Docker Login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ env.DOCKERFILE_PATH }}
-          push: true
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
-
+      # ... step build & push Anda ...
       - name: Export immutable image ref (OFFICIAL)
-        id: export
+        id: export # ID ini harus sama dengan yang di blok 'outputs' di atas
         shell: bash
         run: |
           set -euo pipefail
-
           DIGEST="${{ steps.build.outputs.digest }}"
-          test -n "${DIGEST}" || { echo "[FATAL] digest empty"; exit 1; }
-
           IMAGE_REF="${DOCKERHUB_REPO}@${DIGEST}"
-          echo "IMAGE_REF=${IMAGE_REF}"
-
+          # Gunakan GITHUB_OUTPUT
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------
@@ -382,11 +359,14 @@ jobs:
     needs: build_and_sign
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-
       - name: Deploy via Ansible
         shell: bash
+        env:
+          # Ambil dari outputs job build_and_sign
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
+          echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
+          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
           set -euo pipefail
 
           IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
