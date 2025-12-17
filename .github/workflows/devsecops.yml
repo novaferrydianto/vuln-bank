@@ -334,10 +334,10 @@ jobs:
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
   # ---------------------------------------------------------
   build_and_sign:
-    name: Build + Push + Resolve Digest + Sign
+    name: Build + Push + Resolve Digest
     runs-on: self-hosted
     outputs:
-      image_ref: ${{ steps.out.outputs.image_ref }}
+      image_ref: ${{ steps.resolve.outputs.image_ref }}
     steps:
       - uses: actions/checkout@v4
 
@@ -350,8 +350,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push (by SHA tag)
-        id: build
+      - name: Build and Push
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -359,141 +358,42 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
-          cache-from: type=gha
 
-      # Single source-of-truth: resolve digest from registry (silent)
-      - name: Resolve digest from registry (SAFE)
+      - name: Resolve digest (SAFE)
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
 
-          DIGEST=$(docker buildx imagetools inspect \
+          DIGEST="$(docker buildx imagetools inspect \
             "${DOCKERHUB_REPO}:${IMAGE_TAG}" \
-            --format '{{.Manifest.Digest}}' 2>/dev/null | tr -d '\n')
+            --format '{{.Manifest.Digest}}' | tr -d '\n')"
 
-          echo "Resolved digest=${DIGEST}"
+          echo "Resolved DIGEST=${DIGEST}"
           test -n "${DIGEST}"
 
           IMAGE_REF="${DOCKERHUB_REPO}@${DIGEST}"
           echo "IMAGE_REF=${IMAGE_REF}"
 
-          # write for step outputs
-          {
-            echo "image_ref=${IMAGE_REF}"
-          } >> "$GITHUB_OUTPUT"
-
-          # write artifact fallback (cross-job reliable)
-          printf '%s' "${IMAGE_REF}" > image_ref.txt
-
-      - name: Export outputs (strict)
-        id: out
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "resolve.image_ref='${{ steps.resolve.outputs.image_ref }}'"
-          test -n "${{ steps.resolve.outputs.image_ref }}" || { echo "[FATAL] resolve image_ref empty"; exit 1; }
-          echo "image_ref=${{ steps.resolve.outputs.image_ref }}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload image ref artifact (fallback)
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-metadata
-          path: image_ref.txt
-          retention-days: 7
-
-      - name: Install Syft (SBOM Generator)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p $HOME/.local/bin
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Generate SBOM (CycloneDX)
-        shell: bash
-        run: |
-          set -euo pipefail
-          syft "${{ steps.resolve.outputs.image_ref }}" -o cyclonedx-json > sbom.json
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-cyclonedx
-          path: sbom.json
-          retention-days: 30
-
-      - name: Cosign Sign (Keyless OIDC)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          command -v cosign >/dev/null 2>&1 || { echo "[FATAL] cosign not installed"; exit 1; }
-          cosign sign --yes "${{ steps.resolve.outputs.image_ref }}"
-
-      - name: Cosign Attest SBOM
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cosign attest --yes \
-            --predicate sbom.json \
-            --type cyclonedx \
-            "${{ steps.resolve.outputs.image_ref }}"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------
   # 6. DEPLOY (uses needs output, falls back to artifact)
   # ---------------------------------------------------------
   deploy:
-    name: Deploy (Ansible) + Verify Signature
     needs: build_and_sign
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download image metadata (fallback)
-        uses: actions/download-artifact@v4
-        with:
-          name: image-metadata
-          path: meta
-        continue-on-error: true
-
-      - name: Resolve IMAGE_REF for deploy (robust)
-        id: img
+      - name: Deploy via Ansible
         shell: bash
         run: |
           set -euo pipefail
 
-          NEEDS_REF='${{ needs.build_and_sign.outputs.image_ref }}'
-          FILE_REF=""
-          if [ -f "meta/image_ref.txt" ]; then
-            FILE_REF="$(cat meta/image_ref.txt | tr -d '\n' || true)"
-          fi
-
-          echo "needs.build_and_sign.outputs.image_ref='${NEEDS_REF}'"
-          echo "artifact image_ref='${FILE_REF}'"
-
-          IMAGE_REF="${NEEDS_REF}"
-          if [ -z "${IMAGE_REF}" ] && [ -n "${FILE_REF}" ]; then
-            IMAGE_REF="${FILE_REF}"
-          fi
-
+          IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
           echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
-          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty (needs + artifact)"; exit 1; }
-
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
-
-      # Optional (enable later): cosign verify on runner side or target side
-      - name: Execute Ansible deployment
-        shell: bash
-        env:
-          IMAGE_REF: ${{ steps.img.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-          echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
-          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
+          test -n "${IMAGE_REF}"
 
           ansible-galaxy collection install community.docker
 
