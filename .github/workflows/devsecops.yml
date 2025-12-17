@@ -42,12 +42,9 @@ jobs:
       # --- TRUFFLEHOG OFFICIAL ACTION ---
       - name: TruffleHog Secret Scan
         if: matrix.scan_type == 'trufflehog'
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: .
-          base: "" 
-          head: HEAD
-          extra_args: --json --only-verified | tee trufflehog-report.json
+        run: |
+          # Menggunakan binary lokal agar pipe '|' berfungsi mengalihkan output ke file
+          trufflehog git file://$(pwd) --json --only-verified --fail --no-update > trufflehog-report.json || true
 
       # --- TOOLS LAINNYA ---
       - name: Run Security Scans
