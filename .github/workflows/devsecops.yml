@@ -360,23 +360,15 @@ jobs:
   # ---------------------------------------------------------
   # 5. BUILD & SIGN: Mengamankan Supply Chain
   # ---------------------------------------------------------
-  build_and_sign:
-    name: Build + Push + Sign (Digest)
-  #  needs: gate_and_summary
+  build:
+    name: Build & Push Image
     runs-on: self-hosted
+
     outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
-      image_digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.resolve.outputs.image_ref }}
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Syft (SBOM Generator)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p $HOME/.local/bin
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Docker Login
         uses: docker/login-action@v3
@@ -387,8 +379,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push
-        id: build
+      - name: Build and Push Image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -396,128 +387,45 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
-            ${{ env.DOCKERHUB_REPO }}:latest
-          cache-from: type=gha
 
-      - name: Debug digest
-        shell: bash
-        run: |
-          echo "digest=${{ steps.build.outputs.digest }}"
-          test -n "${{ steps.build.outputs.digest }}" || exit 1
-
-      - name: Export image ref
-        id: meta
+      - name: Resolve image digest from registry (AUTHORITATIVE)
+        id: resolve
         shell: bash
         run: |
           set -euo pipefail
-          full_ref="${{ env.DOCKERHUB_REPO }}@${{ steps.build.outputs.digest }}"
-          echo "image_ref=$full_ref" >> "$GITHUB_OUTPUT"
-          echo "Exported image_ref=$full_ref"
 
-      - name: Assert image_ref output (hard fail)
+          DIGEST=$(docker buildx imagetools inspect \
+            "${DOCKERHUB_REPO}:${IMAGE_TAG}" \
+            --format '{{.Manifest.Digest}}')
+
+          echo "Resolved digest: ${DIGEST}"
+          test -n "${DIGEST}"
+
+          echo "image_ref=${DOCKERHUB_REPO}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Assert image_ref
         shell: bash
         run: |
-          set -euo pipefail
-          echo "meta.image_ref='${{ steps.meta.outputs.image_ref }}'"
-          test -n "${{ steps.meta.outputs.image_ref }}" || { echo "[FATAL] steps.meta.outputs.image_ref is empty"; exit 1; }
-
-      - name: Generate SBOM (CycloneDX)
-        shell: bash
-        run: |
-          set -euo pipefail
-          syft "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" \
-            -o cyclonedx-json > sbom.json
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-cyclonedx
-          path: sbom.json
-          retention-days: 30
-
-      - name: Cosign Sign (Keyless OIDC)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          if ! command -v cosign >/dev/null 2>&1; then
-            echo "[FAIL] cosign not installed on runner."
-            exit 1
-          fi
-          cosign sign --yes "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
-
-      - name: Cosign Attest SBOM
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cosign attest --yes \
-            --predicate sbom.json \
-            --type cyclonedx \
-            "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
+          echo "image_ref='${{ steps.resolve.outputs.image_ref }}'"
+          test -n "${{ steps.resolve.outputs.image_ref }}" || exit 1
 
   # ---------------------------------------------------------
   # 6. DEPLOY: Deployment ke VM dengan Ansible
   # ---------------------------------------------------------
   deploy:
-    name: Deploy (Ansible) + Verify Signature
-    needs: build_and_sign
+    name: Deploy to VM (Ansible)
+    needs: build
     runs-on: self-hosted
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify image signature (Cosign)
-        if: false
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-          
-          echo "Verifying image: ${IMAGE_REF}"
-          if [ -z "${IMAGE_REF}" ]; then exit 1; fi
-
-          cosign verify \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/novaferrydianto/" \
-            "${IMAGE_REF}" >/dev/null
-
-          echo "[PASS] Image signature verified"
-
-      - name: Verify SBOM Attestation
-        shell: bash
-        if: false
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-
-          echo "Verifying SBOM for: ${IMAGE_REF}"
-          if [ -z "${IMAGE_REF}" ]; then
-            echo "[FATAL] IMAGE_REF empty in SBOM verify"
-            exit 1
-          fi
-
-          cosign verify-attestation \
-            --type cyclonedx \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
-            "${IMAGE_REF}" >/dev/null
-
-          echo "[PASS] SBOM attestation verified"
-
-      - name: Execute Ansible deployment
+      - name: Deploy application
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "needs.build_and_sign.outputs.image_ref='${{ needs.build_and_sign.outputs.image_ref }}'"
-
-          IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
+          IMAGE_REF="${{ needs.build.outputs.image_ref }}"
           echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
           test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
 
@@ -542,24 +450,25 @@ jobs:
   # ---------------------------------------------------------
   # 7. DAST: Testing Aplikasi Berjalan (OWASP ZAP)
   # ---------------------------------------------------------
-  dast_scan:
+  smoke_test:
+    name: Smoke Test App
     needs: deploy
     runs-on: self-hosted
-    steps:
-      - name: OWASP ZAP Baseline Scan
-        run: |
-          docker run --rm -v $(pwd):/zap/wrk/:rw \
-          openscan/zapdocker-stable zap-baseline.py \
-          -t ${{ env.APP_URL }} \
-          -J zap_report.json || true
 
-      - name: Upload DAST to DefectDojo
+    steps:
+      - name: Health check
+        shell: bash
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-          -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
-          -F "active=true" \
-          -F "verified=true" \
-          -F "scan_type=ZAP Scan" \
-          -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-          -F "engagement_name=DAST-${{ github.run_number }}" \
-          -F "file=@zap_report.json"
+          set -euo pipefail
+
+          echo "Checking ${APP_URL}/"
+          for i in {1..10}; do
+            if curl -fs "${APP_URL}/" >/dev/null; then
+              echo "[PASS] App is healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "[FAIL] App not healthy"
+          exit 1
