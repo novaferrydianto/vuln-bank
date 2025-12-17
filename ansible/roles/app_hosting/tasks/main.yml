@@ -20,13 +20,13 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
-    # Catatan: Variabel COSIGN_PUBLIC_KEY_CLEAN diekspor di run block GitHub Actions
-    content: "{{ lookup('env', 'COSIGN_PUBLIC_KEY_CLEAN') | trim }}"
+    # Menggunakan block scalar '|' untuk menjaga integritas format PEM
+    content: |
+      {{ lookup('env', 'COSIGN_PUBLIC_KEY') }}
     dest: /tmp/cosign.pub
     mode: '0644'
-  no_log: true
 
-- name: Assert required deployment variables
+- name: 4. Assert required deployment variables
   ansible.builtin.assert:
     that:
       # Variabel diubah dari 'image_digest' menjadi 'image_ref'
@@ -36,35 +36,31 @@
       - db_password is defined
     fail_msg: "Required deployment variables are missing"
 
-- name: 3.5 Login ke Docker Hub pada Host Target (KRITIS)
+- name: 5. Login ke Docker Hub pada Host Target (KRITIS)
   community.docker.docker_login:
     registry_url: https://index.docker.io/v1/
     username: "{{ dockerhub_username }}"
     password: "{{ dockerhub_token }}"
 
-- name: 4. Pull image by digest (safe)
+- name: 6. Pull image by digest (safe)
   shell: |
     docker pull "{{ image_ref }}"
   args:
     executable: /bin/bash
 
-- name: 5. Verifikasi Image Docker menggunakan Digest
+- name: 7. Verifikasi Image Docker menggunakan Digest
   shell: >
     /usr/local/bin/cosign verify
     --key /tmp/cosign.pub
     {{ image_ref }}
-  args:
-    chdir: "{{ remote_app_dir }}"
   register: cosign_verify
-  # Ubah bagian ini agar tidak mematikan pipeline saat testing
-  ignore_errors: yes 
-  # failed_when: cosign_verify.rc != 0  <-- Berikan tanda komentar sementara
+  failed_when: cosign_verify.rc != 0
 
 # =========================================================
 # DEPLOYMENT
 # =========================================================
 
-- name: 6. Buat file .env untuk Aplikasi
+- name: 8. Buat file .env untuk Aplikasi
   copy:
     dest: "{{ remote_app_dir }}/.env"
     content: |
@@ -96,17 +92,31 @@
       APP_PORT=5000
       DEBUG=false
 
-- name: 7. Restart Container Aplikasi
+- name: 9. Restart Container Aplikasi
   community.docker.docker_compose_v2:
     project_src: "{{ remote_app_dir }}"
     state: present
     pull: never
 
-- name: 8. Hapus Kunci Publik (Pembersihan)
+- name: 10. Hapus Kunci Publik (Pembersihan)
   file:
     path: "/tmp/cosign.pub"
     state: absent
 
-- name: 9. Hapus Image Tak Terpakai (Dangling)
+- name: 11. Hapus Image Tak Terpakai (Dangling)
   shell: docker image prune -f
   tags: cleanup
+
+- name: 12. Konfigurasi Hardening Nginx (Template)
+  become: yes
+  template:
+    src: "../templates/nginx_hardened.conf.j2"
+    dest: "/etc/nginx/conf.d/vuln_bank.conf"
+  notify: Restart Nginx
+
+- name: 13. Pastikan Nginx running dan enabled
+  become: yes
+  systemd:
+    name: nginx
+    state: started
+    enabled: yes

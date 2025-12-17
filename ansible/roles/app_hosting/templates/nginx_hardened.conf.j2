@@ -1,0 +1,61 @@
+# ansible/roles/app_hosting/templates/nginx_hardened.conf.j2
+
+server {
+    listen 80;
+    server_name {{ ansible_host }};
+
+    # =========================================================
+    # 1. IDENTITAS & FOOTPRINT (Mengatasi WARN: Server Leaks Version)
+    # =========================================================
+    server_tokens off; # Menyembunyikan versi Nginx
+
+    # =========================================================
+    # 2. HEADER KEAMANAN (Mengatasi WARN: CSP & Site Isolation)
+    # =========================================================
+    
+    # Content Security Policy (Paling Krusial untuk XSS)
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';" always;
+
+    # Anti-Clickjacking
+    add_header X-Frame-Options "SAMEORIGIN" always;
+
+    # Anti-MIME Sniffing
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # Referrer Policy
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Permissions Policy (Mengatasi WARN: Permissions Policy Not Set)
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=(), payment=()" always;
+
+    # Site Isolation (Mengatasi WARN: Spectre Vulnerability)
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "require-corp" always;
+
+    # XSS Protection (Header Klasik)
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # =========================================================
+    # 3. REVERSE PROXY KE FLASK (Port 5000)
+    # =========================================================
+    location / {
+        proxy_pass http://localhost:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Timeout settings untuk stabilitas
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
+    # Custom Error Pages (Opsional - Menambah Hardening)
+    error_page 404 /404.html;
+    error_page 500 502 503 504 /50x.html;
+}
