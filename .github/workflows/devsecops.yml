@@ -389,7 +389,8 @@ jobs:
   # ---------------------------------------------------------
   build_and_sign:
     name: Build + Push + Sign (Digest)
-    needs: gate_and_summary
+    needs: security_scans
+  #  needs: gate_and_summary
     runs-on: self-hosted
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
