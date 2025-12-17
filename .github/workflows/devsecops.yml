@@ -88,17 +88,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports
+
       - name: Push to DefectDojo API
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
-          DD_URL: "http://192.168.107.132:8080"
         run: |
           upload_to_dd() {
             if [ -f "$1" ]; then
+              echo "Uploading $2..."
               curl -X POST "$DD_URL/api/v2/import-scan/" \
                 -H "Authorization: Token $DD_TOKEN" \
                 -F "active=true" -F "verified=true" \
-                -F "scan_type=$2" -F "product_name=Vuln Bank" \
+                -F "scan_type=$2" -F "product_name=$DD_PRODUCT_NAME" \
                 -F "engagement_name=Build-${{ github.run_number }}" -F "file=@$1"
             fi
           }
@@ -110,7 +111,7 @@ jobs:
 
   # 4. TAHAP NOTIFIKASI & GUARDRAIL
   notifications:
-    name: Slack Guardrail
+    name: Slack Guardrail & Summary
     needs: upload_to_defectdojo
     runs-on: self-hosted
     steps:
@@ -119,28 +120,38 @@ jobs:
         with:
           path: inspection-reports
 
-      - name: Analyze & Notify Slack
+      - name: Analyze, Notify & Summary
         env:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         shell: bash
         run: |
-          # Menghitung temuan secara spesifik dari folder laporan
+          # Perhitungan Temuan
           CRIT_COUNT=$(grep -ri "critical" inspection-reports | wc -l || echo 0)
           HIGH_COUNT=$(grep -ri "high" inspection-reports | wc -l || echo 0)
           
-          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            # Menyusun pesan yang lebih informatif
-            MSG="🚨 *SECURITY ALERT: BUILD #${{ github.run_number }}* 🚨\n\n"
-            MSG="${MSG}*Status:* ❌ Deployment Dibatalkan\n"
-            MSG="${MSG}*Detail Temuan:*\n"
-            MSG="${MSG}• 🔴 Critical: *$CRIT_COUNT* temuan\n"
-            MSG="${MSG}• 🟠 High: *$HIGH_COUNT* temuan\n\n"
-            MSG="${MSG}_Silakan periksa dashboard DefectDojo untuk detailnya._"
+          # 1. Generate GitHub Step Summary (Markdown Table)
+          echo "### 🛡️ DevSecOps Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Status | Findings |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          
+          for tool in trufflehog safety semgrep trivy snyk; do
+            if ls inspection-reports/reports-$tool/*.json >/dev/null 2>&1; then
+              T_CRIT=$(grep -i "critical" inspection-reports/reports-$tool/*.json | wc -l || echo 0)
+              if [ "$T_CRIT" -gt 0 ]; then
+                echo "| ${tool^} | ❌ Failed | $T_CRIT Critical |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| ${tool^} | ✅ Passed | 0 Critical |" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
 
+          # 2. Slack Notification & Exit Strategy
+          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+            MSG="🚨 *SECURITY ALERT: BUILD #${{ github.run_number }}* 🚨\n\n*Status:* ❌ Deployment Dibatalkan\n*Detail Temuan:*\n• 🔴 Critical: *$CRIT_COUNT*\n• 🟠 High: *$HIGH_COUNT*\n\n_Silakan periksa dashboard DefectDojo._"
+            
             if [ -n "$SLACK_URL" ]; then
               curl -sS -X POST -H 'Content-type: application/json' \
-              --data "$(jq -n --arg text "$MSG" '{text:$text}')" \
-              "$SLACK_URL"
+              --data "$(jq -n --arg text "$MSG" '{text:$text}')" "$SLACK_URL"
             fi
             exit 1
           fi
