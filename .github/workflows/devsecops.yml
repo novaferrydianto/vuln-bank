@@ -396,7 +396,7 @@ jobs:
 
           DIGEST=$(docker buildx imagetools inspect \
             "${DOCKERHUB_REPO}:${IMAGE_TAG}" \
-            --format '{{.Manifest.Digest}}')
+            --format '{{.Manifest.Digest}}' 2>/dev/null | tr -d '\n')
 
           echo "Resolved digest: ${DIGEST}"
           test -n "${DIGEST}"
