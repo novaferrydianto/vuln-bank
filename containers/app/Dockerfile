@@ -8,10 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# [UBAH DISINI] Ambil requirements dari dalam folder containers/app
 COPY containers/app/requirements.txt .
-
-# Install dependencies
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ============================================

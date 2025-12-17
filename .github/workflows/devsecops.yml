@@ -95,7 +95,6 @@ jobs:
         run: |
           upload_to_dd() {
             if [ -f "$1" ]; then
-              echo "Uploading $2..."
               curl -X POST "$DD_URL/api/v2/import-scan/" \
                 -H "Authorization: Token $DD_TOKEN" \
                 -F "active=true" -F "verified=true" \
@@ -125,11 +124,10 @@ jobs:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         shell: bash
         run: |
-          # Perhitungan Temuan
           CRIT_COUNT=$(grep -ri "critical" inspection-reports | wc -l || echo 0)
           HIGH_COUNT=$(grep -ri "high" inspection-reports | wc -l || echo 0)
           
-          # 1. Generate GitHub Step Summary (Markdown Table)
+          # Generate GitHub Step Summary
           echo "### 🛡️ DevSecOps Security Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Tool | Status | Findings |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
@@ -137,22 +135,14 @@ jobs:
           for tool in trufflehog safety semgrep trivy snyk; do
             if ls inspection-reports/reports-$tool/*.json >/dev/null 2>&1; then
               T_CRIT=$(grep -i "critical" inspection-reports/reports-$tool/*.json | wc -l || echo 0)
-              if [ "$T_CRIT" -gt 0 ]; then
-                echo "| ${tool^} | ❌ Failed | $T_CRIT Critical |" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "| ${tool^} | ✅ Passed | 0 Critical |" >> $GITHUB_STEP_SUMMARY
-              fi
+              [ "$T_CRIT" -gt 0 ] && ST="❌ Failed" || ST="✅ Passed"
+              echo "| ${tool^} | $ST | $T_CRIT Critical |" >> $GITHUB_STEP_SUMMARY
             fi
           done
 
-          # 2. Slack Notification & Exit Strategy
           if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            MSG="🚨 *SECURITY ALERT: BUILD #${{ github.run_number }}* 🚨\n\n*Status:* ❌ Deployment Dibatalkan\n*Detail Temuan:*\n• 🔴 Critical: *$CRIT_COUNT*\n• 🟠 High: *$HIGH_COUNT*\n\n_Silakan periksa dashboard DefectDojo._"
-            
-            if [ -n "$SLACK_URL" ]; then
-              curl -sS -X POST -H 'Content-type: application/json' \
-              --data "$(jq -n --arg text "$MSG" '{text:$text}')" "$SLACK_URL"
-            fi
+            MSG="🚨 *SECURITY ALERT: BUILD #${{ github.run_number }}* 🚨\n*Status:* ❌ Dibatalkan\n• 🔴 Critical: *$CRIT_COUNT*\n• 🟠 High: *$HIGH_COUNT*"
+            [ -n "$SLACK_URL" ] && curl -sS -X POST -H 'Content-type: application/json' --data "$(jq -n --arg text "$MSG" '{text:$text}')" "$SLACK_URL"
             exit 1
           fi
 
@@ -162,25 +152,36 @@ jobs:
     needs: notifications
     runs-on: self-hosted
     outputs:
-      image_digest: ${{ steps.push_step.outputs.digest }}
+      image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Docker Login
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-      - name: Build and Push
-        id: push_step
-        run: |
-          docker build -f containers/app/Dockerfile -t $IMAGE_NAME:$IMAGE_TAG .
-          docker push $IMAGE_NAME:$IMAGE_TAG
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_NAME:$IMAGE_TAG)
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push with Cache
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: containers/app/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Sign Image
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          IMAGE_REF: ${{ steps.push_step.outputs.digest }}
         run: |
           echo "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
-          cosign sign --key cosign.key --yes $IMAGE_REF
+          cosign sign --key cosign.key --yes "${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
           rm cosign.key
 
   # 6. TAHAP DEPLOYMENT (ANSIBLE)
