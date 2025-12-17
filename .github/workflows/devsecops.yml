@@ -486,3 +486,14 @@ jobs:
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
             -F "engagement_name=DAST-${{ github.run_number }}" \
             -F "file=@zap_report.json" >/dev/null
+
+      - name: Final Cleanup (Disk Management)
+        if: always() # Tetap jalan meski scan/upload gagal
+        shell: bash
+        run: |
+          echo "Cleaning up workspace and docker resources..."
+          # 1. Hapus file laporan lokal (karena sudah di-upload ke DefectDojo)
+          rm -f zap_report.json
+          
+          # 2. Hapus Docker Image yang tidak terpakai (dangling)
+          docker image prune -f
