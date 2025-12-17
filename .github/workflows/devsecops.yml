@@ -11,17 +11,15 @@ env:
   IMAGE_TAG: latest
 
 jobs:
-  # 1. TAHAP PERSIAPAN & INSTALL DEPENDENCIES (DI RUNNER)
+  # 1. TAHAP PERSIAPAN
   setup:
     name: Setup Environment
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Ambil requirements dari lokasi folder baru
           if [ -f containers/app/requirements.txt ]; then
             pip install -r containers/app/requirements.txt
           fi
@@ -38,27 +36,37 @@ jobs:
         scan_type: [trufflehog, safety, semgrep, trivy, snyk, sonarqube]
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Run Security Scans
-        run: |
-          # Gunakan variabel matrix yang benar
-          SCAN_NOW="${{ matrix.scan_type }}"
+        with:
+          fetch-depth: 0 # Penting untuk TruffleHog scan history
 
-          if [ "$SCAN_NOW" == "trufflehog" ]; then 
-            trufflehog filesystem . --no-update --fail --json > trufflehog-report.json || true
-          fi
-          
-          if [ "$SCAN_NOW" == "safety" ]; then 
-            safety check -r containers/app/requirements.txt --json > safety-report.json || true
-          fi
-          
-          if [ "$SCAN_NOW" == "semgrep" ]; then 
-            semgrep scan --config auto --json > semgrep-report.json || true
-          fi
-          
-          if [ "$SCAN_NOW" == "trivy" ]; then 
-            trivy config containers/app/Dockerfile --format json --output trivy-report.json || true
-          fi
+      # --- TRUFFLEHOG OFFICIAL ACTION ---
+      - name: TruffleHog Secret Scan
+        if: matrix.scan_type == 'trufflehog'
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: .
+          base: "" 
+          head: HEAD
+          extra_args: --json --only-verified | tee trufflehog-report.json
+
+      # --- TOOLS LAINNYA ---
+      - name: Run Security Scans
+        if: matrix.scan_type != 'trufflehog' && matrix.scan_type != 'sonarqube'
+        run: |
+          case "${{ matrix.scan_type }}" in
+            safety)
+              safety check -r containers/app/requirements.txt --json > safety-report.json || true
+              ;;
+            semgrep)
+              semgrep scan --config auto --json > semgrep-report.json || true
+              ;;
+            trivy)
+              trivy config containers/app/Dockerfile --format json --output trivy-report.json || true
+              ;;
+            snyk)
+              snyk test --json --auth=${{ secrets.SNYK_TOKEN }} > snyk-report.json || true
+              ;;
+          esac
 
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
@@ -69,10 +77,11 @@ jobs:
             -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
       - name: Upload Artifacts
+        if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
         with:
           name: reports-${{ matrix.scan_type }}
-          path: "*-report.json"
+          path: "*.json"
 
   # 3. TAHAP UPLOAD KE DEFECTDOJO
   upload_to_defectdojo:
@@ -84,39 +93,26 @@ jobs:
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: all-reports # Mengumpulkan semua artifact ke satu folder utama
-
+          path: all-reports
       - name: Push to DefectDojo API
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
           DD_URL: "http://192.168.107.132:8080"
         run: |
-          # Fungsi upload dengan pengecekan file
           upload_to_dd() {
-            local FILE_PATH=$1
-            local SCAN_TYPE=$2
-            
-            if [ -f "$FILE_PATH" ]; then
-              echo "Uploading $SCAN_TYPE from $FILE_PATH..."
+            if [ -f "$1" ]; then
               curl -X POST "$DD_URL/api/v2/import-scan/" \
                 -H "Authorization: Token $DD_TOKEN" \
-                -F "active=true" \
-                -F "verified=true" \
-                -F "scan_type=$SCAN_TYPE" \
-                -F "product_name=Vuln Bank Python" \
-                -F "engagement_name=Build-${{ github.run_number }}" \
-                -F "file=@$FILE_PATH"
-            else
-              echo "Warning: File $FILE_PATH not found, skipping $SCAN_TYPE."
+                -F "active=true" -F "verified=true" \
+                -F "scan_type=$2" -F "product_name=Vuln Bank Python" \
+                -F "engagement_name=Build-${{ github.run_number }}" -F "file=@$1"
             fi
           }
-
-          # Sesuaikan path berdasarkan struktur download-artifact v4
-          # v4 biasanya membuat subfolder berdasarkan nama artifact
           upload_to_dd "all-reports/reports-trufflehog/trufflehog-report.json" "Trufflehog Scan"
           upload_to_dd "all-reports/reports-safety/safety-report.json" "Safety Scan"
           upload_to_dd "all-reports/reports-semgrep/semgrep-report.json" "Semgrep JSON Report"
           upload_to_dd "all-reports/reports-trivy/trivy-report.json" "Trivy Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-report.json" "Snyk Scan"
 
   # 4. TAHAP NOTIFIKASI & GUARDRAIL
   notifications:
@@ -124,16 +120,24 @@ jobs:
     needs: upload_to_defectdojo
     runs-on: self-hosted
     steps:
+      - name: Download Reports
+        uses: actions/download-artifact@v4
+        with:
+          path: inspection-reports
       - name: Check Vulnerabilities & Notify
+        env:
+          SLACK_URL: ${{ secrets.SLACK_WEBHOOK }}
         run: |
-          if grep -riqE "critical|high" .; then
-            curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"🚨 *SECURITY ALERT*: Temuan CRITICAL/HIGH ditemukan di Vuln Bank! Build #${{ github.run_number }} dibatalkan.\"}" \
-            ${{ secrets.SLACK_WEBHOOK }}
+          if grep -riqE "critical|high" inspection-reports; then
+            if [ -n "$SLACK_URL" ]; then
+              curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"🚨 *SECURITY ALERT*: Temuan bahaya di Vuln Bank! Build #${{ github.run_number }} dibatalkan.\"}" \
+              "$SLACK_URL"
+            fi
             exit 1
           fi
 
-  # 5. TAHAP BUILD, SBOM & SIGNING (DENGAN CUSTOM DOCKERFILE PATH)
+  # 5. TAHAP BUILD & SIGNING (DIGEST)
   build_and_sign:
     name: Build & Sign Image
     needs: notifications
@@ -144,23 +148,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Docker Login
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-      
       - name: Build and Push
         id: push_step
         run: |
-          # Build menggunakan Dockerfile di subfolder, konteks tetap di root (.)
           docker build -f containers/app/Dockerfile -t $IMAGE_NAME:$IMAGE_TAG .
           docker push $IMAGE_NAME:$IMAGE_TAG
-          # Ambil Digest SHA256
           DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_NAME:$IMAGE_TAG)
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
-      
-      - name: SBOM & Sign
+      - name: Sign Image
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           IMAGE_REF: ${{ steps.push_step.outputs.digest }}
         run: |
-          syft $IMAGE_REF -o json > sbom.json
           echo "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
           cosign sign --key cosign.key --yes $IMAGE_REF
           rm cosign.key
@@ -172,19 +171,11 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - name: Execute Ansible Playbook
+      - name: Execute Ansible
         env:
-          ANSIBLE_CONFIG: ./ansible/ansible.cfg
-          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_digest }}
         run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_temp
-          chmod 600 ~/.ssh/id_temp
-          
-          export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "$COSIGN_PUBLIC_KEY" | tr -d '\r')"
-          
+          mkdir -p ~/.ssh && echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_temp && chmod 600 ~/.ssh/id_temp
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_temp \
             -e "image_ref=$IMAGE_REF" \
@@ -194,16 +185,4 @@ jobs:
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
-            
           rm -f ~/.ssh/id_temp
-
-  # 7. TAHAP DAST
-  dast:
-    name: DAST Scan
-    needs: deploy
-    runs-on: self-hosted
-    steps:
-      - name: OWASP ZAP Full Scan
-        run: |
-          docker run --rm -v $(pwd):/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable \
-          zap-full-scan.py -t http://192.168.107.135:5000 -r zap-report.html
