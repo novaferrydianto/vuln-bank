@@ -476,6 +476,8 @@ jobs:
   deploy:
     name: Deploy (Ansible) + Verify Signature
     needs: build_and_sign
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
