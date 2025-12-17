@@ -379,6 +379,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Syft (SBOM Generator)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v syft >/dev/null 2>&1; then
+            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+          fi
+
       - name: Docker Login
         uses: docker/login-action@v3
         with:
@@ -408,6 +416,20 @@ jobs:
           set -euo pipefail
           echo "image_ref=${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
+      - name: Generate SBOM (CycloneDX)
+        shell: bash
+        run: |
+          set -euo pipefail
+          syft "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" \
+            -o cyclonedx-json > sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          retention-days: 30
+
       - name: Cosign Sign (Keyless OIDC)
         shell: bash
         env:
@@ -419,6 +441,17 @@ jobs:
             exit 1
           fi
           cosign sign --yes "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
+
+      - name: Cosign Attest SBOM
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --predicate sbom.json \
+            --type cyclonedx \
+            "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
 
   deploy:
     name: Deploy (Ansible) + Verify Signature
@@ -433,17 +466,25 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           set -euo pipefail
-          if ! command -v cosign >/dev/null 2>&1; then
-            echo "[FAIL] cosign not installed on runner."
-            exit 1
-          fi
-
-          # Verify using GitHub OIDC identity & issuer
           cosign verify \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
+          echo "[PASS] Image signature verified"
 
-          echo "[PASS] Cosign verify OK for ${{ needs.build_and_sign.outputs.image_ref }}"
+      - name: Verify SBOM Attestation
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
+
+          echo "[PASS] SBOM attestation verified"
 
       - name: Execute Ansible deployment
         shell: bash
