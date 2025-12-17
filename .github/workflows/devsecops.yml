@@ -19,6 +19,7 @@ concurrency:
 
 env:
   APP_NAME: vuln-bank
+  APP_URL: http://192.168.107.135:5000
   REPORT_DIR: security-reports
 
   # Docker
@@ -413,6 +414,13 @@ jobs:
           echo "image_ref=$full_ref" >> "$GITHUB_OUTPUT"
           echo "Exported image_ref=$full_ref"
 
+      - name: Assert image_ref output (hard fail)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "meta.image_ref='${{ steps.meta.outputs.image_ref }}'"
+          test -n "${{ steps.meta.outputs.image_ref }}" || { echo "[FATAL] steps.meta.outputs.image_ref is empty"; exit 1; }
+
       - name: Generate SBOM (CycloneDX)
         shell: bash
         run: |
@@ -504,11 +512,12 @@ jobs:
 
       - name: Execute Ansible deployment
         shell: bash
-        env:
-          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
           set -euo pipefail
 
+          echo "needs.build_and_sign.outputs.image_ref='${{ needs.build_and_sign.outputs.image_ref }}'"
+
+          IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
           echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
           test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
 
