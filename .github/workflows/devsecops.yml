@@ -486,12 +486,20 @@ jobs:
         shell: bash
         env:
           COSIGN_EXPERIMENTAL: "1"
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
           set -euo pipefail
+          
+          if [ -z "${IMAGE_REF}" ]; then
+            echo "[FATAL] IMAGE_REF is empty. Build step did not export digest."
+            exit 1
+          fi
+
           cosign verify \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/novaferrydianto/" \
-            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            "${IMAGE_REF}" >/dev/null
+
           echo "[PASS] Image signature verified"
 
       - name: Verify SBOM Attestation
@@ -505,7 +513,7 @@ jobs:
             --type cyclonedx \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
-            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
+            "${IMAGE_REF}" >/dev/null
 
           echo "[PASS] SBOM attestation verified"
 
