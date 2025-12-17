@@ -425,7 +425,6 @@ jobs:
             ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
             ${{ env.DOCKERHUB_REPO }}:latest
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Export image ref
         id: meta
