@@ -40,6 +40,9 @@ env:
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
 
 jobs:
+  #####################
+  # 1. Tahap Persiapan
+  #####################
   setup:
     name: Setup Environment
     runs-on: self-hosted
@@ -85,11 +88,15 @@ jobs:
           command -v trufflehog >/dev/null 2>&1 || echo "[WARN] trufflehog not found on runner"
           command -v sonar-scanner >/dev/null 2>&1 || echo "[WARN] sonar-scanner not found on runner"
           command -v cosign >/dev/null 2>&1 || echo "[WARN] cosign not found on runner"
-
+  
+  ####################################
+  # 2. Tahap Security Scans (Parallel)
+  ####################################
   security_scans:
     name: Security Scans (Parallel)
     needs: setup
     runs-on: self-hosted
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -215,6 +222,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # ---------------------------------------------------------
+  # 3. GATE & NOTIFY: Analisis Temuan & Blokir jika Berbahaya
+  # ---------------------------------------------------------
   gate_and_summary:
     name: Gate + Slack + Step Summary
     needs: security_scans
@@ -318,6 +328,9 @@ jobs:
 
           echo "[PASS] Security gate passed."
 
+  # =========================
+  # 4. upload_to_defectdojo
+  # =========================
   upload_to_defectdojo:
     name: DefectDojo Integration
     needs: [security_scans]
@@ -369,6 +382,9 @@ jobs:
           upload_to_dd "all-reports/reports-trivy/trivy.json" "Trivy Scan"
           upload_to_dd "all-reports/reports-snyk/snyk.json" "Snyk Scan"
 
+  # ---------------------------------------------------------
+  # 5. BUILD & SIGN: Mengamankan Supply Chain
+  # ---------------------------------------------------------
   build_and_sign:
     name: Build + Push + Sign (Digest)
     needs: gate_and_summary
@@ -453,6 +469,9 @@ jobs:
             --type cyclonedx \
             "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
 
+  # ---------------------------------------------------------
+  # 6. DEPLOY: Deployment ke VM dengan Ansible
+  # ---------------------------------------------------------
   deploy:
     name: Deploy (Ansible) + Verify Signature
     needs: build_and_sign
@@ -510,3 +529,28 @@ jobs:
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
 
           rm -f ~/.ssh/id_runner_temp
+
+  # ---------------------------------------------------------
+  # 7. DAST: Testing Aplikasi Berjalan (OWASP ZAP)
+  # ---------------------------------------------------------
+  dast_scan:
+    needs: deploy
+    runs-on: self-hosted
+    steps:
+      - name: OWASP ZAP Baseline Scan
+        run: |
+          docker run --rm -v $(pwd):/zap/wrk/:rw \
+          openscan/zapdocker-stable zap-baseline.py \
+          -t ${{ env.APP_URL }} \
+          -J zap_report.json || true
+
+      - name: Upload DAST to DefectDojo
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+          -F "active=true" \
+          -F "verified=true" \
+          -F "scan_type=ZAP Scan" \
+          -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+          -F "engagement_name=DAST-${{ github.run_number }}" \
+          -F "file=@zap_report.json"
