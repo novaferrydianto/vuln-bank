@@ -11,7 +11,7 @@ permissions:
   contents: read
   security-events: write
   issues: write
-  id-token: write  # for cosign keyless
+  id-token: write  # Penting untuk Cosign keyless
 
 concurrency:
   group: vuln-bank-${{ github.workflow }}-${{ github.ref }}
@@ -20,23 +20,18 @@ concurrency:
 env:
   APP_NAME: vuln-bank
   REPORT_DIR: security-reports
-
   # Docker
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
-  IMAGE_TAG: ${{ github.sha }}          # immutable tag
+  IMAGE_TAG: ${{ github.sha }}
   DOCKERFILE_PATH: containers/app/Dockerfile
   REQUIREMENTS_PATH: containers/app/requirements.txt
-
   # DefectDojo
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: "Build-${{ github.run_number }}"
-
-  # Slack
+  # Slack & Policy
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-  # Policy (tune thresholds)
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
 
 jobs:
@@ -45,46 +40,21 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-
-      - name: Prepare workspace (Rocky Linux 9.7)
+      - name: Prepare workspace
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
           python3 -m pip install --upgrade pip
-
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo dnf install -y jq
-          fi
-
+          command -v jq >/dev/null 2>&1 || sudo dnf install -y jq
       - name: Install security tools
         shell: bash
         run: |
           set -euo pipefail
-          # Python deps
-          if [ -f "${REQUIREMENTS_PATH}" ]; then
-            pip install -r "${REQUIREMENTS_PATH}"
-          fi
-
-          # Common scanners
           pip install -q safety
-
-          # Semgrep via pipx (isolated & stable)
           if ! command -v semgrep >/dev/null 2>&1; then
-            if ! command -v pipx >/dev/null 2>&1; then
-              sudo dnf install -y pipx
-            fi
-
-            export PATH="$HOME/.local/bin:$PATH"
-            pipx install --force semgrep
+            pipx install semgrep
           fi
-
-          # Ensure tools exist on runner (recommend pre-baked runner image)
-          command -v trivy >/dev/null 2>&1 || echo "[WARN] trivy not found on runner"
-          command -v snyk  >/dev/null 2>&1 || echo "[WARN] snyk not found on runner"
-          command -v trufflehog >/dev/null 2>&1 || echo "[WARN] trufflehog not found on runner"
-          command -v sonar-scanner >/dev/null 2>&1 || echo "[WARN] sonar-scanner not found on runner"
-          command -v cosign >/dev/null 2>&1 || echo "[WARN] cosign not found on runner"
 
   security_scans:
     name: Security Scans (Parallel)
@@ -99,121 +69,41 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Init report dir
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${REPORT_DIR}"
-
-      # =========================
-      # TRUFFLEHOG (Secrets)
-      # =========================
-      - name: TruffleHog Secret Scan
-        if: matrix.scan_type == 'trufflehog'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v trufflehog >/dev/null 2>&1; then
-            echo '{"tool":"trufflehog","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/trufflehog.json"
-            exit 0
-          fi
-          # Do not fail job here; gate later.
-          trufflehog git file://$(pwd) --json --only-verified --no-update \
-            > "${REPORT_DIR}/trufflehog.json" || true
-
-      # =========================
-      # SAFETY (Python SCA)
-      # =========================
-      - name: Safety Scan
-        if: matrix.scan_type == 'safety'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f "${REQUIREMENTS_PATH}" ]; then
-            echo '{"tool":"safety","status":"skipped","reason":"requirements_not_found"}' > "${REPORT_DIR}/safety.json"
-            exit 0
-          fi
-          safety check -r "${REQUIREMENTS_PATH}" --json > "${REPORT_DIR}/safety.json" || true
-
-      # =========================
-      # SEMGREP (SAST)
-      # =========================
-      - name: Semgrep Scan
-        if: matrix.scan_type == 'semgrep'
-        shell: bash
-        run: |
-          set -euo pipefail
-          semgrep scan --config auto --json > "${REPORT_DIR}/semgrep.json" || true
-
-      # =========================
-      # TRIVY (IaC/Dockerfile)
-      # =========================
-      - name: Trivy Scan (Config)
-        if: matrix.scan_type == 'trivy'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v trivy >/dev/null 2>&1; then
-            echo '{"tool":"trivy","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/trivy.json"
-            exit 0
-          fi
-          trivy config "${DOCKERFILE_PATH}" \
-            --severity "${FAIL_ON_SEVERITIES}" \
-            --format json \
-            --output "${REPORT_DIR}/trivy.json" || true
-
-      # =========================
-      # SNYK (SCA/SAST - optional)
-      # =========================
-      - name: Snyk Scan
-        if: matrix.scan_type == 'snyk'
+      - name: Run Scan
         shell: bash
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SNYK_TOKEN:-}" ]; then
-            echo '{"tool":"snyk","status":"skipped","reason":"missing_token"}' > "${REPORT_DIR}/snyk.json"
-            exit 0
-          fi
-          if ! command -v snyk >/dev/null 2>&1; then
-            echo '{"tool":"snyk","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/snyk.json"
-            exit 0
-          fi
-          snyk test --json > "${REPORT_DIR}/snyk.json" || true
-
-      # =========================
-      # SONARQUBE (Quality/SAST)
-      # =========================
-      - name: SonarQube Scan
-        if: matrix.scan_type == 'sonarqube'
-        shell: bash
-        env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          set -euo pipefail
-          if [ -z "${SONAR_HOST_URL:-}" ] || [ -z "${SONAR_TOKEN:-}" ]; then
-            echo "[SKIP] Missing SonarQube secrets"
-            exit 0
-          fi
-          if ! command -v sonar-scanner >/dev/null 2>&1; then
-            echo "[SKIP] sonar-scanner not installed"
-            exit 0
-          fi
-          sonar-scanner \
-            -Dsonar.projectKey=vuln-bank \
-            -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.login="${SONAR_TOKEN}"
+          mkdir -p "${REPORT_DIR}"
+          case "${{ matrix.scan_type }}" in
+            trufflehog)
+              trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
+              ;;
+            safety)
+              safety check -r "${REQUIREMENTS_PATH}" --json > "${REPORT_DIR}/safety.json" || true
+              ;;
+            semgrep)
+              semgrep scan --config auto --json > "${REPORT_DIR}/semgrep.json" || true
+              ;;
+            trivy)
+              trivy config "${DOCKERFILE_PATH}" --severity "${FAIL_ON_SEVERITIES}" --format json --output "${REPORT_DIR}/trivy.json" || true
+              ;;
+            snyk)
+              snyk test --json > "${REPORT_DIR}/snyk.json" || true
+              ;;
+            sonarqube)
+              sonar-scanner -Dsonar.projectKey=vuln-bank -Dsonar.host.url="${SONAR_HOST_URL}" -Dsonar.login="${SONAR_TOKEN}"
+              ;;
+          esac
 
-      - name: Upload scan artifacts
+      - name: Upload Artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
         with:
           name: reports-${{ matrix.scan_type }}
           path: ${{ env.REPORT_DIR }}/*.json
-          if-no-files-found: warn
-          retention-days: 14
 
   gate_and_summary:
     name: Gate + Slack + Step Summary
@@ -225,144 +115,80 @@ jobs:
         with:
           path: all-reports
 
-      - name: Aggregate findings (jq-based)
+      - name: Aggregate & Notify
         shell: bash
         env:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
-
-          # Collect files
           TRUFFLE="all-reports/reports-trufflehog/trufflehog.json"
           SAFETY="all-reports/reports-safety/safety.json"
           SEMGREP="all-reports/reports-semgrep/semgrep.json"
           TRIVY="all-reports/reports-trivy/trivy.json"
           SNYK="all-reports/reports-snyk/snyk.json"
 
-          crit=0
-          high=0
-          notes=()
+          crit=0; high=0; notes=()
 
-          # TruffleHog: count verified findings roughly by counting JSON objects
+          # TruffleHog
           if [ -f "$TRUFFLE" ]; then
-            c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l || echo 0)
-            if [ "$c" -gt 0 ]; then
-              crit=$((crit + c))
-              notes+=("TruffleHog verified secrets: $c")
-            fi
+            c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l); [ "$c" -gt 0 ] && { crit=$((crit+c)); notes+=("TruffleHog: $c verified secrets"); }
           fi
-
-          # Semgrep: count ERROR/WARNING as "high" for gate (tune as desired)
+          # Semgrep
           if [ -f "$SEMGREP" ]; then
-            c=$(jq '.results | length' "$SEMGREP" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Semgrep findings: $c")
-            fi
+            c_crit=$(jq '[.results[]? | select(.extra.severity=="ERROR")] | length' "$SEMGREP" || echo 0)
+            c_high=$(jq '[.results[]? | select(.extra.severity=="WARNING")] | length' "$SEMGREP" || echo 0)
+            crit=$((crit+c_crit)); high=$((high+c_high)); [ $((c_crit+c_high)) -gt 0 ] && notes+=("Semgrep: $c_crit Crit, $c_high High")
           fi
-
-          # Trivy: count HIGH/CRITICAL
+          # Trivy (Vuln + Config)
           if [ -f "$TRIVY" ]; then
-            ccrit=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL")] | length' "$TRIVY" 2>/dev/null || echo 0)
-            chigh=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="HIGH")] | length' "$TRIVY" 2>/dev/null || echo 0)
-            crit=$((crit + ccrit))
-            high=$((high + chigh))
-            [ "$ccrit" -gt 0 ] && notes+=("Trivy CRITICAL: $ccrit")
-            [ "$chigh" -gt 0 ] && notes+=("Trivy HIGH: $chigh")
+            t_crit=$(jq '([.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length) + ([.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL")] | length)' "$TRIVY" || echo 0)
+            t_high=$(jq '([.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length) + ([.Results[]?.Misconfigurations[]? | select(.Severity=="HIGH")] | length)' "$TRIVY" || echo 0)
+            crit=$((crit+t_crit)); high=$((high+t_high)); [ $((t_crit+t_high)) -gt 0 ] && notes+=("Trivy: $t_crit Crit, $t_high High")
           fi
-
-          # Safety: treat vulnerabilities as high (tune)
+          # Safety
           if [ -f "$SAFETY" ]; then
-            c=$(jq 'length' "$SAFETY" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Safety vulns: $c")
-            fi
+            c=$(jq 'length' "$SAFETY" || echo 0); [ "$c" -gt 0 ] && { high=$((high+c)); notes+=("Safety: $c vulns"); }
           fi
-
-          # Snyk: count issues if file exists
+          # Snyk
           if [ -f "$SNYK" ]; then
-            c=$(jq '.vulnerabilities | length' "$SNYK" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Snyk vulns: $c")
-            fi
+            s_crit=$(jq '[.vulnerabilities[]? | select(.severity=="critical")] | length' "$SNYK" || echo 0)
+            s_high=$(jq '[.vulnerabilities[]? | select(.severity=="high")] | length' "$SNYK" || echo 0)
+            crit=$((crit+s_crit)); high=$((high+s_high)); [ $((s_crit+s_high)) -gt 0 ] && notes+=("Snyk: $s_crit Crit, $s_high High")
           fi
 
-          # Step summary
-          {
-            echo "### 🛡️ DevSecOps Security Summary"
-            echo ""
-            echo "- 🔴 CRITICAL: **$crit**"
-            echo "- 🟠 HIGH: **$high**"
-            echo ""
-            echo "#### Notes"
-            if [ "${#notes[@]}" -eq 0 ]; then
-              echo "- No findings or all scanners skipped."
-            else
-              for n in "${notes[@]}"; do echo "- $n"; done
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          # GitHub Summary
+          echo "### 🛡️ Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔴 CRITICAL: $crit" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟠 HIGH: $high" >> $GITHUB_STEP_SUMMARY
+          for n in "${notes[@]}"; do echo "- $n" >> $GITHUB_STEP_SUMMARY; done
 
-          # Slack notify + hard gate
           if [ "$crit" -gt 0 ] || [ "$high" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* (Run #${{ github.run_number }})\n• 🔴 CRITICAL: *$crit*\n• 🟠 HIGH: *$high*"
-            if [ -n "${SLACK_URL:-}" ]; then
-              curl -sS -X POST -H 'Content-type: application/json' \
-                --data "$(jq -n --arg text "$msg" '{text:$text}')" \
-                "$SLACK_URL" >/dev/null
-            fi
-            echo "[BLOCK] Security gate failed."
+            msg="🚨 *SECURITY GATE FAILED* (#${{ github.run_number }})\n• CRITICAL: $crit\n• HIGH: $high"
+            curl -s -X POST -H 'Content-type: application/json' --data "$(jq -n --arg text "$msg" '{text:$text}')" "$SLACK_URL"
             exit 1
           fi
 
-          echo "[PASS] Security gate passed."
-
   upload_to_defectdojo:
     name: DefectDojo Integration
-    needs: [security_scans]
+    needs: security_scans
     if: always()
     runs-on: self-hosted
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: all-reports
-
-      - name: Upload to DefectDojo
+      - name: Upload to DD
         shell: bash
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
         run: |
-          set -euo pipefail
-
-          if [ -z "${DEFECTDOJO_URL:-}" ] || [ -z "${DD_TOKEN:-}" ]; then
-            echo "[SKIP] DefectDojo URL or token missing."
-            exit 0
-          fi
-
-          # Hard fail if IDs are missing (prevents silent bad uploads)
-          : "${DEFECTDOJO_PRODUCT_ID:?DEFECTDOJO_PRODUCT_ID is required}"
-          : "${DEFECTDOJO_ENGAGEMENT_ID:?DEFECTDOJO_ENGAGEMENT_ID is required}"
-
           upload_to_dd() {
-            local file="$1"
-            local scan_type="$2"
-            if [ -f "$file" ]; then
-              echo "Uploading $scan_type from $file"
-              curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-                -H "Authorization: Token ${DD_TOKEN}" \
-                -F "active=true" \
-                -F "verified=true" \
-                -F "scan_type=${scan_type}" \
-                -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-                -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-                -F "file=@${file}" >/dev/null
-            else
-              echo "[WARN] Missing: $file"
-            fi
+            curl -s -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DD_TOKEN}" \
+              -F "active=true" -F "verified=true" -F "scan_type=$2" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+              -F "file=@$1" > /dev/null
           }
-
           upload_to_dd "all-reports/reports-trufflehog/trufflehog.json" "Trufflehog Scan"
           upload_to_dd "all-reports/reports-safety/safety.json" "Safety Scan"
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
@@ -370,32 +196,18 @@ jobs:
           upload_to_dd "all-reports/reports-snyk/snyk.json" "Snyk Scan"
 
   build_and_sign:
-    name: Build + Push + Sign (Digest)
+    name: Build + Push + Sign
     needs: gate_and_summary
     runs-on: self-hosted
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
-      image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Syft (SBOM Generator)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v syft >/dev/null 2>&1; then
-            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
-          fi
-
       - name: Docker Login
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build and Push
         id: build
         uses: docker/build-push-action@v5
@@ -403,110 +215,34 @@ jobs:
           context: .
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
-            ${{ env.DOCKERHUB_REPO }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Export image ref
+          tags: ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
+      - name: Export Ref & Sign
         id: meta
         shell: bash
         run: |
-          set -euo pipefail
-          echo "image_ref=${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
-
-      - name: Generate SBOM (CycloneDX)
+          IMG="${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
+          echo "image_ref=${IMG}" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "${IMG}"
+      - name: Attest SBOM
         shell: bash
         run: |
-          set -euo pipefail
-          syft "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" \
-            -o cyclonedx-json > sbom.json
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-cyclonedx
-          path: sbom.json
-          retention-days: 30
-
-      - name: Cosign Sign (Keyless OIDC)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          if ! command -v cosign >/dev/null 2>&1; then
-            echo "[FAIL] cosign not installed on runner."
-            exit 1
-          fi
-          cosign sign --yes "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
-
-      - name: Cosign Attest SBOM
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cosign attest --yes \
-            --predicate sbom.json \
-            --type cyclonedx \
-            "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
+          syft "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" -o cyclonedx-json > sbom.json
+          cosign attest --yes --predicate sbom.json --type cyclonedx "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
 
   deploy:
-    name: Deploy (Ansible) + Verify Signature
+    name: Deploy (Ansible)
     needs: build_and_sign
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-
-      - name: Verify image signature (Cosign)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cosign verify \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
-          echo "[PASS] Image signature verified"
-
-      - name: Verify SBOM Attestation
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-
-          cosign verify-attestation \
-            --type cyclonedx \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
-            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
-
-          echo "[PASS] SBOM attestation verified"
-
-      - name: Execute Ansible deployment
-        shell: bash
+      - name: Verify Signature
+        run: cosign verify --certificate-oidc-issuer "https://token.actions.githubusercontent.com" "${{ needs.build_and_sign.outputs.image_ref }}"
+      - name: Ansible Execute
         env:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          set -euo pipefail
-
-          ansible-galaxy collection install community.docker
-
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
-          chmod 600 ~/.ssh/id_runner_temp
-
-          ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            --private-key ~/.ssh/id_runner_temp \
-            -e "image_ref=${IMAGE_REF}" \
-            -e "db_password=${{ secrets.DB_PASSWORD }}" \
-            -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
-            -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
-            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
-            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
-            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
-
+          mkdir -p ~/.ssh && echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp && chmod 600 ~/.ssh/id_runner_temp
+          ansible-playbook -i ansible/inventory.ini ansible/site.yml --private-key ~/.ssh/id_runner_temp \
+            -e "image_ref=${IMAGE_REF}" -e "db_password=${{ secrets.DB_PASSWORD }}" \
+            -e "app_secret=${{ secrets.APP_SECRET_KEY }}" -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
           rm -f ~/.ssh/id_runner_temp
