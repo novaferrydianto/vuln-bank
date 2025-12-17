@@ -90,7 +90,7 @@ jobs:
           path: all-reports
       - name: Push to DefectDojo API
         env:
-          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
           DD_URL: "http://192.168.107.132:8080"
         run: |
           upload_to_dd() {
