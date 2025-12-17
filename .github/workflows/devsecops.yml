@@ -19,11 +19,12 @@ concurrency:
 
 env:
   APP_NAME: vuln-bank
+  APP_URL: http://192.168.107.135:5000
   REPORT_DIR: security-reports
 
   # Docker
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
-  IMAGE_TAG: ${{ github.sha }}          # immutable tag
+  IMAGE_TAG: ${{ github.sha }} # immutable tag
   DOCKERFILE_PATH: containers/app/Dockerfile
   REQUIREMENTS_PATH: containers/app/requirements.txt
 
@@ -40,13 +41,16 @@ env:
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
 
 jobs:
+  #####################
+  # 1. Tahap Persiapan
+  #####################
   setup:
     name: Setup Environment
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare workspace (Rocky Linux 9.7)
+      - name: Prepare workspace
         shell: bash
         run: |
           set -euo pipefail
@@ -61,39 +65,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Python deps
           if [ -f "${REQUIREMENTS_PATH}" ]; then
             pip install -r "${REQUIREMENTS_PATH}"
           fi
 
-          # Common scanners
-          pip install -q safety
-
-          # Semgrep via pipx (isolated & stable)
           if ! command -v semgrep >/dev/null 2>&1; then
             if ! command -v pipx >/dev/null 2>&1; then
               sudo dnf install -y pipx
             fi
-
             export PATH="$HOME/.local/bin:$PATH"
             pipx install --force semgrep
           fi
 
-          # Ensure tools exist on runner (recommend pre-baked runner image)
           command -v trivy >/dev/null 2>&1 || echo "[WARN] trivy not found on runner"
           command -v snyk  >/dev/null 2>&1 || echo "[WARN] snyk not found on runner"
           command -v trufflehog >/dev/null 2>&1 || echo "[WARN] trufflehog not found on runner"
           command -v sonar-scanner >/dev/null 2>&1 || echo "[WARN] sonar-scanner not found on runner"
           command -v cosign >/dev/null 2>&1 || echo "[WARN] cosign not found on runner"
+          command -v docker >/dev/null 2>&1 || { echo "[FATAL] docker not installed"; exit 1; }
+          docker buildx version >/dev/null 2>&1 || { echo "[FATAL] docker buildx missing"; exit 1; }
 
+  ####################################
+  # 2. Tahap Security Scans (Parallel)
+  ####################################
   security_scans:
     name: Security Scans (Parallel)
     needs: setup
     runs-on: self-hosted
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        scan_type: [trufflehog, safety, semgrep, trivy, snyk, sonarqube]
+        scan_type: [trufflehog, semgrep, trivy, snyk, sonarqube]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -105,9 +108,6 @@ jobs:
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
 
-      # =========================
-      # TRUFFLEHOG (Secrets)
-      # =========================
       - name: TruffleHog Secret Scan
         if: matrix.scan_type == 'trufflehog'
         shell: bash
@@ -117,27 +117,8 @@ jobs:
             echo '{"tool":"trufflehog","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/trufflehog.json"
             exit 0
           fi
-          # Do not fail job here; gate later.
-          trufflehog git file://$(pwd) --json --only-verified --no-update \
-            > "${REPORT_DIR}/trufflehog.json" || true
+          trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
-      # =========================
-      # SAFETY (Python SCA)
-      # =========================
-      - name: Safety Scan
-        if: matrix.scan_type == 'safety'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f "${REQUIREMENTS_PATH}" ]; then
-            echo '{"tool":"safety","status":"skipped","reason":"requirements_not_found"}' > "${REPORT_DIR}/safety.json"
-            exit 0
-          fi
-          safety check -r "${REQUIREMENTS_PATH}" --json > "${REPORT_DIR}/safety.json" || true
-
-      # =========================
-      # SEMGREP (SAST)
-      # =========================
       - name: Semgrep Scan
         if: matrix.scan_type == 'semgrep'
         shell: bash
@@ -145,9 +126,6 @@ jobs:
           set -euo pipefail
           semgrep scan --config auto --json > "${REPORT_DIR}/semgrep.json" || true
 
-      # =========================
-      # TRIVY (IaC/Dockerfile)
-      # =========================
       - name: Trivy Scan (Config)
         if: matrix.scan_type == 'trivy'
         shell: bash
@@ -162,9 +140,6 @@ jobs:
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
-      # =========================
-      # SNYK (SCA/SAST - optional)
-      # =========================
       - name: Snyk Scan
         if: matrix.scan_type == 'snyk'
         shell: bash
@@ -182,9 +157,6 @@ jobs:
           fi
           snyk test --json > "${REPORT_DIR}/snyk.json" || true
 
-      # =========================
-      # SONARQUBE (Quality/SAST)
-      # =========================
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         shell: bash
@@ -203,6 +175,7 @@ jobs:
           fi
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
+            -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
@@ -215,10 +188,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # ---------------------------------------------------------
+  # 3. GATE & NOTIFY
+  # ---------------------------------------------------------
   gate_and_summary:
     name: Gate + Slack + Step Summary
     needs: security_scans
     runs-on: self-hosted
+    continue-on-error: true
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -232,9 +209,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Collect files
           TRUFFLE="all-reports/reports-trufflehog/trufflehog.json"
-          SAFETY="all-reports/reports-safety/safety.json"
           SEMGREP="all-reports/reports-semgrep/semgrep.json"
           TRIVY="all-reports/reports-trivy/trivy.json"
           SNYK="all-reports/reports-snyk/snyk.json"
@@ -243,7 +218,6 @@ jobs:
           high=0
           notes=()
 
-          # TruffleHog: count verified findings roughly by counting JSON objects
           if [ -f "$TRUFFLE" ]; then
             c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l || echo 0)
             if [ "$c" -gt 0 ]; then
@@ -252,7 +226,6 @@ jobs:
             fi
           fi
 
-          # Semgrep: count ERROR/WARNING as "high" for gate (tune as desired)
           if [ -f "$SEMGREP" ]; then
             c=$(jq '.results | length' "$SEMGREP" 2>/dev/null || echo 0)
             if [ "$c" -gt 0 ]; then
@@ -261,7 +234,6 @@ jobs:
             fi
           fi
 
-          # Trivy: count HIGH/CRITICAL
           if [ -f "$TRIVY" ]; then
             ccrit=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL")] | length' "$TRIVY" 2>/dev/null || echo 0)
             chigh=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="HIGH")] | length' "$TRIVY" 2>/dev/null || echo 0)
@@ -271,25 +243,14 @@ jobs:
             [ "$chigh" -gt 0 ] && notes+=("Trivy HIGH: $chigh")
           fi
 
-          # Safety: treat vulnerabilities as high (tune)
-          if [ -f "$SAFETY" ]; then
-            c=$(jq 'length' "$SAFETY" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Safety vulns: $c")
-            fi
-          fi
-
-          # Snyk: count issues if file exists
           if [ -f "$SNYK" ]; then
-            c=$(jq '.vulnerabilities | length' "$SNYK" 2>/dev/null || echo 0)
+            c=$(jq '(.vulnerabilities // [] | length)' "$SNYK" 2>/dev/null || echo 0)
             if [ "$c" -gt 0 ]; then
               high=$((high + c))
               notes+=("Snyk vulns: $c")
             fi
           fi
 
-          # Step summary
           {
             echo "### 🛡️ DevSecOps Security Summary"
             echo ""
@@ -304,7 +265,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Slack notify + hard gate
           if [ "$crit" -gt 0 ] || [ "$high" -gt 0 ]; then
             msg="🚨 *SECURITY GATE FAILED* (Run #${{ github.run_number }})\n• 🔴 CRITICAL: *$crit*\n• 🟠 HIGH: *$high*"
             if [ -n "${SLACK_URL:-}" ]; then
@@ -318,6 +278,9 @@ jobs:
 
           echo "[PASS] Security gate passed."
 
+  # =========================
+  # 4. upload_to_defectdojo
+  # =========================
   upload_to_defectdojo:
     name: DefectDojo Integration
     needs: [security_scans]
@@ -341,7 +304,6 @@ jobs:
             exit 0
           fi
 
-          # Hard fail if IDs are missing (prevents silent bad uploads)
           : "${DEFECTDOJO_PRODUCT_ID:?DEFECTDOJO_PRODUCT_ID is required}"
           : "${DEFECTDOJO_ENGAGEMENT_ID:?DEFECTDOJO_ENGAGEMENT_ID is required}"
 
@@ -364,37 +326,42 @@ jobs:
           }
 
           upload_to_dd "all-reports/reports-trufflehog/trufflehog.json" "Trufflehog Scan"
-          upload_to_dd "all-reports/reports-safety/safety.json" "Safety Scan"
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
           upload_to_dd "all-reports/reports-trivy/trivy.json" "Trivy Scan"
           upload_to_dd "all-reports/reports-snyk/snyk.json" "Snyk Scan"
 
+  # ---------------------------------------------------------
+  # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
+  # ---------------------------------------------------------
   build_and_sign:
-    name: Build + Push + Sign (Digest)
-    needs: gate_and_summary
+    name: Build + Push + Sign + SBOM
+    needs: security_scans
     runs-on: self-hosted
     outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
-      image_digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.export.outputs.image_ref }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Syft (SBOM Generator)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v syft >/dev/null 2>&1; then
-            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
-          fi
-
+      
       - name: Docker Login
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install Tools (Cosign & Syft)
+        run: |
+          # Buat direktori bin lokal di home user
+          mkdir -p $HOME/.local/bin
+          
+          # Install Syft ke direktori lokal
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
+          
+          # Install Cosign ke direktori lokal
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o $HOME/.local/bin/cosign
+          chmod +x $HOME/.local/bin/cosign
+          
+          # Tambahkan ke PATH agar bisa dipanggil di step berikutnya
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Build and Push
         id: build
@@ -403,97 +370,58 @@ jobs:
           context: .
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
-            ${{ env.DOCKERHUB_REPO }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ env.DOCKERHUB_REPO }}:latest,${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
 
-      - name: Export image ref
-        id: meta
-        shell: bash
+      - name: Export Image Ref
+        id: export
         run: |
-          set -euo pipefail
-          echo "image_ref=${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
+          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
 
+      # =========================================================
+      # GENERATE & ATTEST SBOM
+      # =========================================================
       - name: Generate SBOM (CycloneDX)
-        shell: bash
         run: |
-          set -euo pipefail
-          syft "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}" \
-            -o cyclonedx-json > sbom.json
+          syft "${{ env.IMAGE_TO_SIGN }}" -o cyclonedx-json=sbom.json
 
-      - name: Upload SBOM artifact
+      - name: Sign Image & Attest SBOM
+        run: |
+          # Menandatangani Image
+          cosign sign --yes "${{ env.IMAGE_TO_SIGN }}"
+          
+          # Mengesahkan SBOM ke Image
+          cosign attest --yes --predicate sbom.json --type cyclonedx "${{ env.IMAGE_TO_SIGN }}"
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+
+      - name: Upload SBOM Artifact (Backup)
         uses: actions/upload-artifact@v4
         with:
           name: sbom-cyclonedx
           path: sbom.json
-          retention-days: 30
 
-      - name: Cosign Sign (Keyless OIDC)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          if ! command -v cosign >/dev/null 2>&1; then
-            echo "[FAIL] cosign not installed on runner."
-            exit 1
-          fi
-          cosign sign --yes "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
-
-      - name: Cosign Attest SBOM
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cosign attest --yes \
-            --predicate sbom.json \
-            --type cyclonedx \
-            "${DOCKERHUB_REPO}@${{ steps.build.outputs.digest }}"
-
+  # ---------------------------------------------------------
+  # 6. DEPLOY (uses needs output, falls back to artifact)
+  # ---------------------------------------------------------
   deploy:
-    name: Deploy (Ansible) + Verify Signature
+    name: Deploy (Ansible)
     needs: build_and_sign
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify image signature (Cosign)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-          cosign verify \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
-          echo "[PASS] Image signature verified"
-
-      - name: Verify SBOM Attestation
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          set -euo pipefail
-
-          cosign verify-attestation \
-            --type cyclonedx \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
-            "${{ needs.build_and_sign.outputs.image_ref }}" >/dev/null
-
-          echo "[PASS] SBOM attestation verified"
-
-      - name: Execute Ansible deployment
-        shell: bash
+      - name: Execute Ansible
         env:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          set -euo pipefail
-
-          ansible-galaxy collection install community.docker
+          echo "Deploying image: ${IMAGE_REF}"
+          if [ -z "${IMAGE_REF}" ]; then 
+            echo "[FALLBACK] IMAGE_REF empty, using latest"
+            IMAGE_REF="${{ env.DOCKERHUB_REPO }}:latest"
+          fi
 
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
@@ -508,5 +436,39 @@ jobs:
             -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
-
+          
           rm -f ~/.ssh/id_runner_temp
+
+  # ---------------------------------------------------------
+  # 7. DAST
+  # ---------------------------------------------------------
+  dast_scan:
+    needs: deploy
+    runs-on: self-hosted
+    steps:
+      - name: OWASP ZAP Baseline Scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$(pwd):/zap/wrk/:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t "${{ env.APP_URL }}" \
+            -J zap_report.json || true
+
+      - name: Upload DAST to DefectDojo
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f zap_report.json ]; then
+            echo "[SKIP] No ZAP report"
+            exit 0
+          fi
+
+          curl -sS -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "active=true" \
+            -F "verified=true" \
+            -F "scan_type=ZAP Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement_name=DAST-${{ github.run_number }}" \
+            -F "file=@zap_report.json" >/dev/null

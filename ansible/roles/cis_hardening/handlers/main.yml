@@ -1,5 +1,14 @@
 ---
+# Handlers untuk CIS Hardening (OS Level)
+
 - name: restart ssh
+  become: yes
   service:
     name: sshd
+    state: restarted
+
+- name: Restart Nginx
+  become: yes
+  systemd:
+    name: nginx
     state: restarted
