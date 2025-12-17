@@ -1,257 +1,187 @@
-name: VulnBank DevSecOps Pipeline
+name: Vuln Bank Python DevSecOps Pipeline
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   pull_request:
-    branches: ["main"]
-
-permissions:
-  contents: read
-  pull-requests: write
-  security-events: write
+    branches: [ "main" ]
 
 env:
-  REPORT_DIR: security-reports
-  ZAP_TARGET_URL: http://192.168.107.135:5000
+  IMAGE_NAME: xbash81/vuln-bank
+  IMAGE_TAG: latest
 
 jobs:
-  security-pipeline:
+  # 1. TAHAP PERSIAPAN & INSTALL DEPENDENCIES (DI RUNNER)
+  setup:
+    name: Setup Environment
     runs-on: self-hosted
-    name: Security & Deployment Pipeline
-
     steps:
-      # ====================================================
-      # 1. CHECKOUT & PREP
-      # ====================================================
       - uses: actions/checkout@v4
-
-      - name: Prepare directories
-        run: mkdir -p ${REPORT_DIR}/{snyk,trivy,semgrep,zap,sbom}
-
-      # ====================================================
-      # 2. SECRET SCAN
-      # ====================================================
-      - name: TruffleHog
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: .
-          extra_args: --only-verified
-        continue-on-error: true
-
-      # ====================================================
-      # 3. SAST
-      # ====================================================
-      - name: Semgrep
-        run: semgrep scan --config=p/security-audit --json > ${REPORT_DIR}/semgrep/results.json
-        continue-on-error: true
-
-      # ====================================================
-      # 4. BUILD & DIGEST
-      # ====================================================
-      - name: Login Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build & Push Image (FAST)
-        id: build
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: containers/app/Dockerfile
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank:buildcache,mode=max
-          provenance: false
-
-      - name: Capture Image Digest
+      
+      - name: Install Python Dependencies
         run: |
-          echo "IMAGE_REF=${{ secrets.DOCKERHUB_USERNAME }}/vuln-bank@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
+          python -m pip install --upgrade pip
+          # Ambil requirements dari lokasi folder baru
+          if [ -f containers/app/requirements.txt ]; then
+            pip install -r containers/app/requirements.txt
+          fi
+          pip install safety semgrep
 
-      # ====================================================
-      # 5. SCA (IMAGE)
-      # ====================================================
-      - name: Pull image for Snyk scan
-        run: docker pull "$IMAGE_REF"
+  # 2. TAHAP SECURITY SCANNING (PARALLEL)
+  security_scans:
+    name: Security Analysis
+    needs: setup
+    runs-on: self-hosted
+    continue-on-error: true
+    strategy:
+      matrix:
+        scan_type: [trufflehog, safety, semgrep, trivy, snyk, sonarqube]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Security Scans
+        run: |
+          if [ "${{ matrix.scan_type }}" == "trufflehog" ]; then 
+            trufflehog filesystem . --no-update --fail --json > trufflehog-report.json
+          fi
+          if [ "${{ matrix.scan_type }}" == "safety" ]; then 
+            safety check -r containers/app/requirements.txt --json > safety-report.json
+          fi
+          if [ "${{ matrix.scan_type }}" == "semgrep" ]; then 
+            semgrep scan --config auto --json > semgrep-report.json
+          fi
+          if [ "${{ matrix.scan_type }}" == "trivy" ]; then 
+            # Mengarah ke lokasi Dockerfile di subfolder
+            trivy config containers/app/Dockerfile --format json --output trivy-report.json
+          fi
+          if [ "${{ matrix.scan_type }}" == "snyk" ]; then 
+            snyk test --json --auth=${{ secrets.SNYK_TOKEN }} > snyk-report.json
+          fi
 
-      - name: Snyk Image Scan
-        uses: snyk/actions/docker@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: SonarQube Scan
+        if: matrix.scan_type == 'sonarqube'
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey=vuln-bank-python \
+            -Dsonar.sources=. \
+            -Dsonar.host.url=http://192.168.107.132:9000 \
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          image: ${{ env.IMAGE_REF }}
-          args: --severity-threshold=high --json-file-output=${REPORT_DIR}/snyk/results.json
-        continue-on-error: true
+          name: reports-${{ matrix.scan_type }}
+          path: "*-report.json"
 
-      - name: Trivy Image Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.IMAGE_REF }}
-          format: json
-          output: ${REPORT_DIR}/trivy/results.json
-          severity: CRITICAL,HIGH
-        continue-on-error: true
+  # 3. TAHAP UPLOAD KE DEFECTDOJO
+  upload_to_defectdojo:
+    name: DefectDojo Integration
+    needs: security_scans
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+      - name: Push to DefectDojo API
+        run: |
+          upload() {
+            curl -X POST "http://192.168.107.132:8080/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "active=true" -F "verified=true" \
+            -F "scan_type=$2" -F "product_name=Vuln Bank Python" \
+            -F "engagement_name=Build-${{ github.run_number }}" -F "file=@$1"
+          }
+          upload "reports-trufflehog/trufflehog-report.json" "Trufflehog Scan"
+          upload "reports-safety/safety-report.json" "Safety Scan"
+          upload "reports-semgrep/semgrep-report.json" "Semgrep JSON Report"
+          upload "reports-trivy/trivy-report.json" "Trivy Scan"
 
-      # ====================================================
-      # 6. SUPPLY CHAIN
-      # ====================================================
-      - uses: sigstore/cosign-installer@v3
+  # 4. TAHAP NOTIFIKASI & GUARDRAIL
+  notifications:
+    name: Slack Guardrail
+    needs: upload_to_defectdojo
+    runs-on: self-hosted
+    steps:
+      - name: Check Vulnerabilities & Notify
+        run: |
+          if grep -riqE "critical|high" .; then
+            curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"🚨 *SECURITY ALERT*: Temuan CRITICAL/HIGH ditemukan di Vuln Bank! Build #${{ github.run_number }} dibatalkan.\"}" \
+            ${{ secrets.SLACK_WEBHOOK }}
+            exit 1
+          fi
 
-      - name: Cosign Sign Image
-        run: cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE_REF"
+  # 5. TAHAP BUILD, SBOM & SIGNING (DENGAN CUSTOM DOCKERFILE PATH)
+  build_and_sign:
+    name: Build & Sign Image
+    needs: notifications
+    runs-on: self-hosted
+    outputs:
+      image_digest: ${{ steps.push_step.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker Login
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+      
+      - name: Build and Push
+        id: push_step
+        run: |
+          # Build menggunakan Dockerfile di subfolder, konteks tetap di root (.)
+          docker build -f containers/app/Dockerfile -t $IMAGE_NAME:$IMAGE_TAG .
+          docker push $IMAGE_NAME:$IMAGE_TAG
+          # Ambil Digest SHA256
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_NAME:$IMAGE_TAG)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+      
+      - name: SBOM & Sign
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          IMAGE_REF: ${{ steps.push_step.outputs.digest }}
+        run: |
+          syft $IMAGE_REF -o json > sbom.json
+          echo "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
+          cosign sign --key cosign.key --yes $IMAGE_REF
+          rm cosign.key
 
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ env.IMAGE_REF }}
-          format: spdx-json
-          output-file: security-reports/sbom/sbom.spdx.json
-          upload-artifact: false
-          dependency-snapshot: false
-
-      # ====================================================
-      # 7. DEPLOY (ANSIBLE)
-      # ====================================================
-      - name: Setup SSH Key & Deploy
-        shell: bash
+  # 6. TAHAP DEPLOYMENT (ANSIBLE)
+  deploy:
+    name: Ansible Deployment
+    needs: build_and_sign
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute Ansible Playbook
+        env:
+          ANSIBLE_CONFIG: ./ansible/ansible.cfg
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_digest }}
         run: |
           set -euo pipefail
-          ansible-galaxy collection install community.docker
-
           mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
-          chmod 600 ~/.ssh/id_runner_temp
-
-          export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "${{ secrets.COSIGN_PUBLIC_KEY }}" | tr -d '\r')"
-
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_temp
+          chmod 600 ~/.ssh/id_temp
+          
+          export COSIGN_PUBLIC_KEY_CLEAN="$(printf '%s' "$COSIGN_PUBLIC_KEY" | tr -d '\r')"
+          
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            --private-key ~/.ssh/id_runner_temp \
-            -e "image_ref=${{ env.IMAGE_REF }}" \
-            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
-            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}" \
+            --private-key ~/.ssh/id_temp \
+            -e "image_ref=$IMAGE_REF" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
-            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" 
+            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
+            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
             
-          rm -f ~/.ssh/id_runner_temp
-        env:
-          ANSIBLE_CONFIG: ./ansible/ansible.cfg
+          rm -f ~/.ssh/id_temp
 
-      # ====================================================
-      # 8. DAST (ZAP SAFE MODE)
-      # ====================================================
-      - name: ZAP Baseline Scan
-        continue-on-error: true
+  # 7. TAHAP DAST
+  dast:
+    name: DAST Scan
+    needs: deploy
+    runs-on: self-hosted
+    steps:
+      - name: OWASP ZAP Full Scan
         run: |
-          ZAP_DIR="$RUNNER_TEMP/zap"
-          mkdir -p "$ZAP_DIR"
-
-          # KRITIS: Menambahkan -u untuk mengatasi Permission denied
-          # Memastikan output -J hanya menggunakan nama file
-          docker run --rm --network=host \
-            -v "$ZAP_DIR:/zap/wrk" \
-            -u $(id -u):$(id -g) \ # <--- Memperbaiki Izin Akses Volume
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-              -t ${ZAP_TARGET_URL} \
-              -a \
-              -J report.json # <--- Hanya Nama File untuk memastikan output di /zap/wrk/
-
-          # Menyalin laporan dari volume mount ke direktori report pusat
-          cp "$ZAP_DIR/report.json" ${REPORT_DIR}/zap/report.json
-
-      # ====================================================
-      # 9. DEFECTDOJO (Perbaikan Final Scan Type)
-      # ====================================================
-      - name: Upload to DefectDojo
-        env:
-          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
-          DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
-        run: |
-          upload_file() {
-            FILE=$1; SCAN_TYPE=$2
-            
-            # Menggunakan DEFECTDOJO_URL & DEFECTDOJO_API_KEY yang sudah ada di env
-            DOJO_URL="${DEFECTDOJO_URL}"
-            DOJO_KEY="${DEFECTDOJO_API_KEY}"
-            ENGAGEMENT_ID="${DEFECTDOJO_ENGAGEMENT_ID}"
-            
-            [ -f "$FILE" ] || { echo "[SKIP] $FILE not found (Skipping $SCAN_TYPE)"; return; }
-            
-            echo "Uploading $SCAN_TYPE from $FILE..."
-            curl -s -X POST \
-              "$DOJO_URL/api/v2/import-scan/" \
-              -H "Authorization: Token $DOJO_KEY" \
-              -F "file=@$FILE" \
-              -F "scan_type=$SCAN_TYPE" \
-              -F "engagement=$ENGAGEMENT_ID" \
-              -F "active=true" \
-              -F "verified=true" \
-              -F "minimum_severity=High"
-          }
-
-          # 1. SAST/SCA Files (JSON)
-          upload_file "${REPORT_DIR}/snyk/results.json" "Snyk Scan"
-          upload_file "${REPORT_DIR}/trivy/results.json" "Trivy Scan"
-          upload_file "${REPORT_DIR}/semgrep/results.json" "Semgrep JSON Report"
-
-          # 2. ZAP DAST (Wajib menggunakan ZAP Scan, mencoba JSON)
-          upload_file "${REPORT_DIR}/zap/report.json" "ZAP Scan"
-
-          # 3. SBOM (Wajib menggunakan SPDX Scan)
-          upload_file "${REPORT_DIR}/sbom/sbom.spdx.json" "SPDX Scan"
-
-      # ====================================================
-      # 10. SLACK NOTIFICATION (FINAL)
-      # ====================================================
-      - name: Slack Security Notification
-        if: always()
-        run: |
-          count() {
-            jq -r "$1 | length" "$2" 2>/dev/null || echo 0
-          }
-
-          TRIVY=$(count '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "${REPORT_DIR}/trivy/results.json")
-          SNYK=$(count '[.vulnerabilities[]? | select(.severity=="high" or .severity=="critical")] | length' "${REPORT_DIR}/snyk/results.json")
-          SEMGREP=$(count '[.results[]? | select(.extra.severity=="ERROR")] | length' "${REPORT_DIR}/semgrep/results.json")
-
-          TOTAL=$((TRIVY + SNYK + SEMGREP))
-
-          if [ "$TOTAL" -gt 0 ]; then
-            COLOR="danger"
-            STATUS="🚨 SECURITY ALERT"
-          else
-            COLOR="good"
-            STATUS="✅ PIPELINE SECURE"
-          fi
-
-          # Sintaks Slack yang benar dan telah teruji (menghindari error JQ)
-          payload=$(cat <<EOF
-            {
-              "attachments": [{
-                "color": "$COLOR",
-                "title": "$STATUS — VulnBank DevSecOps",
-                "fields": [
-                  { "title": "Trivy", "value": "$TRIVY", "short": true },
-                  { "title": "Snyk", "value": "$SNYK", "short": true },
-                  { "title": "Semgrep", "value": "$SEMGREP", "short": true },
-                  { "title": "Image", "value": "$IMAGE_REF", "short": false }
-                ]
-              }]
-            }
-          EOF
-          )
-          curl -s -X POST -H "Content-Type: application/json" --data "$payload" ${{ secrets.SLACK_WEBHOOK_URL }}
+          docker run --rm -v $(pwd):/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable \
+          zap-full-scan.py -t http://192.168.107.135:5000 -r zap-report.html
