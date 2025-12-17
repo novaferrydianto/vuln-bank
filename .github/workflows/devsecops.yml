@@ -334,7 +334,7 @@ jobs:
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
   # ---------------------------------------------------------
   build_and_sign:
-    name: Build + Push
+    name: Build + Push + Sign + SBOM
     needs: security_scans
     runs-on: self-hosted
     outputs:
@@ -347,6 +347,12 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install Tools (Cosign & Syft)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
 
       - name: Build and Push
         id: build
@@ -361,13 +367,32 @@ jobs:
         id: export
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
-          # Jika digest kosong, gunakan tag sebagai fallback agar pipeline tidak mati
-          if [ -z "$DIGEST" ]; then
-            IMAGE_REF="${{ env.DOCKERHUB_REPO }}:latest"
-          else
-            IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
-          fi
+          IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
           echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
+
+      # =========================================================
+      # GENERATE & ATTEST SBOM
+      # =========================================================
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          syft "${{ env.IMAGE_TO_SIGN }}" -o cyclonedx-json=sbom.json
+
+      - name: Sign Image & Attest SBOM
+        run: |
+          # Menandatangani Image
+          cosign sign --yes "${{ env.IMAGE_TO_SIGN }}"
+          
+          # Mengesahkan SBOM ke Image
+          cosign attest --yes --predicate sbom.json --type cyclonedx "${{ env.IMAGE_TO_SIGN }}"
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+
+      - name: Upload SBOM Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
 
   # ---------------------------------------------------------
   # 6. DEPLOY (uses needs output, falls back to artifact)
