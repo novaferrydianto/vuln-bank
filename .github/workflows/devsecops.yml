@@ -118,14 +118,28 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: inspection-reports
-      - name: Check Vulnerabilities & Notify
+
+      - name: Analyze & Notify Slack
         env:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        shell: bash
         run: |
-          if grep -riqE "critical|high" inspection-reports; then
+          # Menghitung temuan secara spesifik dari folder laporan
+          CRIT_COUNT=$(grep -ri "critical" inspection-reports | wc -l || echo 0)
+          HIGH_COUNT=$(grep -ri "high" inspection-reports | wc -l || echo 0)
+          
+          if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+            # Menyusun pesan yang lebih informatif
+            MSG="🚨 *SECURITY ALERT: BUILD #${{ github.run_number }}* 🚨\n\n"
+            MSG="${MSG}*Status:* ❌ Deployment Dibatalkan\n"
+            MSG="${MSG}*Detail Temuan:*\n"
+            MSG="${MSG}• 🔴 Critical: *$CRIT_COUNT* temuan\n"
+            MSG="${MSG}• 🟠 High: *$HIGH_COUNT* temuan\n\n"
+            MSG="${MSG}_Silakan periksa dashboard DefectDojo untuk detailnya._"
+
             if [ -n "$SLACK_URL" ]; then
-              curl -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"🚨 *SECURITY ALERT*: Temuan bahaya di Vuln Bank! Build #${{ github.run_number }} dibatalkan.\"}" \
+              curl -sS -X POST -H 'Content-type: application/json' \
+              --data "$(jq -n --arg text "$MSG" '{text:$text}')" \
               "$SLACK_URL"
             fi
             exit 1
