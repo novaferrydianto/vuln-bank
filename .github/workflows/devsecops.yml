@@ -44,7 +44,7 @@ jobs:
     name: Setup Environment
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Prepare workspace (Rocky Linux 9.7)
         shell: bash
@@ -95,7 +95,7 @@ jobs:
       matrix:
         scan_type: [trufflehog, safety, semgrep, trivy, snyk, sonarqube]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -377,7 +377,7 @@ jobs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
       image_digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Syft (SBOM Generator)
         shell: bash
@@ -458,7 +458,7 @@ jobs:
     needs: build_and_sign
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Verify image signature (Cosign)
         shell: bash
