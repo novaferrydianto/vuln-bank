@@ -28,9 +28,9 @@
 - name: Assert required deployment variables
   ansible.builtin.assert:
     that:
+      - image_ref is defined
       - dockerhub_username is defined
       - dockerhub_token is defined
-      - image_digest is defined
       - db_password is defined
     fail_msg: "Required deployment variables are missing"
 
