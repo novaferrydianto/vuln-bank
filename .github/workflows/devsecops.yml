@@ -24,7 +24,7 @@ jobs:
             pip install -r containers/app/requirements.txt
           fi
           pip install safety semgrep
-          
+
   # 2. TAHAP SECURITY SCANNING (PARALLEL)
   security_scans:
     name: Security Analysis
@@ -120,7 +120,7 @@ jobs:
           path: inspection-reports
       - name: Check Vulnerabilities & Notify
         env:
-          SLACK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           if grep -riqE "critical|high" inspection-reports; then
             if [ -n "$SLACK_URL" ]; then
