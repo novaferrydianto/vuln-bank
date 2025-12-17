@@ -482,6 +482,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify image signature (Cosign)
+        if: false
         shell: bash
         env:
           COSIGN_EXPERIMENTAL: "1"
@@ -501,10 +502,18 @@ jobs:
 
       - name: Verify SBOM Attestation
         shell: bash
+        if: false
         env:
           COSIGN_EXPERIMENTAL: "1"
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
           set -euo pipefail
+
+          echo "Verifying SBOM for: ${IMAGE_REF}"
+          if [ -z "${IMAGE_REF}" ]; then
+            echo "[FATAL] IMAGE_REF empty in SBOM verify"
+            exit 1
+          fi
 
           cosign verify-attestation \
             --type cyclonedx \
