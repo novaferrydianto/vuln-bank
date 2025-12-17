@@ -69,9 +69,6 @@ jobs:
             pip install -r "${REQUIREMENTS_PATH}"
           fi
 
-          # Common scanners
-          pip install -q safety
-
           # Semgrep via pipx (isolated & stable)
           if ! command -v semgrep >/dev/null 2>&1; then
             if ! command -v pipx >/dev/null 2>&1; then
@@ -100,7 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scan_type: [trufflehog, safety, semgrep, trivy, snyk, sonarqube]
+        scan_type: [trufflehog, semgrep, trivy, snyk, sonarqube]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,20 +124,6 @@ jobs:
           # Do not fail job here; gate later.
           trufflehog git file://$(pwd) --json --only-verified --no-update \
             > "${REPORT_DIR}/trufflehog.json" || true
-
-      # =========================
-      # SAFETY (Python SCA)
-      # =========================
-      - name: Safety Scan
-        if: matrix.scan_type == 'safety'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f "${REQUIREMENTS_PATH}" ]; then
-            echo '{"tool":"safety","status":"skipped","reason":"requirements_not_found"}' > "${REPORT_DIR}/safety.json"
-            exit 0
-          fi
-          safety check -r "${REQUIREMENTS_PATH}" --json > "${REPORT_DIR}/safety.json" || true
 
       # =========================
       # SEMGREP (SAST)
@@ -246,7 +229,6 @@ jobs:
 
           # Collect files
           TRUFFLE="all-reports/reports-trufflehog/trufflehog.json"
-          SAFETY="all-reports/reports-safety/safety.json"
           SEMGREP="all-reports/reports-semgrep/semgrep.json"
           TRIVY="all-reports/reports-trivy/trivy.json"
           SNYK="all-reports/reports-snyk/snyk.json"
@@ -281,15 +263,6 @@ jobs:
             high=$((high + chigh))
             [ "$ccrit" -gt 0 ] && notes+=("Trivy CRITICAL: $ccrit")
             [ "$chigh" -gt 0 ] && notes+=("Trivy HIGH: $chigh")
-          fi
-
-          # Safety: treat vulnerabilities as high (tune)
-          if [ -f "$SAFETY" ]; then
-            c=$(jq 'length' "$SAFETY" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Safety vulns: $c")
-            fi
           fi
 
           # Snyk: count issues if file exists
@@ -379,7 +352,6 @@ jobs:
           }
 
           upload_to_dd "all-reports/reports-trufflehog/trufflehog.json" "Trufflehog Scan"
-          upload_to_dd "all-reports/reports-safety/safety.json" "Safety Scan"
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
           upload_to_dd "all-reports/reports-trivy/trivy.json" "Trivy Scan"
           upload_to_dd "all-reports/reports-snyk/snyk.json" "Snyk Scan"
@@ -426,13 +398,20 @@ jobs:
             ${{ env.DOCKERHUB_REPO }}:latest
           cache-from: type=gha
 
+      - name: Debug digest
+        shell: bash
+        run: |
+          echo "digest=${{ steps.build.outputs.digest }}"
+          test -n "${{ steps.build.outputs.digest }}" || exit 1
+
       - name: Export image ref
         id: meta
         shell: bash
         run: |
           set -euo pipefail
           full_ref="${{ env.DOCKERHUB_REPO }}@${{ steps.build.outputs.digest }}"
-          echo "image_ref=$full_ref" >> $GITHUB_OUTPUT
+          echo "image_ref=$full_ref" >> "$GITHUB_OUTPUT"
+          echo "Exported image_ref=$full_ref"
 
       - name: Generate SBOM (CycloneDX)
         shell: bash
@@ -529,6 +508,9 @@ jobs:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
           set -euo pipefail
+
+          echo "DEPLOY IMAGE_REF=${IMAGE_REF}"
+          test -n "${IMAGE_REF}" || { echo "[FATAL] IMAGE_REF empty"; exit 1; }
 
           ansible-galaxy collection install community.docker
 

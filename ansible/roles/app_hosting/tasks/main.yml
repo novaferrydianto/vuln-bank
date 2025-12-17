@@ -42,10 +42,11 @@
     username: "{{ dockerhub_username }}"
     password: "{{ dockerhub_token }}"
 
-- name: 4. Pull Image Terbaru Berdasarkan Digest (Module)
-  community.docker.docker_image:
-    name: "{{ image_ref }}"
-    source: pull
+- name: 4. Pull image by digest (safe)
+  shell: |
+    docker pull "{{ image_ref }}"
+  args:
+    executable: /bin/bash
 
 - name: 5. Verifikasi Image Docker menggunakan Digest
   # KRITIS: Menggunakan {{ image_ref }}
