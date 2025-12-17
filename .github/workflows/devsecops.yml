@@ -63,9 +63,12 @@ jobs:
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         run: |
+          if [ -z "${{ secrets.SONARQUBE_TOKEN }}" ]; then
+            echo "ERROR: SONARQUBE_TOKEN is empty!"
+            exit 1
+          fi
           sonar-scanner \
-            -Dsonar.projectKey=vuln-bank-python \
-            -Dsonar.sources=. \
+            -Dsonar.projectKey=vuln-bank \
             -Dsonar.host.url=http://192.168.107.132:9000 \
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
 
