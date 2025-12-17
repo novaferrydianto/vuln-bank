@@ -162,12 +162,11 @@ jobs:
           # Menambahkan parameter -J yang benar untuk menghindari double nesting
           docker run --rm --network=host \
             -v "$ZAP_DIR:/zap/wrk" \
-            -u $(id -u):$(id -g) \ 
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
               -t ${ZAP_TARGET_URL} \
               -a \
-              -J report.json # <--- HANYA NAMA FILE DI DALAM /zap/wrk/
+              -J /zap/wrk/report.json # <--- HANYA NAMA FILE DI DALAM /zap/wrk/
 
           # Menyalin laporan dari volume mount ke direktori report pusat
           cp "$ZAP_DIR/report.json" ${REPORT_DIR}/zap/report.json
