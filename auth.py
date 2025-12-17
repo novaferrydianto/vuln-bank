@@ -7,7 +7,9 @@ from functools import wraps
 # Vulnerable JWT implementation with common security issues
 
 # Weak secret key (CWE-326)
-JWT_SECRET = "secret123"
+#JWT_SECRET = "secret123"
+import os
+JWT_SECRET = os.getenv("JWT_SECRET_KEY", "secret123")
 
 # Vulnerable algorithm selection - allows 'none' algorithm
 ALGORITHMS = ["HS256", "none"]
@@ -185,7 +187,7 @@ def init_auth_routes(app):
         c = conn.cursor()
 
         # Vulnerability: Race condition in transfer
-        c.execute(f"SELECT balance FROM users WHERE id={current_user['user_id']}")
+        c.execute("SELECT balance FROM users WHERE id=?", (current_user["user_id"],))
         balance = c.fetchone()[0]
 
         if balance >= amount:

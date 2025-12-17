@@ -1,0 +1,43 @@
+---
+# Deployment PostgreSQL di VM DB (User: db, Container Tool: Podman)
+
+- name: 1. Buat direktori project DB
+  file:
+    path: "{{ remote_db_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0750'
+
+- name: 2. Copy docker-compose.yml DB
+  copy:
+    src: "../containers/db/docker-compose.yml"
+    dest: "{{ remote_db_dir }}/docker-compose.yml"
+
+- name: 3. Buat file .env untuk Database
+  copy:
+    dest: "{{ remote_db_dir }}/.env"
+    content: |
+      POSTGRES_DB=vulnerable_bank
+      POSTGRES_USER=postgres
+      POSTGRES_PASSWORD={{ db_password }}
+      DB_PORT=5432
+
+- name: 3.5 Stop dan Hapus Container Lama (Idempotensi)
+  become: yes 
+  shell: |
+    export PATH=$PATH:/home/{{ ansible_user }}/.local/bin
+    # podman-compose down akan menghentikan dan menghapus kontainer/volume lama
+    podman-compose down 
+  args:
+    chdir: "{{ remote_db_dir }}"
+  ignore_errors: true # Abaikan error jika kontainer belum ada
+  tags: [idempotency]
+
+- name: 4. Jalankan Database Container menggunakan podman-compose
+  become: yes
+  shell: |
+    export PATH=$PATH:/home/{{ ansible_user }}/.local/bin
+    podman-compose up -d
+  args:
+    chdir: "{{ remote_db_dir }}"

@@ -1,53 +1,34 @@
 ---
-# ==========================================================
-# Bastion Node (Local)
-# ==========================================================
-- name: Bastion Hardening + Runner Setup
-  hosts: bastion
-  become: true
-
+# ==========================================
+# PLAY 1: Persiapan dan Hardening untuk SEMUA HOST
+# ==========================================
+- name: 1. Setup dan CIS Hardening pada Semua Host (Rocky Linux 7.6)
+  hosts: all
+  become: yes # Diperlukan untuk instalasi paket, hardening, dan service
   roles:
-    - base_common
     - cis_hardening
-    - bastion_runner
 
-# ==========================================================
-# Hosting / App Node
-# ==========================================================
-- name: Hosting VM — Docker + App + Security Agents
-  hosts: hosting
-  become: true
-
-  roles:
-    - base_common
-    - cis_hardening
-    - docker_engine
-    - app_hosting
-    - openscap_scan
-    - falco_install
-
-# ==========================================================
-# Database Node
-# ==========================================================
-- name: Database VM — Secure PostgreSQL + Security Agents
+# ==========================================
+# PLAY 2: Deployment Database (Menggunakan Podman)
+# ==========================================
+- name: 2. Deployment Database Component
   hosts: db
-  become: true
-
+  become: yes
+  vars:
+    remote_db_dir: "/opt/vuln-bank/db"
+    container_tool: podman # Variabel penanda untuk Role db_setup
   roles:
-    - base_common
-    - cis_hardening
-    - docker_engine
-    - postgres_host
-    - openscap_scan
-    - falco_install
+    - db_setup
 
-# ==========================================================
-# Compliance Report Export (Run from Bastion)
-# ==========================================================
-- name: Collect Compliance Reports to Bastion
-  hosts: hosting,db
-  gather_facts: false
-  become: true
-
+# ==========================================
+# PLAY 3: Deployment Application Component
+# ==========================================
+- name: 3. Deployment Application Component
+  hosts: hosting
+  become: yes
+  vars:
+    remote_app_dir: "/opt/vuln-bank/app"
+    db_host: "192.168.107.129"
+    docker_repo_user: "{{ DOCKERHUB_USERNAME }}"
   roles:
-    - compliance_export
+    - app_hosting

@@ -1,5 +1,0 @@
----
-- name: restart_falco
-  service:
-    name: falco
-    state: restarted
