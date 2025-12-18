@@ -149,22 +149,30 @@ jobs:
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
-      - name: Snyk Scan
+      - name: Snyk Advanced Scans
         if: matrix.scan_type == 'snyk'
         shell: bash
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${SNYK_TOKEN:-}" ]; then
-            echo '{"tool":"snyk","status":"skipped","reason":"missing_token"}' > "${REPORT_DIR}/snyk.json"
-            exit 0
-          fi
-          if ! command -v snyk >/dev/null 2>&1; then
-            echo '{"tool":"snyk","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/snyk.json"
-            exit 0
-          fi
-          snyk test --json > "${REPORT_DIR}/snyk.json" || true
+          
+          # 1. SAST - Snyk Code (Output SARIF untuk GitHub & JSON untuk DefectDojo)
+          snyk code test --sarif > snyk-code.sarif || true
+          snyk code test --json > "${REPORT_DIR}/snyk-code.json" || true
+
+          # 2. SCA - Snyk Open Source
+          snyk test --json > "${REPORT_DIR}/snyk-sca.json" || true
+          snyk monitor --all-projects || true
+
+          # 3. IaC - Infrastructure as Code
+          snyk iac test --json > "${REPORT_DIR}/snyk-iac.json" || true
+
+      - name: Upload SARIF to GitHub
+        if: matrix.scan_type == 'snyk' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-code.sarif
 
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
