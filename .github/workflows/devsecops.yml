@@ -37,7 +37,7 @@ env:
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
-  DEFECTDOJO_ENGAGEMENT_ID: "Build-${{ github.run_number }}"
+  DEFECTDOJO_ENGAGEMENT_NAME: "Build-${{ github.run_number }}"
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
 
@@ -108,38 +108,72 @@ jobs:
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
 
+      # =====================
+      # TruffleHog (Secrets)
+      # =====================
       - name: TruffleHog Scan
         if: matrix.scan_type == 'trufflehog'
-        run: trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
+        shell: bash
+        run: |
+          set -euo pipefail
+          trufflehog git file://$(pwd) \
+            --json \
+            --only-verified \
+            --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
+      # =====================
+      # Semgrep (SAST / policy)
+      # =====================
       - name: Semgrep Banking Scan
         if: matrix.scan_type == 'semgrep'
+        shell: bash
         run: |
-          semgrep scan --config auto \
+          set -euo pipefail
+          semgrep scan \
+            --config auto \
             --config "p/security-audit" \
             --config "p/secrets" \
             --config "p/owasp-top-ten" \
             --config "p/python" \
             --json > "${REPORT_DIR}/semgrep.json" || true
 
+      # =====================
+      # Checkov (IaC / Dockerfile)
+      # =====================
       - name: Checkov CIS Compliance Scan
         if: matrix.scan_type == 'checkov'
+        shell: bash
         run: |
-          pipx install checkov --force
-          export PATH="$HOME/.local/bin:$PATH"
-          checkov -d ansible --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 --output json > "${REPORT_DIR}/checkov_ansible.json" || true
-          checkov -f "${DOCKERFILE_PATH}" --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 --output json > "${REPORT_DIR}/checkov_docker.json" || true
+          set -euo pipefail
+          if ! command -v checkov >/dev/null 2>&1; then
+            pipx install --force checkov
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
 
+          checkov -d ansible \
+            --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 \
+            --output json > "${REPORT_DIR}/checkov_ansible.json" || true
+
+          checkov -f "${DOCKERFILE_PATH}" \
+            --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 \
+            --output json > "${REPORT_DIR}/checkov_docker.json" || true
+
+      # =====================
+      # Trivy (Config scan)
+      # =====================
       - name: Trivy Scan (Config)
         if: matrix.scan_type == 'trivy'
         shell: bash
         run: |
           set -euo pipefail
-          trivy config "${DOCKERFILE_PATH}" \
+          trivy config . \
             --severity "${FAIL_ON_SEVERITIES}" \
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
+      # =====================
+      # Snyk (Code, SCA, IaC)
+      # =====================
       - name: Snyk Advanced Scans
         if: matrix.scan_type == 'snyk'
         shell: bash
@@ -148,7 +182,7 @@ jobs:
         run: |
           set -euo pipefail
           
-          # 1. SAST - Snyk Code (Output SARIF untuk GitHub & JSON untuk DefectDojo)
+          # 1. SAST - Snyk Code (SARIF + JSON)
           snyk code test --sarif > snyk-code.sarif || true
           snyk code test --json > "${REPORT_DIR}/snyk-code.json" || true
 
@@ -156,7 +190,7 @@ jobs:
           snyk test --json > "${REPORT_DIR}/snyk-sca.json" || true
           snyk monitor --all-projects || true
 
-          # 3. IaC - Infrastructure as Code
+          # 3. IaC
           snyk iac test --json > "${REPORT_DIR}/snyk-iac.json" || true
 
       - name: Upload SARIF to GitHub
@@ -165,6 +199,9 @@ jobs:
         with:
           sarif_file: snyk-code.sarif
 
+      # =====================
+      # SonarQube
+      # =====================
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         shell: bash
@@ -183,10 +220,12 @@ jobs:
           fi
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
-            -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
+      # =====================
+      # Upload JSON Artifacts
+      # =====================
       - name: Upload scan artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
@@ -212,52 +251,80 @@ jobs:
 
       - name: Aggregate & Enforce Gate
         shell: bash
+        env:
+          SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           crit=0
-          details=""
           notes=()
 
-          # 1. JQ Logic for TruffleHog
-          TRUFFLE="all-reports/reports-trufflehog/trufflehog.json"
-          if [ -f "$TRUFFLE" ]; then
-            c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l)
-            if [ "$c" -gt 0 ]; then
-              crit=$((crit + c))
-              notes+=("TruffleHog Secrets: $c")
+          # Helper untuk aman baca file JSON
+          safe_jq_count() {
+            local file="$1"
+            local expr="$2"
+            if [ -f "$file" ]; then
+              jq -r "$expr" "$file" 2>/dev/null || echo 0
+            else
+              echo 0
             fi
+          }
+
+          # TruffleHog (verified secrets)
+          c=$(safe_jq_count "all-reports/reports-trufflehog/trufflehog.json" '
+            [ . as $line? | try ( if type=="array" then .[] else . end ) catch empty
+              | select(.Verified==true)
+            ] | length
+          ')
+          if [ "$c" -gt 0 ]; then
+            crit=$((crit + c))
+            notes+=("TruffleHog Verified Secrets: $c")
           fi
 
-          # 2. JQ Logic for Checkov (CIS Rules Extraction)
-          CHECKOV="all-reports/reports-checkov/checkov_ansible.json"
-          if [ -f "$CHECKOV" ]; then
-            # Ambil detail ID dan Nama Aturan yang dilanggar
-            rules=$(jq -r '.results.failed_checks[]? | "- \(.check_id): \(.check_name)"' "$CHECKOV" | sort -u)
-            if [ -n "$rules" ]; then
-              details+="\n*⚠️ CIS Benchmark Violations:*\n$rules"
-              c=$(jq '.results.failed_checks[]? | select(.severity=="CRITICAL") | length' "$CHECKOV" 2>/dev/null || echo 0)
-              crit=$((crit + c))
-              notes+=("Checkov CIS Violation: $c")
-            fi
+          # Snyk Code (critical)
+          c=$(safe_jq_count "all-reports/reports-snyk/snyk-code.json" '
+            [ .vulnerabilities[]? | select(.severity=="critical") ] | length
+          ')
+          if [ "$c" -gt 0 ]; then
+            crit=$((crit + c))
+            notes+=("Snyk Code Critical: $c")
           fi
 
-          # 3. Create GitHub Summary
+          # Snyk SCA (critical)
+          c=$(safe_jq_count "all-reports/reports-snyk/snyk-sca.json" '
+            [ .vulnerabilities[]? | select(.severity=="critical") ] | length
+          ')
+          if [ "$c" -gt 0 ]; then
+            crit=$((crit + c))
+            notes+=("Snyk SCA Critical: $c")
+          fi
+
+          # Checkov Ansible (severity CRITICAL)
+          c=$(safe_jq_count "all-reports/reports-checkov/checkov_ansible.json" '
+            [ .results.failed_checks[]? | select(.severity=="CRITICAL") ] | length
+          ')
+          if [ "$c" -gt 0 ]; then
+            crit=$((crit + c))
+            notes+=("Checkov Ansible CIS Violations (CRITICAL): $c")
+          fi
+
           {
             echo "### 🛡️ DevSecOps Security Gate"
+            echo ""
             echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**"
-            for n in "${notes[@]}"; do echo "- $n"; done
-            if [ -n "$rules" ]; then
-              echo "#### 📝 Infrastructure Rules Violated"
-              echo "$rules"
+            if [ "${#notes[@]}" -eq 0 ]; then
+              echo "- ✅ No critical issues detected in configured sources."
+            else
+              for n in "${notes[@]}"; do
+                echo "- $n"
+              done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 4. Logic Gate & Slack Notification
           if [ "$crit" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* (Run #${{ github.run_number }})\nFound *$crit* CRITICAL issues! Deployment Blocked.\n$details"
+            msg="🚨 *SECURITY GATE FAILED* - Found $crit CRITICAL issues! Deployment Blocked."
             curl -sS -X POST -H 'Content-type: application/json' \
               --data "$(jq -n --arg text "$msg" '{text:$text}')" \
-              "${{ secrets.SLACK_WEBHOOK_URL }}"
+              "$SLACK_URL" >/dev/null
             exit 1
           fi
 
@@ -274,20 +341,32 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports
-
+          
       - name: Bulk Upload to DefectDojo
+        shell: bash
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
         run: |
+          set -euo pipefail
+
           upload_to_dd() {
-            if [ -f "$1" ]; then
+            local file="$1"
+            local type="$2"
+            if [ -f "$file" ]; then
+              echo "Uploading $file as '$type' to DefectDojo..."
               curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
                 -H "Authorization: Token ${DD_TOKEN}" \
-                -F "active=true" -F "verified=true" -F "scan_type=$2" \
-                -F "product=${DEFECTDOJO_PRODUCT_ID}" -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-                -F "file=@$1" >/dev/null
+                -F "active=true" \
+                -F "verified=true" \
+                -F "scan_type=${type}" \
+                -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+                -F "engagement_name=${DEFECTDOJO_ENGAGEMENT_NAME}" \
+                -F "file=@${file}" >/dev/null
+            else
+              echo "[SKIP] Not found: $file"
             fi
           }
+
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
           upload_to_dd "all-reports/reports-checkov/checkov_ansible.json" "Checkov Scan"
           upload_to_dd "all-reports/reports-snyk/snyk-code.json" "Snyk Scan"
