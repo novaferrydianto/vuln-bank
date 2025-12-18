@@ -20,7 +20,7 @@ permissions:
   contents: read
   security-events: write
   issues: write
-  id-token: write # WAJIB untuk Cosign Keyless signing
+  id-token: write
 
 concurrency:
   group: vuln-bank-${{ github.workflow }}-${{ github.ref }}
@@ -40,6 +40,9 @@ env:
   DEFECTDOJO_ENGAGEMENT_NAME: "Build-${{ github.run_number }}"
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
+  EPSS_MODE: "C"        # A=Strict, B=Weighted, C=Hybrid (recommended)
+  EPSS_THRESHOLD: "0.5"
+  EPSS_FINDINGS: "security-reports/epss-findings.json"
 
 jobs:
   #####################
@@ -145,7 +148,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v checkov >/dev/null 2>&1; then
+          if ! command -v checkov >/dev/null; then
             pipx install --force checkov
             export PATH="$HOME/.local/bin:$PATH"
           fi
@@ -200,7 +203,7 @@ jobs:
           sarif_file: snyk-code.sarif
 
       # =====================
-      # SonarQube
+      # # SonarQube (Coverage + Analysis)
       # =====================
       - name: Python Coverage (Vuln Bank)
         if: matrix.scan_type == 'sonarqube'
@@ -209,7 +212,8 @@ jobs:
           set -euo pipefail
 
           mkdir -p security-reports
-
+          
+          echo "[INFO] Installing test dependencies..."
           pip install pytest pytest-cov coverage
 
           echo "[INFO] Running pytest coverage..."
@@ -221,8 +225,14 @@ jobs:
             --cov-report=term \
             || true
 
-          echo "Coverage content:"
+          echo "[INFO] Listing coverage outputs:"
           ls -lah security-reports/
+
+          # Validate output
+          if [ ! -s security-reports/coverage.xml ]; then
+            echo "[FATAL] coverage.xml not generated!"
+            exit 1
+          fi
 
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
@@ -233,11 +243,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ ! -f security-reports/coverage.xml ]; then
-            echo "[FATAL] coverage.xml missing"
-            exit 1
-          fi
-
           echo "[INFO] Running SonarQube analysis..."
 
           sonar-scanner \
@@ -245,11 +250,12 @@ jobs:
             -Dsonar.sources=. \
             -Dsonar.exclusions="static/**,templates/**,*.md,LICENSE,*.txt" \
             -Dsonar.python.coverage.reportPaths=$(pwd)/security-reports/coverage.xml \
+            -Dsonar.python.version=3 \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
       # =====================
-      # Upload JSON Artifacts
+      # Upload Artifacts
       # =====================
       - name: Upload scan artifacts
         if: matrix.scan_type != 'sonarqube'
@@ -264,7 +270,7 @@ jobs:
   # 3. GATE & NOTIFY
   # ---------------------------------------------------------
   gate_and_summary:
-    name: Gate + Slack + Step Summary
+    name: Gate + Slack + Step Summary + EPSS
     needs: security_scans
     runs-on: self-hosted
     continue-on-error: false
@@ -274,16 +280,79 @@ jobs:
         with:
           path: all-reports
 
-      - name: Aggregate & Enforce Gate
+      - name: Run EPSS/KEV Gate (Hybrid Mode)
+        shell: bash
+        env:
+          EPSS_MODE: ${{ env.EPSS_MODE }}
+          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
+          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
+
+          inputs=()
+          [ -f "all-reports/reports-trivy/trivy.json" ] && inputs+=("all-reports/reports-trivy/trivy.json")
+          [ -f "all-reports/reports-snyk/snyk-sca.json" ] && inputs+=("all-reports/reports-snyk/snyk-sca.json")
+
+          if [ "${#inputs[@]}" -eq 0 ]; then
+            echo "[INFO] No Trivy/Snyk SCA reports found for EPSS gate; skipping."
+            exit 0
+          fi
+
+          echo "[INFO] Running EPSS gate in mode=${EPSS_MODE}, threshold=${EPSS_THRESHOLD}"
+          python3 scripts/epss_gate.py \
+            --mode "${EPSS_MODE}" \
+            --input "${inputs[@]}" \
+            --output "${EPSS_FINDINGS}" \
+            --threshold "${EPSS_THRESHOLD}" || echo "[WARN] epss_gate returned non-zero (handled in aggregate)."
+
+      # ----------------------
+      # Upload EPSS findings sebagai artifact (digunakan oleh job lain)
+      # ----------------------
+      - name: Upload EPSS findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: epss-findings
+          path: ${{ env.EPSS_FINDINGS }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # ----------------------
+      # GitHub PR Comment + Issues (EPSS/KEV)
+      # ----------------------
+      - name: GitHub PR Comment + Issues (EPSS/KEV)
+        shell: bash
+        env:
+          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${EPSS_FINDINGS}" ]; then
+            echo "[INFO] No EPSS findings file; skip GH integration."
+            exit 0
+          fi
+
+          pip install requests
+          python3 scripts/epss_gh_integration.py
+
+      # ----------------------
+      # Aggregate & Enforce Gate (Static + EPSS)
+      # ----------------------
+      - name: Aggregate & Enforce Gate (Static + EPSS)
         shell: bash
         env:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
+          EPSS_MODE: ${{ env.EPSS_MODE }}
+          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
         run: |
           set -euo pipefail
           crit=0
           notes=()
 
-          # Safe JQ Read Helper
           safe_jq_count() {
             local file="$1"
             local expr="$2"
@@ -294,12 +363,10 @@ jobs:
             fi
           }
 
-          # ======================================================
-          # 1. TruffleHog (Verified Secrets Only)
-          # ======================================================
+          # 1. TruffleHog (Verified Secrets)
           c=$(safe_jq_count "all-reports/reports-trufflehog/trufflehog.json" '
             [
-              . as $line? 
+              . as $line?
               | try (if type=="array" then .[] else . end) catch empty
               | select(.Verified==true)
             ] | length
@@ -309,13 +376,11 @@ jobs:
             notes+=("TruffleHog Verified Secrets: $c")
           fi
 
-          # ======================================================
           # 2. Semgrep (ERROR / HIGH → Critical)
-          # ======================================================
           c=$(safe_jq_count "all-reports/reports-semgrep/semgrep.json" '
             [
               .results[]?
-              | .extra.severity? 
+              | .extra.severity?
               | ascii_downcase
               | select(.=="error" or .=="high")
             ] | length
@@ -325,9 +390,7 @@ jobs:
             notes+=("Semgrep High/Error Findings: $c")
           fi
 
-          # ======================================================
-          # 3. Snyk Code (Critical Vulnerabilities)
-          # ======================================================
+          # 3. Snyk Code (Critical)
           c=$(safe_jq_count "all-reports/reports-snyk/snyk-code.json" '
             [ .vulnerabilities[]? | select(.severity=="critical") ] | length
           ')
@@ -336,9 +399,7 @@ jobs:
             notes+=("Snyk Code Critical: $c")
           fi
 
-          # ======================================================
-          # 4. Snyk SCA (Critical Libraries)
-          # ======================================================
+          # 4. Snyk SCA (Critical)
           c=$(safe_jq_count "all-reports/reports-snyk/snyk-sca.json" '
             [ .vulnerabilities[]? | select(.severity=="critical") ] | length
           ')
@@ -347,9 +408,7 @@ jobs:
             notes+=("Snyk SCA Critical: $c")
           fi
 
-          # ======================================================
-          # 5. Checkov (IaC / Ansible / Dockerfile CRITICAL)
-          # ======================================================
+          # 5. Checkov (CRITICAL)
           c=$(safe_jq_count "all-reports/reports-checkov/checkov_ansible.json" '
             [ .results.failed_checks[]? | select(.severity=="CRITICAL") ] | length
           ')
@@ -358,28 +417,33 @@ jobs:
             notes+=("Checkov Ansible CRITICAL: $c")
           fi
 
-          # ======================================================
-          # Summary
-          # ======================================================
+          # 6. EPSS / KEV
+          epss_count=0
+          if [ -f "${EPSS_FINDINGS}" ]; then
+            epss_count=$(jq '.high_risk | length' "${EPSS_FINDINGS}" 2>/dev/null || echo 0)
+          fi
+          if [ "$epss_count" -gt 0 ]; then
+            crit=$((crit + epss_count))
+            notes+=("EPSS/KEV High-Risk CVEs (mode=${EPSS_MODE}, thr=${EPSS_THRESHOLD}): ${epss_count}")
+          fi
+
           {
-            echo "### 🛡️ DevSecOps Security Gate"
+            echo "### 🛡️ DevSecOps Security Gate (Static + EPSS/KEV)"
             echo ""
-            echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**"
+            echo "- 🔴 TOTAL CRITICAL / HIGH-RISK ITEMS: **$crit**"
+            echo "- 📊 EPSS/KEV High-Risk CVEs: **${epss_count}** (mode=${EPSS_MODE}, thr=${EPSS_THRESHOLD})"
             if [ "${#notes[@]}" -eq 0 ]; then
-              echo "- ✅ No critical issues detected across all scanners."
+              echo "- ✅ No critical or high-risk issues detected across all scanners."
             else
               for n in "${notes[@]}"; do echo "- $n"; done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # ======================================================
-          # Block Deployment if Critical
-          # ======================================================
           if [ "$crit" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* — Found $crit CRITICAL issues! Deployment Blocked."
+            msg="🚨 *SECURITY GATE FAILED* — Static/Config Critical: $crit, EPSS High-Risk: ${epss_count}. Deployment Blocked."
             curl -sS -X POST -H 'Content-type: application/json' \
               --data "$(jq -n --arg text "$msg" '{text:$text}')" \
-              "$SLACK_URL" >/dev/null
+              "$SLACK_URL" >/dev/null || true
             exit 1
           fi
 
@@ -392,23 +456,47 @@ jobs:
     if: always()
     runs-on: self-hosted
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: all-reports
-          
-      - name: Bulk Upload to DefectDojo
+
+      - name: Download EPSS findings artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: epss-findings
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Bulk Upload to DefectDojo (with EPSS tags)
         shell: bash
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
+          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
+          EPSS_MODE: ${{ env.EPSS_MODE }}
+          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
         run: |
           set -euo pipefail
+
+          TAGS="EPSS-RUN,EPSS-MODE-${EPSS_MODE},EPSS-THR-${EPSS_THRESHOLD}"
+          if [ -f "${EPSS_FINDINGS}" ]; then
+            epss_count=$(jq '.high_risk | length' "${EPSS_FINDINGS}" 2>/dev/null || echo 0)
+            if [ "$epss_count" -gt 0 ]; then
+              TAGS="${TAGS},EPSS-HIGH-RISK"
+            else
+              TAGS="${TAGS},EPSS-NO-HIGH-RISK"
+            fi
+          else
+            TAGS="${TAGS},EPSS-NO-DATA"
+          fi
 
           upload_to_dd() {
             local file="$1"
             local type="$2"
             if [ -f "$file" ]; then
-              echo "Uploading $file as '$type' to DefectDojo..."
+              echo "Uploading $file as '$type' to DefectDojo with tags: ${TAGS}"
               curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
                 -H "Authorization: Token ${DD_TOKEN}" \
                 -F "active=true" \
@@ -416,6 +504,7 @@ jobs:
                 -F "scan_type=${type}" \
                 -F "product=${DEFECTDOJO_PRODUCT_ID}" \
                 -F "engagement_name=${DEFECTDOJO_ENGAGEMENT_NAME}" \
+                -F "tags=${TAGS}" \
                 -F "file=@${file}" >/dev/null
             else
               echo "[SKIP] Not found: $file"
@@ -426,6 +515,64 @@ jobs:
           upload_to_dd "all-reports/reports-checkov/checkov_ansible.json" "Checkov Scan"
           upload_to_dd "all-reports/reports-snyk/snyk-code.json" "Snyk Scan"
           upload_to_dd "all-reports/reports-snyk/snyk-sca.json" "Snyk Scan"
+
+  # =====================================================================
+# 5. SECURITY SCORECARD + BOARD REPORT
+# =====================================================================
+  scorecard_and_report:
+    name: Security Scorecard + Board Report
+    needs: [gate_and_summary, upload_to_defectdojo]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download EPSS findings artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: epss-findings
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Prepare docs directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/data docs/reports
+
+      - name: Generate Security Scorecard JSON
+        shell: bash
+        env:
+          OWASP_LATEST: docs/data/owasp-latest.json
+          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
+          SLA_WEEKLY: docs/data/defectdojo-sla-weekly.json
+        run: |
+          set -euo pipefail
+          python3 scripts/security_scorecard.py > docs/data/security-scorecard.json
+
+      - name: Render Board Markdown Report
+        shell: bash
+        env:
+          SCORECARD_JSON: docs/data/security-scorecard.json
+        run: |
+          set -euo pipefail
+          python3 scripts/render_security_markdown.py \
+            "${SCORECARD_JSON}" > docs/reports/security-board-report.md
+
+      - name: Upload Board Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-board-report
+          path: docs/reports/security-board-report.md
+          retention-days: 30
+
+      - name: Upload Scorecard JSON Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scorecard-json
+          path: docs/data/security-scorecard.json
+          retention-days: 30
+          
 
   # ---------------------------------------------------------
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
