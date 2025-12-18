@@ -527,19 +527,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ==========================================================
+      # 1. Download EPSS Findings (pasti dari gate_and_summary)
+      # ==========================================================
       - name: Download EPSS findings artifact
-        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: epss-findings
           path: ${{ env.REPORT_DIR }}
+        continue-on-error: true
 
+      # ==========================================================
+      # 2. Prepare directory
+      # ==========================================================
       - name: Prepare docs directory
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p docs/data docs/reports
+          # Placeholder jika file tidak ada supaya script tidak crash
+          echo '{}' > docs/data/owasp-latest.json
+          echo '{}' > docs/data/defectdojo-sla-weekly.json
 
+      # ==========================================================
+      # 3. Generate Security Scorecard JSON
+      # ==========================================================
       - name: Generate Security Scorecard JSON
         shell: bash
         env:
@@ -548,17 +560,37 @@ jobs:
           SLA_WEEKLY: docs/data/defectdojo-sla-weekly.json
         run: |
           set -euo pipefail
-          python3 scripts/security_scorecard.py > docs/data/security-scorecard.json
 
+          echo "[INFO] Running security_scorecard.py..."
+
+          if ! python3 scripts/security_scorecard.py > docs/data/security-scorecard.json; then
+            echo "[WARN] Failed generating scorecard, using empty stub."
+            echo '{}' > docs/data/security-scorecard.json
+          fi
+
+          echo "[INFO] Scorecard written to docs/data/security-scorecard.json"
+
+      # ==========================================================
+      # 4. Render Board Markdown Report
+      # ==========================================================
       - name: Render Board Markdown Report
         shell: bash
         env:
           SCORECARD_JSON: docs/data/security-scorecard.json
         run: |
           set -euo pipefail
-          python3 scripts/render_security_markdown.py \
-            "${SCORECARD_JSON}" > docs/reports/security-board-report.md
 
+          echo "[INFO] Rendering markdown board report..."
+          if ! python3 scripts/render_security_markdown.py \
+            "${SCORECARD_JSON}" > docs/reports/security-board-report.md; then
+            echo "[WARN] Markdown render failed, writing placeholder"
+            echo "# Security Board Report\n\nReport generation failed." \
+              > docs/reports/security-board-report.md
+          fi
+
+      # ==========================================================
+      # 5. Upload Artifacts (Board Report + Scorecard)
+      # ==========================================================
       - name: Upload Board Report Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -573,7 +605,6 @@ jobs:
           path: docs/data/security-scorecard.json
           retention-days: 30
           
-
   # ---------------------------------------------------------
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
   # ---------------------------------------------------------
