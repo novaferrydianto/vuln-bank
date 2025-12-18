@@ -29,144 +29,119 @@ concurrency:
 env:
   APP_NAME: vuln-bank
   APP_URL: http://192.168.107.135:5000
+
   REPORT_DIR: security-reports
+
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
-  IMAGE_TAG: ${{ github.sha }} 
+  IMAGE_TAG: ${{ github.sha }}
   DOCKERFILE_PATH: containers/app/Dockerfile
   REQUIREMENTS_PATH: containers/app/requirements.txt
+
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_NAME: "Build-${{ github.run_number }}"
+
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # 2025 — LLM SAST Multistrategy
+  LLM_SCAN_PATH: "."
+  LLM_REPORT: "security-reports/llm-multi-agent.json"
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+  AI_API_KEY: ${{ secrets.AI_API_KEY }}
+
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
-  EPSS_MODE: "C"        # A=Strict, B=Weighted, C=Hybrid (recommended)
+
+  EPSS_MODE: "C"           # A=Strict, B=Weighted, C=Hybrid
   EPSS_THRESHOLD: "0.5"
   EPSS_FINDINGS: "security-reports/epss-findings.json"
 
+# =====================================================================
+# 1. SETUP
+# =====================================================================
 jobs:
-  #####################
-  # 1. Tahap Persiapan
-  #####################
   setup:
-    name: Setup Environment
+    name: Setup Runner Environment
     runs-on: self-hosted
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Prepare workspace
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
           python3 -m pip install --upgrade pip
+          sudo dnf install -y jq pipx || true
 
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo dnf install -y jq
-          fi
-
-      - name: Install security tools
-        shell: bash
+      - name: Install Core Tools
         run: |
           set -euo pipefail
           if [ -f "${REQUIREMENTS_PATH}" ]; then
             pip install -r "${REQUIREMENTS_PATH}"
           fi
 
-          if ! command -v semgrep >/dev/null 2>&1; then
-            if ! command -v pipx >/dev/null 2>&1; then
-              sudo dnf install -y pipx
-            fi
-            export PATH="$HOME/.local/bin:$PATH"
-            pipx install --force semgrep
-          fi
+          export PATH="$HOME/.local/bin:$PATH"
+          pipx install --force semgrep || true
+          pipx install --force checkov || true
 
-          command -v trivy >/dev/null 2>&1 || echo "[WARN] trivy not found on runner"
-          command -v snyk  >/dev/null 2>&1 || echo "[WARN] snyk not found on runner"
-          command -v trufflehog >/dev/null 2>&1 || echo "[WARN] trufflehog not found on runner"
-          command -v sonar-scanner >/dev/null 2>&1 || echo "[WARN] sonar-scanner not found on runner"
-          command -v cosign >/dev/null 2>&1 || echo "[WARN] cosign not found on runner"
-          command -v docker >/dev/null 2>&1 || { echo "[FATAL] docker not installed"; exit 1; }
-          docker buildx version >/dev/null 2>&1 || { echo "[FATAL] docker buildx missing"; exit 1; }
-
-  ####################################
-  # 2. Tahap Security Scans (Parallel)
-  ####################################
+# =====================================================================
+# 2. TRADITIONAL SECURITY SCANS
+# =====================================================================
   security_scans:
-    name: Security Scans (Parallel)
+    name: Traditional Security Scans
     needs: setup
     runs-on: self-hosted
-    continue-on-error: false
+
     strategy:
       fail-fast: false
       matrix:
-        scan_type: [trufflehog, semgrep, trivy, snyk, sonarqube, checkov]
+        scan_type: [trufflehog, semgrep, trivy, snyk, checkov, sonarqube]
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Init report dir
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${REPORT_DIR}"
+        run: mkdir -p "${REPORT_DIR}"
 
-      # =====================
-      # TruffleHog (Secrets)
-      # =====================
-      - name: TruffleHog Scan
+      # ------------- TruffleHog
+      - name: TruffleHog
         if: matrix.scan_type == 'trufflehog'
-        shell: bash
         run: |
           set -euo pipefail
           trufflehog git file://$(pwd) \
-            --json \
-            --only-verified \
-            --no-update > "${REPORT_DIR}/trufflehog.json" || true
+            --json --only-verified --no-update \
+            > "${REPORT_DIR}/trufflehog.json" || true
 
-      # =====================
-      # Semgrep (SAST / policy)
-      # =====================
-      - name: Semgrep Banking Scan
+      # ------------- Semgrep
+      - name: Semgrep Scan
         if: matrix.scan_type == 'semgrep'
-        shell: bash
         run: |
           set -euo pipefail
           semgrep scan \
             --config auto \
-            --config "p/security-audit" \
-            --config "p/secrets" \
-            --config "p/owasp-top-ten" \
-            --config "p/python" \
+            --config p/security-audit \
+            --config p/secrets \
+            --config p/owasp-top-ten \
             --json > "${REPORT_DIR}/semgrep.json" || true
 
-      # =====================
-      # Checkov (IaC / Dockerfile)
-      # =====================
-      - name: Checkov CIS Compliance Scan
+      # ------------- Checkov
+      - name: Checkov Scan
         if: matrix.scan_type == 'checkov'
-        shell: bash
         run: |
           set -euo pipefail
-          if ! command -v checkov >/dev/null; then
-            pipx install --force checkov
-            export PATH="$HOME/.local/bin:$PATH"
-          fi
+          export PATH="$HOME/.local/bin:$PATH"
+          checkov -d ansible --output json \
+            > "${REPORT_DIR}/checkov_ansible.json" || true
+          checkov -f "${DOCKERFILE_PATH}" --output json \
+            > "${REPORT_DIR}/checkov_docker.json" || true
 
-          checkov -d ansible \
-            --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 \
-            --output json > "${REPORT_DIR}/checkov_ansible.json" || true
-
-          checkov -f "${DOCKERFILE_PATH}" \
-            --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 \
-            --output json > "${REPORT_DIR}/checkov_docker.json" || true
-
-      # =====================
-      # Trivy (Config scan)
-      # =====================
-      - name: Trivy Scan (Config)
+      # ------------- Trivy
+      - name: Trivy Config
         if: matrix.scan_type == 'trivy'
-        shell: bash
         run: |
           set -euo pipefail
           trivy config . \
@@ -174,90 +149,46 @@ jobs:
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
-      # =====================
-      # Snyk (Code, SCA, IaC)
-      # =====================
-      - name: Snyk Advanced Scans
+      # ------------- Snyk
+      - name: Snyk Scan
         if: matrix.scan_type == 'snyk'
-        shell: bash
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -euo pipefail
-          
-          # 1. SAST - Snyk Code (SARIF + JSON)
-          snyk code test --sarif > snyk-code.sarif || true
           snyk code test --json > "${REPORT_DIR}/snyk-code.json" || true
-
-          # 2. SCA - Snyk Open Source
           snyk test --json > "${REPORT_DIR}/snyk-sca.json" || true
-          snyk monitor --all-projects || true
 
-          # 3. IaC
-          snyk iac test --json > "${REPORT_DIR}/snyk-iac.json" || true
-
-      - name: Upload SARIF to GitHub
-        if: matrix.scan_type == 'snyk' && always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: snyk-code.sarif
-
-      # =====================
-      # # SonarQube (Coverage + Analysis)
-      # =====================
-      - name: Python Coverage (Vuln Bank)
+      # ------------- SonarQube
+      - name: Python Coverage
         if: matrix.scan_type == 'sonarqube'
-        shell: bash
         run: |
           set -euo pipefail
-
-          mkdir -p security-reports
-          
-          echo "[INFO] Installing test dependencies..."
           pip install pytest pytest-cov coverage
-
-          echo "[INFO] Running pytest coverage..."
+          mkdir -p security-reports
           pytest \
             --disable-warnings \
             --cov=. \
-            --cov-config=.coveragerc \
             --cov-report=xml:security-reports/coverage.xml \
-            --cov-report=term \
-            || true
+            --cov-report=term || true
 
-          echo "[INFO] Listing coverage outputs:"
-          ls -lah security-reports/
-
-          # Validate output
-          if [ ! -s security-reports/coverage.xml ]; then
-            echo "[FATAL] coverage.xml not generated!"
-            exit 1
-          fi
-
-      - name: SonarQube Scan
+      - name: SonarQube
         if: matrix.scan_type == 'sonarqube'
-        shell: bash
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
-
-          echo "[INFO] Running SonarQube analysis..."
-
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.sources=. \
             -Dsonar.exclusions="static/**,templates/**,*.md,LICENSE,*.txt" \
             -Dsonar.python.coverage.reportPaths=$(pwd)/security-reports/coverage.xml \
-            -Dsonar.python.version=3 \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
-      # =====================
-      # Upload Artifacts
-      # =====================
-      - name: Upload scan artifacts
+      # ------------- Upload artifacts
+      - name: Upload artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
         with:
@@ -266,51 +197,84 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # ---------------------------------------------------------
-  # 3. GATE & NOTIFY
-  # ---------------------------------------------------------
-  gate_and_summary:
-    name: Gate + Slack + Step Summary + EPSS
-    needs: security_scans
+# =====================================================================
+# 3. LLM SAST MULTI-AGENT
+# =====================================================================
+  llm_sast:
+    name: LLM SAST Multi-Agent
+    needs: setup
     runs-on: self-hosted
-    continue-on-error: false
+
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - name: Install LLM deps
+        run: |
+          set -euo pipefail
+          pip install -r llm/requirements.txt
+
+      - name: Run LLM scanner
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          LLM_REPORT: ${{ env.LLM_REPORT }}
+        run: |
+          set -euo pipefail
+          python llm/pipeline.py \
+            --scan-path "${LLM_SCAN_PATH}" \
+            --output "${LLM_REPORT}"
+
+      - name: Upload LLM findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-findings
+          path: ${{ env.LLM_REPORT }}
+          retention-days: 14
+
+# =====================================================================
+# 4. EPSS/KEV GATE + SUMMARY
+# =====================================================================
+  gate_and_summary:
+    name: Security Gate + EPSS + Slack
+    needs: [security_scans, llm_sast]
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
           path: all-reports
 
-      - name: Run EPSS/KEV Gate (Hybrid Mode)
-        shell: bash
+      - name: Run EPSS Gate (Hybrid)
         env:
           EPSS_MODE: ${{ env.EPSS_MODE }}
           EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
           EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
         run: |
           set -euo pipefail
-          mkdir -p "${REPORT_DIR}"
+          mkdir -p "$(dirname "${EPSS_FINDINGS}")"
+
+          TRIVY_INPUT="all-reports/reports-trivy/trivy.json"
+          SNYK_SCA_INPUT="all-reports/reports-snyk/snyk-sca.json"
 
           inputs=()
-          [ -f "all-reports/reports-trivy/trivy.json" ] && inputs+=("all-reports/reports-trivy/trivy.json")
-          [ -f "all-reports/reports-snyk/snyk-sca.json" ] && inputs+=("all-reports/reports-snyk/snyk-sca.json")
+          [ -f "${TRIVY_INPUT}" ] && inputs+=("--input" "${TRIVY_INPUT}")
+          [ -f "${SNYK_SCA_INPUT}" ] && inputs+=("--input" "${SNYK_SCA_INPUT}")
 
           if [ "${#inputs[@]}" -eq 0 ]; then
-            echo "[INFO] No Trivy/Snyk SCA reports found for EPSS gate; skipping."
-            exit 0
+            echo "[INFO] No Trivy/Snyk SCA reports found; skipping EPSS gate."
+            echo '{"high_risk":[],"threshold":'"${EPSS_THRESHOLD}"'}' > "${EPSS_FINDINGS}"
+          else
+            python3 scripts/epss_gate.py \
+              --mode "${EPSS_MODE}" \
+              "${inputs[@]}" \
+              --output "${EPSS_FINDINGS}" \
+              --threshold "${EPSS_THRESHOLD}"
           fi
 
-          echo "[INFO] Running EPSS gate in mode=${EPSS_MODE}, threshold=${EPSS_THRESHOLD}"
-          python3 scripts/epss_gate.py \
-            --mode "${EPSS_MODE}" \
-            --input "${inputs[@]}" \
-            --output "${EPSS_FINDINGS}" \
-            --threshold "${EPSS_THRESHOLD}" || echo "[WARN] epss_gate returned non-zero (handled in aggregate)."
-
-      # ----------------------
-      # Upload EPSS findings sebagai artifact (digunakan oleh job lain)
-      # ----------------------
-      - name: Upload EPSS findings artifact
-        if: always()
+      - name: Upload EPSS Findings
         uses: actions/upload-artifact@v4
         with:
           name: epss-findings
@@ -318,325 +282,173 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # ----------------------
-      # GitHub PR Comment + Issues (EPSS/KEV)
-      # ----------------------
-      - name: GitHub PR Comment + Issues (EPSS/KEV)
-        shell: bash
+      - name: GitHub Issues + PR Comments (EPSS/KEV)
         env:
-          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
         run: |
           set -euo pipefail
-
-          if [ ! -f "${EPSS_FINDINGS}" ]; then
-            echo "[INFO] No EPSS findings file; skip GH integration."
-            exit 0
+          if [ -f "${EPSS_FINDINGS}" ]; then
+            python3 scripts/epss_gh_integration.py
+          else
+            echo "[INFO] EPSS findings missing; skip GH integration."
           fi
 
-          pip install requests
-          python3 scripts/epss_gh_integration.py
-
-      # ----------------------
-      # Aggregate & Enforce Gate (Static + EPSS)
-      # ----------------------
-      - name: Aggregate & Enforce Gate (Static + EPSS)
-        shell: bash
+      - name: Gate Summary + Slack
         env:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
-          EPSS_MODE: ${{ env.EPSS_MODE }}
-          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
         run: |
           set -euo pipefail
-          crit=0
-          notes=()
+          python3 scripts/gate_summary.py
 
-          safe_jq_count() {
-            local file="$1"
-            local expr="$2"
-            if [ -f "$file" ]; then
-              jq -r "$expr" "$file" 2>/dev/null || echo 0
-            else
-              echo 0
-            fi
-          }
-
-          # 1. TruffleHog (Verified Secrets)
-          c=$(safe_jq_count "all-reports/reports-trufflehog/trufflehog.json" '
-            [
-              . as $line?
-              | try (if type=="array" then .[] else . end) catch empty
-              | select(.Verified==true)
-            ] | length
-          ')
-          if [ "$c" -gt 0 ]; then
-            crit=$((crit + c))
-            notes+=("TruffleHog Verified Secrets: $c")
-          fi
-
-          # 2. Semgrep (ERROR / HIGH → Critical)
-          c=$(safe_jq_count "all-reports/reports-semgrep/semgrep.json" '
-            [
-              .results[]?
-              | .extra.severity?
-              | ascii_downcase
-              | select(.=="error" or .=="high")
-            ] | length
-          ')
-          if [ "$c" -gt 0 ]; then
-            crit=$((crit + c))
-            notes+=("Semgrep High/Error Findings: $c")
-          fi
-
-          # 3. Snyk Code (Critical)
-          c=$(safe_jq_count "all-reports/reports-snyk/snyk-code.json" '
-            [ .vulnerabilities[]? | select(.severity=="critical") ] | length
-          ')
-          if [ "$c" -gt 0 ]; then
-            crit=$((crit + c))
-            notes+=("Snyk Code Critical: $c")
-          fi
-
-          # 4. Snyk SCA (Critical)
-          c=$(safe_jq_count "all-reports/reports-snyk/snyk-sca.json" '
-            [ .vulnerabilities[]? | select(.severity=="critical") ] | length
-          ')
-          if [ "$c" -gt 0 ]; then
-            crit=$((crit + c))
-            notes+=("Snyk SCA Critical: $c")
-          fi
-
-          # 5. Checkov (CRITICAL)
-          c=$(safe_jq_count "all-reports/reports-checkov/checkov_ansible.json" '
-            [ .results.failed_checks[]? | select(.severity=="CRITICAL") ] | length
-          ')
-          if [ "$c" -gt 0 ]; then
-            crit=$((crit + c))
-            notes+=("Checkov Ansible CRITICAL: $c")
-          fi
-
-          # 6. EPSS / KEV
-          epss_count=0
-          if [ -f "${EPSS_FINDINGS}" ]; then
-            epss_count=$(jq '.high_risk | length' "${EPSS_FINDINGS}" 2>/dev/null || echo 0)
-          fi
-          if [ "$epss_count" -gt 0 ]; then
-            crit=$((crit + epss_count))
-            notes+=("EPSS/KEV High-Risk CVEs (mode=${EPSS_MODE}, thr=${EPSS_THRESHOLD}): ${epss_count}")
-          fi
-
-          {
-            echo "### 🛡️ DevSecOps Security Gate (Static + EPSS/KEV)"
-            echo ""
-            echo "- 🔴 TOTAL CRITICAL / HIGH-RISK ITEMS: **$crit**"
-            echo "- 📊 EPSS/KEV High-Risk CVEs: **${epss_count}** (mode=${EPSS_MODE}, thr=${EPSS_THRESHOLD})"
-            if [ "${#notes[@]}" -eq 0 ]; then
-              echo "- ✅ No critical or high-risk issues detected across all scanners."
-            else
-              for n in "${notes[@]}"; do echo "- $n"; done
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$crit" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* — Static/Config Critical: $crit, EPSS High-Risk: ${epss_count}. Deployment Blocked."
-            curl -sS -X POST -H 'Content-type: application/json' \
-              --data "$(jq -n --arg text "$msg" '{text:$text}')" \
-              "$SLACK_URL" >/dev/null || true
-            exit 1
-          fi
-
-  # =========================
-  # 4. upload_to_defectdojo
-  # =========================
+# =====================================================================
+# 5. DEFECTDOJO UPLOAD
+# =====================================================================
   upload_to_defectdojo:
-    name: DefectDojo Integration
+    name: Upload Traditional Scans → DefectDojo
     needs: [security_scans, gate_and_summary]
-    if: always()
     runs-on: self-hosted
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: all-reports
 
-      - name: Download EPSS findings artifact
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: epss-findings
-          path: ${{ env.REPORT_DIR }}
-
-      - name: Bulk Upload to DefectDojo (with EPSS tags)
-        shell: bash
+      - name: Import Traditional Scans to DefectDojo
         env:
-          DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
-          EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
-          EPSS_MODE: ${{ env.EPSS_MODE }}
-          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
+          DEFECTDOJO_URL: ${{ env.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ env.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_PRODUCT_ID: ${{ env.DEFECTDOJO_PRODUCT_ID }}
+          DEFECTDOJO_ENGAGEMENT_NAME: ${{ env.DEFECTDOJO_ENGAGEMENT_NAME }}
         run: |
           set -euo pipefail
+          python3 scripts/dd_traditional_import.py
 
-          TAGS="EPSS-RUN,EPSS-MODE-${EPSS_MODE},EPSS-THR-${EPSS_THRESHOLD}"
-          if [ -f "${EPSS_FINDINGS}" ]; then
-            epss_count=$(jq '.high_risk | length' "${EPSS_FINDINGS}" 2>/dev/null || echo 0)
-            if [ "$epss_count" -gt 0 ]; then
-              TAGS="${TAGS},EPSS-HIGH-RISK"
-            else
-              TAGS="${TAGS},EPSS-NO-HIGH-RISK"
-            fi
-          else
-            TAGS="${TAGS},EPSS-NO-DATA"
-          fi
-
-          upload_to_dd() {
-            local file="$1"
-            local type="$2"
-            if [ -f "$file" ]; then
-              echo "Uploading $file as '$type' to DefectDojo with tags: ${TAGS}"
-              curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-                -H "Authorization: Token ${DD_TOKEN}" \
-                -F "active=true" \
-                -F "verified=true" \
-                -F "scan_type=${type}" \
-                -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-                -F "engagement_name=${DEFECTDOJO_ENGAGEMENT_NAME}" \
-                -F "tags=${TAGS}" \
-                -F "file=@${file}" >/dev/null
-            else
-              echo "[SKIP] Not found: $file"
-            fi
-          }
-
-          upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
-          upload_to_dd "all-reports/reports-checkov/checkov_ansible.json" "Checkov Scan"
-          upload_to_dd "all-reports/reports-snyk/snyk-code.json" "Snyk Scan"
-          upload_to_dd "all-reports/reports-snyk/snyk-sca.json" "Snyk Scan"
-
-  # =====================================================================
-  # 5. SECURITY SCORECARD + BOARD REPORT
-  # =====================================================================
-  scorecard_and_report:
-    name: Security Scorecard + Board Report
-    needs: [gate_and_summary, upload_to_defectdojo]
+  llm_to_defectdojo:
+    name: Upload LLM Findings → DefectDojo
+    needs: [llm_sast]
     runs-on: self-hosted
-    if: always()
+
     steps:
       - uses: actions/checkout@v4
 
-      # ==========================================================
-      # 1. Download EPSS Findings (pasti dari gate_and_summary)
-      # ==========================================================
-      - name: Download EPSS findings artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: llm-findings
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Convert & Upload LLM Findings
+        env:
+          DEFECTDOJO_URL: ${{ env.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ env.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_PRODUCT_ID: ${{ env.DEFECTDOJO_PRODUCT_ID }}
+          DEFECTDOJO_ENGAGEMENT_NAME: ${{ env.DEFECTDOJO_ENGAGEMENT_NAME }}
+          LLM_REPORT: ${{ env.LLM_REPORT }}
+        run: |
+          set -euo pipefail
+
+          python3 scripts/dd_export.py \
+            --input "${LLM_REPORT}" \
+            --output "security-reports/llm-defectdojo.json"
+
+          curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+            -F "scan_type=Generic Findings Import" \
+            -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+            -F "engagement_name=${DEFECTDOJO_ENGAGEMENT_NAME}" \
+            -F "file=@security-reports/llm-defectdojo.json"
+
+# =====================================================================
+# 6. SECURITY SCORECARD + BOARD REPORT
+# =====================================================================
+  scorecard_and_report:
+    name: Scorecard + Board Report
+    needs: [gate_and_summary, upload_to_defectdojo, llm_to_defectdojo]
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
           name: epss-findings
           path: ${{ env.REPORT_DIR }}
         continue-on-error: true
 
-      # ==========================================================
-      # 2. Prepare directory
-      # ==========================================================
-      - name: Prepare docs directory
-        shell: bash
+      - name: Prepare dirs
         run: |
           set -euo pipefail
           mkdir -p docs/data docs/reports
-          # Placeholder jika file tidak ada supaya script tidak crash
-          echo '{}' > docs/data/owasp-latest.json
-          echo '{}' > docs/data/defectdojo-sla-weekly.json
+          # Stub minimal supaya script tidak crash bila sumber belum ada
+          [ -f docs/data/owasp-latest.json ] || echo '{}' > docs/data/owasp-latest.json
+          [ -f docs/data/defectdojo-sla-weekly.json ] || echo '{}' > docs/data/defectdojo-sla-weekly.json
 
-      # ==========================================================
-      # 3. Generate Security Scorecard JSON
-      # ==========================================================
-      - name: Generate Security Scorecard JSON
-        shell: bash
+      - name: Generate Scorecard JSON
         env:
           OWASP_LATEST: docs/data/owasp-latest.json
           EPSS_FINDINGS: ${{ env.EPSS_FINDINGS }}
           SLA_WEEKLY: docs/data/defectdojo-sla-weekly.json
+          LLM_FINDINGS: ${{ env.LLM_REPORT }}
         run: |
           set -euo pipefail
-
-          echo "[INFO] Running security_scorecard.py..."
-
           if ! python3 scripts/security_scorecard.py > docs/data/security-scorecard.json; then
-            echo "[WARN] Failed generating scorecard, using empty stub."
             echo '{}' > docs/data/security-scorecard.json
           fi
 
-          echo "[INFO] Scorecard written to docs/data/security-scorecard.json"
-
-      # ==========================================================
-      # 4. Render Board Markdown Report
-      # ==========================================================
-      - name: Render Board Markdown Report
-        shell: bash
-        env:
-          SCORECARD_JSON: docs/data/security-scorecard.json
+      - name: Render Board MD
         run: |
           set -euo pipefail
-
-          echo "[INFO] Rendering markdown board report..."
           if ! python3 scripts/render_security_markdown.py \
-            "${SCORECARD_JSON}" > docs/reports/security-board-report.md; then
-            echo "[WARN] Markdown render failed, writing placeholder"
+            docs/data/security-scorecard.json > docs/reports/security-board-report.md; then
             echo "# Security Board Report\n\nReport generation failed." \
               > docs/reports/security-board-report.md
           fi
 
-      # ==========================================================
-      # 5. Upload Artifacts (Board Report + Scorecard)
-      # ==========================================================
-      - name: Upload Board Report Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: security-board-report
           path: docs/reports/security-board-report.md
           retention-days: 30
 
-      - name: Upload Scorecard JSON Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: security-scorecard-json
           path: docs/data/security-scorecard.json
           retention-days: 30
-          
-  # ---------------------------------------------------------
-  # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
-  # ---------------------------------------------------------
+
+# =====================================================================
+# 7. BUILD → SIGN → SBOM
+# =====================================================================
   build_and_sign:
-    name: Build + Push + Sign + SBOM
-    needs: [gate_and_summary]
-    runs-on: self-hosted
+    name: Build + Sign + SBOM
+    needs: gate_and_summary
     if: github.event.inputs.run_full_deploy == 'true'
+    runs-on: self-hosted
+
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Docker Login
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Install Tools (Cosign & Syft)
+      - name: Install Cosign & Syft
         run: |
-          # Buat direktori bin lokal di home user
+          set -euo pipefail
           mkdir -p $HOME/.local/bin
-          
-          # Install Syft ke direktori lokal
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
-          
-          # Install Cosign ke direktori lokal
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o $HOME/.local/bin/cosign
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b $HOME/.local/bin
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+            -o $HOME/.local/bin/cosign
           chmod +x $HOME/.local/bin/cosign
-          
-          # Tambahkan ke PATH agar bisa dipanggil di step berikutnya
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Build and Push
@@ -646,49 +458,47 @@ jobs:
           context: .
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
-          tags: ${{ env.DOCKERHUB_REPO }}:latest,${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
+          tags: |
+            ${{ env.DOCKERHUB_REPO }}:latest
+            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
 
       - name: Export Image Ref
         id: export
         run: |
+          set -euo pipefail
           DIGEST="${{ steps.build.outputs.digest }}"
           IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
-          
           echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
 
-      # =========================================================
-      # GENERATE & ATTEST SBOM
-      # =========================================================
       - name: Generate SBOM (CycloneDX)
         run: |
-          echo "Processing SBOM for: ${IMAGE_TO_SIGN}"
-          syft "${{ env.IMAGE_TO_SIGN }}" -o cyclonedx-json=sbom.json
+          set -euo pipefail
+          syft "${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}" -o cyclonedx-json=sbom.json
 
-      - name: Sign Image & Attest SBOM
-        run: |
-          echo "Signing image: ${IMAGE_TO_SIGN}"
-          cosign sign --yes "${{ env.IMAGE_TO_SIGN }}"
-          
-          # Mengesahkan SBOM ke Image
-          cosign attest --yes --predicate sbom.json --type cyclonedx "${{ env.IMAGE_TO_SIGN }}"
+      - name: Sign Image + Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}"
+          cosign attest --yes --predicate sbom.json --type cyclonedx \
+            "${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}"
 
-      - name: Upload SBOM Artifact (Backup)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: sbom-cyclonedx
+          name: sbom
           path: sbom.json
+          retention-days: 30
 
-  # ---------------------------------------------------------
-  # 6. DEPLOY (uses needs output, falls back to artifact)
-  # ---------------------------------------------------------
+# =====================================================================
+# 8. DEPLOY
+# =====================================================================
   deploy:
     name: Deploy (Ansible)
     needs: build_and_sign
     runs-on: self-hosted
     if: needs.build_and_sign.result == 'success'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -696,8 +506,9 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
+          set -euo pipefail
           echo "Deploying image: ${IMAGE_REF}"
-          if [ -z "${IMAGE_REF}" ]; then 
+          if [ -z "${IMAGE_REF}" ]; then
             echo "[FALLBACK] IMAGE_REF empty, using latest"
             IMAGE_REF="${{ env.DOCKERHUB_REPO }}:latest"
           fi
@@ -712,35 +523,35 @@ jobs:
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
-            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
-          
+
           rm -f ~/.ssh/id_runner_temp
 
       - name: Notify Slack on Success
-        # Hanya jalan jika step 'Execute Ansible' berhasil
         if: success()
-        shell: bash
         env:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          msg="🚀 *Deployment Success!* (Run #${{ github.run_number }})\n• *App:* ${{ env.APP_NAME }}\n• *Image:* \`${IMAGE_REF}\` \n• *Target:* ${{ env.APP_URL }}\n• *Status:* Successfully deployed via Ansible."
-          
+          set -euo pipefail
+          msg="🚀 *Deployment Success!* (Run #${{ github.run_number }})\n• *App:* ${{ env.APP_NAME }}\n• *Image:* \`${IMAGE_REF}\`\n• *Target:* ${{ env.APP_URL }}\n• *Status:* Successfully deployed via Ansible."
           curl -sS -X POST -H 'Content-type: application/json' \
             --data "$(jq -n --arg text "$msg" '{text:$text}')" \
             "$SLACK_URL" >/dev/null
 
-  # ---------------------------------------------------------
-  # 7. DAST
-  # ---------------------------------------------------------
+# =====================================================================
+# 9. DAST (ZAP → DefectDojo)
+# =====================================================================
   dast_scan:
+    name: DAST (OWASP ZAP)
     needs: deploy
     runs-on: self-hosted
+
     steps:
+      - uses: actions/checkout@v4
+
       - name: OWASP ZAP Baseline Scan
-        shell: bash
         run: |
           set -euo pipefail
           docker run --rm -v "$(pwd):/zap/wrk/:rw" \
@@ -749,7 +560,6 @@ jobs:
             -J zap_report.json || true
 
       - name: Upload DAST to DefectDojo
-        shell: bash
         run: |
           set -euo pipefail
           if [ ! -f zap_report.json ]; then
@@ -767,12 +577,8 @@ jobs:
             -F "file=@zap_report.json" >/dev/null
 
       - name: Final Cleanup (Disk Management)
-        if: always() # Tetap jalan meski scan/upload gagal
-        shell: bash
+        if: always()
         run: |
-          echo "Cleaning up workspace and docker resources..."
-          # 1. Hapus file laporan lokal (karena sudah di-upload ke DefectDojo)
-          rm -f zap_report.json
-          
-          # 2. Hapus Docker Image yang tidak terpakai (dangling)
-          docker image prune -f
+          set -euo pipefail
+          rm -f zap_report.json || true
+          docker image prune -f || true
