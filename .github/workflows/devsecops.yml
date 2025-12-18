@@ -215,22 +215,49 @@ jobs:
         run: |
           set -euo pipefail
           crit=0
+          details=""
           notes=()
 
-          # JQ Logic for Critical Findings
-          [ -f "all-reports/reports-trufflehog/trufflehog.json" ] && c=$(jq -R 'fromjson? | select(.Verified==true)' all-reports/reports-trufflehog/trufflehog.json | wc -l) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("TruffleHog Secrets: $c"); }
-          [ -f "all-reports/reports-snyk/snyk-code.json" ] && c=$(jq '[.vulnerabilities[]? | select(.severity=="critical")] | length' all-reports/reports-snyk/snyk-code.json) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("Snyk Code Critical: $c"); }
-          [ -f "all-reports/reports-checkov/checkov_ansible.json" ] && c=$(jq '.results.failed_checks[]? | select(.severity=="CRITICAL") | length' all-reports/reports-checkov/checkov_ansible.json 2>/dev/null || echo 0) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("Checkov CIS Violation: $c"); }
+          # 1. JQ Logic for TruffleHog
+          TRUFFLE="all-reports/reports-trufflehog/trufflehog.json"
+          if [ -f "$TRUFFLE" ]; then
+            c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l)
+            if [ "$c" -gt 0 ]; then
+              crit=$((crit + c))
+              notes+=("TruffleHog Secrets: $c")
+            fi
+          fi
 
+          # 2. JQ Logic for Checkov (CIS Rules Extraction)
+          CHECKOV="all-reports/reports-checkov/checkov_ansible.json"
+          if [ -f "$CHECKOV" ]; then
+            # Ambil detail ID dan Nama Aturan yang dilanggar
+            rules=$(jq -r '.results.failed_checks[]? | "- \(.check_id): \(.check_name)"' "$CHECKOV" | sort -u)
+            if [ -n "$rules" ]; then
+              details+="\n*⚠️ CIS Benchmark Violations:*\n$rules"
+              c=$(jq '.results.failed_checks[]? | select(.severity=="CRITICAL") | length' "$CHECKOV" 2>/dev/null || echo 0)
+              crit=$((crit + c))
+              notes+=("Checkov CIS Violation: $c")
+            fi
+          fi
+
+          # 3. Create GitHub Summary
           {
             echo "### 🛡️ DevSecOps Security Gate"
             echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**"
             for n in "${notes[@]}"; do echo "- $n"; done
+            if [ -n "$rules" ]; then
+              echo "#### 📝 Infrastructure Rules Violated"
+              echo "$rules"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # 4. Logic Gate & Slack Notification
           if [ "$crit" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* - Found $crit CRITICAL issues! Deployment Blocked."
-            curl -sS -X POST -H 'Content-type: application/json' --data "$(jq -n --arg text "$msg" '{text:$text}')" "${{ secrets.SLACK_WEBHOOK_URL }}"
+            msg="🚨 *SECURITY GATE FAILED* (Run #${{ github.run_number }})\nFound *$crit* CRITICAL issues! Deployment Blocked.\n$details"
+            curl -sS -X POST -H 'Content-type: application/json' \
+              --data "$(jq -n --arg text "$msg" '{text:$text}')" \
+              "${{ secrets.SLACK_WEBHOOK_URL }}"
             exit 1
           fi
 
@@ -247,7 +274,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports
-          
+
       - name: Bulk Upload to DefectDojo
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
