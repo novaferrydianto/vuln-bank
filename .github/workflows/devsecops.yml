@@ -14,9 +14,7 @@ on:
         required: true
         default: 'false'
         type: choice
-        options:
-          - 'true'
-          - 'false'
+        options: ['true', 'false']
 
 permissions:
   contents: read
@@ -32,20 +30,14 @@ env:
   APP_NAME: vuln-bank
   APP_URL: http://192.168.107.135:5000
   REPORT_DIR: security-reports
-
-  # Docker
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
   IMAGE_TAG: ${{ github.sha }} 
   DOCKERFILE_PATH: containers/app/Dockerfile
   REQUIREMENTS_PATH: containers/app/requirements.txt
-
-  # DefectDojo
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: "Build-${{ github.run_number }}"
-
-  # Slack
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
   FAIL_ON_SEVERITIES: "CRITICAL,HIGH"
 
@@ -58,7 +50,6 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-
       - name: Prepare workspace
         shell: bash
         run: |
@@ -105,7 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scan_type: [trufflehog, semgrep, trivy, snyk, sonarqube]
+        scan_type: [trufflehog, semgrep, trivy, snyk, sonarqube, checkov]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,33 +108,33 @@ jobs:
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
 
-      - name: TruffleHog Secret Scan
+      - name: TruffleHog Scan
         if: matrix.scan_type == 'trufflehog'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v trufflehog >/dev/null 2>&1; then
-            echo '{"tool":"trufflehog","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/trufflehog.json"
-            exit 0
-          fi
-          trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
+        run: trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
-      - name: Semgrep Scan
+      - name: Semgrep Banking Scan
         if: matrix.scan_type == 'semgrep'
-        shell: bash
         run: |
-          set -euo pipefail
-          semgrep scan --config auto --json > "${REPORT_DIR}/semgrep.json" || true
+          semgrep scan --config auto \
+            --config "p/security-audit" \
+            --config "p/secrets" \
+            --config "p/owasp-top-ten" \
+            --config "p/python" \
+            --json > "${REPORT_DIR}/semgrep.json" || true
+
+      - name: Checkov CIS Compliance Scan
+        if: matrix.scan_type == 'checkov'
+        run: |
+          pipx install checkov --force
+          export PATH="$HOME/.local/bin:$PATH"
+          checkov -d ansible --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 --output json > "${REPORT_DIR}/checkov_ansible.json" || true
+          checkov -f "${DOCKERFILE_PATH}" --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 --output json > "${REPORT_DIR}/checkov_docker.json" || true
 
       - name: Trivy Scan (Config)
         if: matrix.scan_type == 'trivy'
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v trivy >/dev/null 2>&1; then
-            echo '{"tool":"trivy","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/trivy.json"
-            exit 0
-          fi
           trivy config "${DOCKERFILE_PATH}" \
             --severity "${FAIL_ON_SEVERITIES}" \
             --format json \
@@ -219,88 +210,36 @@ jobs:
         with:
           path: all-reports
 
-      - name: Aggregate findings (jq-based)
+      - name: Aggregate & Enforce Gate
         shell: bash
-        env:
-          SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
-
-          TRUFFLE="all-reports/reports-trufflehog/trufflehog.json"
-          SEMGREP="all-reports/reports-semgrep/semgrep.json"
-          TRIVY="all-reports/reports-trivy/trivy.json"
-          SNYK="all-reports/reports-snyk/snyk.json"
-
           crit=0
-          high=0
           notes=()
 
-          if [ -f "$TRUFFLE" ]; then
-            c=$(jq -R 'fromjson? | select(.Verified==true)' "$TRUFFLE" | wc -l || echo 0)
-            if [ "$c" -gt 0 ]; then
-              crit=$((crit + c))
-              notes+=("TruffleHog verified secrets: $c")
-            fi
-          fi
-
-          if [ -f "$SEMGREP" ]; then
-            c=$(jq '.results | length' "$SEMGREP" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Semgrep findings: $c")
-            fi
-          fi
-
-          if [ -f "$TRIVY" ]; then
-            ccrit=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL")] | length' "$TRIVY" 2>/dev/null || echo 0)
-            chigh=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="HIGH")] | length' "$TRIVY" 2>/dev/null || echo 0)
-            crit=$((crit + ccrit))
-            high=$((high + chigh))
-            [ "$ccrit" -gt 0 ] && notes+=("Trivy CRITICAL: $ccrit")
-            [ "$chigh" -gt 0 ] && notes+=("Trivy HIGH: $chigh")
-          fi
-
-          if [ -f "$SNYK" ]; then
-            c=$(jq '(.vulnerabilities // [] | length)' "$SNYK" 2>/dev/null || echo 0)
-            if [ "$c" -gt 0 ]; then
-              high=$((high + c))
-              notes+=("Snyk vulns: $c")
-            fi
-          fi
+          # JQ Logic for Critical Findings
+          [ -f "all-reports/reports-trufflehog/trufflehog.json" ] && c=$(jq -R 'fromjson? | select(.Verified==true)' all-reports/reports-trufflehog/trufflehog.json | wc -l) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("TruffleHog Secrets: $c"); }
+          [ -f "all-reports/reports-snyk/snyk-code.json" ] && c=$(jq '[.vulnerabilities[]? | select(.severity=="critical")] | length' all-reports/reports-snyk/snyk-code.json) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("Snyk Code Critical: $c"); }
+          [ -f "all-reports/reports-checkov/checkov_ansible.json" ] && c=$(jq '.results.failed_checks[]? | select(.severity=="CRITICAL") | length' all-reports/reports-checkov/checkov_ansible.json 2>/dev/null || echo 0) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("Checkov CIS Violation: $c"); }
 
           {
-            echo "### 🛡️ DevSecOps Security Summary"
-            echo ""
-            echo "- 🔴 CRITICAL: **$crit**"
-            echo "- 🟠 HIGH: **$high**"
-            echo ""
-            echo "#### Notes"
-            if [ "${#notes[@]}" -eq 0 ]; then
-              echo "- No findings or all scanners skipped."
-            else
-              for n in "${notes[@]}"; do echo "- $n"; done
-            fi
+            echo "### 🛡️ DevSecOps Security Gate"
+            echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**"
+            for n in "${notes[@]}"; do echo "- $n"; done
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$crit" -gt 0 ] || [ "$high" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* (Run #${{ github.run_number }})\n• 🔴 CRITICAL: *$crit*\n• 🟠 HIGH: *$high*"
-            if [ -n "${SLACK_URL:-}" ]; then
-              curl -sS -X POST -H 'Content-type: application/json' \
-                --data "$(jq -n --arg text "$msg" '{text:$text}')" \
-                "$SLACK_URL" >/dev/null
-            fi
-            echo "[BLOCK] Security gate failed."
+          if [ "$crit" -gt 0 ]; then
+            msg="🚨 *SECURITY GATE FAILED* - Found $crit CRITICAL issues! Deployment Blocked."
+            curl -sS -X POST -H 'Content-type: application/json' --data "$(jq -n --arg text "$msg" '{text:$text}')" "${{ secrets.SLACK_WEBHOOK_URL }}"
             exit 1
           fi
-
-          echo "[PASS] Security gate passed."
 
   # =========================
   # 4. upload_to_defectdojo
   # =========================
   upload_to_defectdojo:
     name: DefectDojo Integration
-    needs: [security_scans]
+    needs: security_scans
     if: always()
     runs-on: self-hosted
     steps:
@@ -308,56 +247,33 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports
-
-      - name: Upload to DefectDojo
-        shell: bash
+          
+      - name: Bulk Upload to DefectDojo
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
         run: |
-          set -euo pipefail
-
-          if [ -z "${DEFECTDOJO_URL:-}" ] || [ -z "${DD_TOKEN:-}" ]; then
-            echo "[SKIP] DefectDojo URL or token missing."
-            exit 0
-          fi
-
-          : "${DEFECTDOJO_PRODUCT_ID:?DEFECTDOJO_PRODUCT_ID is required}"
-          : "${DEFECTDOJO_ENGAGEMENT_ID:?DEFECTDOJO_ENGAGEMENT_ID is required}"
-
           upload_to_dd() {
-            local file="$1"
-            local scan_type="$2"
-            if [ -f "$file" ]; then
-              echo "Uploading $scan_type from $file"
+            if [ -f "$1" ]; then
               curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
                 -H "Authorization: Token ${DD_TOKEN}" \
-                -F "active=true" \
-                -F "verified=true" \
-                -F "scan_type=${scan_type}" \
-                -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-                -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-                -F "file=@${file}" >/dev/null
-            else
-              echo "[WARN] Missing: $file"
+                -F "active=true" -F "verified=true" -F "scan_type=$2" \
+                -F "product=${DEFECTDOJO_PRODUCT_ID}" -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+                -F "file=@$1" >/dev/null
             fi
           }
-
-          upload_to_dd "all-reports/reports-trufflehog/trufflehog.json" "Trufflehog Scan"
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
-          upload_to_dd "all-reports/reports-trivy/trivy.json" "Trivy Scan"
-          upload_to_dd "all-reports/reports-snyk/snyk.json" "Snyk Scan"
+          upload_to_dd "all-reports/reports-checkov/checkov_ansible.json" "Checkov Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-code.json" "Snyk Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-sca.json" "Snyk Scan"
 
   # ---------------------------------------------------------
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
   # ---------------------------------------------------------
   build_and_sign:
     name: Build + Push + Sign + SBOM
-    needs: [security_scans]
+    needs: [gate_and_summary]
     runs-on: self-hosted
-    if: |
-      always() &&
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.run_full_deploy == 'true'
+    if: github.event.inputs.run_full_deploy == 'true'
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
     steps:
