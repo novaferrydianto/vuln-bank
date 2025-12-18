@@ -345,7 +345,9 @@ jobs:
           upload_to_dd "all-reports/reports-trufflehog/trufflehog.json" "Trufflehog Scan"
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
           upload_to_dd "all-reports/reports-trivy/trivy.json" "Trivy Scan"
-          upload_to_dd "all-reports/reports-snyk/snyk.json" "Snyk Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-code.json" "Snyk Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-sca.json" "Snyk Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-iac.json" "Snyk Scan"
 
   # ---------------------------------------------------------
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
