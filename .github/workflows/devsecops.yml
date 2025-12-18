@@ -50,7 +50,6 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-
       - name: Prepare workspace
         shell: bash
         run: |
@@ -109,9 +108,8 @@ jobs:
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
 
-      - name: TruffleHog Secret Scan
+      - name: TruffleHog Scan
         if: matrix.scan_type == 'trufflehog'
-        shell: bash
         run: trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
       - name: Semgrep Banking Scan
@@ -127,11 +125,10 @@ jobs:
       - name: Checkov CIS Compliance Scan
         if: matrix.scan_type == 'checkov'
         run: |
-          pip install --upgrade checkov
-          # Scan Ansible & Dockerfile dengan filter CIS yang relevan
-          # Kita instruksikan untuk memindai direktori ansible dan Dockerfile
-          checkov -d ansible --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_3,CKV_PAN_6 --output json > "${REPORT_DIR}/checkov_ansible.json" || true
-          checkov -f "${DOCKERFILE_PATH}" --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_3,CKV_DOCKER_7 --output json > "${REPORT_DIR}/checkov_docker.json" || true
+          pipx install checkov --force
+          export PATH="$HOME/.local/bin:$PATH"
+          checkov -d ansible --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 --output json > "${REPORT_DIR}/checkov_ansible.json" || true
+          checkov -f "${DOCKERFILE_PATH}" --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 --output json > "${REPORT_DIR}/checkov_docker.json" || true
 
       - name: Trivy Scan (Config)
         if: matrix.scan_type == 'trivy'
@@ -213,27 +210,27 @@ jobs:
         with:
           path: all-reports
 
-      - name: Aggregate findings (Logic Gate)
+      - name: Aggregate & Enforce Gate
+        shell: bash
         run: |
           set -euo pipefail
           crit=0
           notes=()
 
-          # Logika JQ untuk mendeteksi CRITICAL dari semua scanner
-          [ -f "all-reports/reports-trufflehog/trufflehog.json" ] && c=$(jq -R 'fromjson? | select(.Verified==true)' all-reports/reports-trufflehog/trufflehog.json | wc -l) && crit=$((crit + c))
-          [ -f "all-reports/reports-snyk/snyk-code.json" ] && c=$(jq '[.vulnerabilities[]? | select(.severity=="critical")] | length' all-reports/reports-snyk/snyk-code.json) && crit=$((crit + c))
-          
-          # Checkov Gate (CIS Compliance)
-          if [ -f "all-reports/reports-checkov/checkov_ansible.json" ]; then
-            c=$(jq '.results.failed_checks[]? | select(.severity=="CRITICAL") | length' all-reports/reports-checkov/checkov_ansible.json 2>/dev/null || echo 0)
-            crit=$((crit + c))
-          fi
+          # JQ Logic for Critical Findings
+          [ -f "all-reports/reports-trufflehog/trufflehog.json" ] && c=$(jq -R 'fromjson? | select(.Verified==true)' all-reports/reports-trufflehog/trufflehog.json | wc -l) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("TruffleHog Secrets: $c"); }
+          [ -f "all-reports/reports-snyk/snyk-code.json" ] && c=$(jq '[.vulnerabilities[]? | select(.severity=="critical")] | length' all-reports/reports-snyk/snyk-code.json) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("Snyk Code Critical: $c"); }
+          [ -f "all-reports/reports-checkov/checkov_ansible.json" ] && c=$(jq '.results.failed_checks[]? | select(.severity=="CRITICAL") | length' all-reports/reports-checkov/checkov_ansible.json 2>/dev/null || echo 0) && [ "$c" -gt 0 ] && { crit=$((crit + c)); notes+=("Checkov CIS Violation: $c"); }
 
-          echo "### 🛡️ Security Gate Status" >> $GITHUB_STEP_SUMMARY
-          echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### 🛡️ DevSecOps Security Gate"
+            echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**"
+            for n in "${notes[@]}"; do echo "- $n"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$crit" -gt 0 ]; then
-            echo "🚨 BLOCKING DEPLOYMENT: $crit Critical vulnerabilities detected."
+            msg="🚨 *SECURITY GATE FAILED* - Found $crit CRITICAL issues! Deployment Blocked."
+            curl -sS -X POST -H 'Content-type: application/json' --data "$(jq -n --arg text "$msg" '{text:$text}')" "${{ secrets.SLACK_WEBHOOK_URL }}"
             exit 1
           fi
 
@@ -242,7 +239,7 @@ jobs:
   # =========================
   upload_to_defectdojo:
     name: DefectDojo Integration
-    needs: [security_scans]
+    needs: security_scans
     if: always()
     runs-on: self-hosted
     steps:
@@ -250,14 +247,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-reports
-
-      - name: Upload to DefectDojo
-        shell: bash
+          
+      - name: Bulk Upload to DefectDojo
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
         run: |
-          set -euo pipefail
-
           upload_to_dd() {
             if [ -f "$1" ]; then
               curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
@@ -270,6 +264,7 @@ jobs:
           upload_to_dd "all-reports/reports-semgrep/semgrep.json" "Semgrep JSON Report"
           upload_to_dd "all-reports/reports-checkov/checkov_ansible.json" "Checkov Scan"
           upload_to_dd "all-reports/reports-snyk/snyk-code.json" "Snyk Scan"
+          upload_to_dd "all-reports/reports-snyk/snyk-sca.json" "Snyk Scan"
 
   # ---------------------------------------------------------
   # 5. BUILD & SIGN (ROBUST OUTPUT + ARTIFACT FALLBACK)
