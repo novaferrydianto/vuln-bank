@@ -202,6 +202,28 @@ jobs:
       # =====================
       # SonarQube
       # =====================
+      - name: Python Coverage (Vuln Bank)
+        if: matrix.scan_type == 'sonarqube'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p security-reports
+
+          pip install pytest pytest-cov coverage
+
+          echo "[INFO] Running pytest coverage..."
+          pytest \
+            --disable-warnings \
+            --cov=. \
+            --cov-config=.coveragerc \
+            --cov-report=xml:security-reports/coverage.xml \
+            --cov-report=term \
+            || true
+
+          echo "Coverage content:"
+          ls -lah security-reports/
+
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
         shell: bash
@@ -210,16 +232,19 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${SONAR_HOST_URL:-}" ] || [ -z "${SONAR_TOKEN:-}" ]; then
-            echo "[SKIP] Missing SonarQube secrets"
-            exit 0
+
+          if [ ! -f security-reports/coverage.xml ]; then
+            echo "[FATAL] coverage.xml missing"
+            exit 1
           fi
-          if ! command -v sonar-scanner >/dev/null 2>&1; then
-            echo "[SKIP] sonar-scanner not installed"
-            exit 0
-          fi
+
+          echo "[INFO] Running SonarQube analysis..."
+
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
+            -Dsonar.sources=. \
+            -Dsonar.exclusions="static/**,templates/**,*.md,LICENSE,*.txt" \
+            -Dsonar.python.coverage.reportPaths=$(pwd)/security-reports/coverage.xml \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 

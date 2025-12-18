@@ -1,0 +1,34 @@
+[run]
+branch = True
+parallel = True
+source =
+    .
+
+omit =
+    */tests/*
+    */venv/*
+    */virtualenv/*
+    */__pycache__/*
+    */migrations/*
+    static/*
+    templates/*
+    */site-packages/*
+    *openapi.json
+    *docker-compose.yml
+    *Dockerfile
+
+[report]
+skip_empty = True
+show_missing = True
+
+exclude_lines =
+    pragma: no cover
+    if __name__ == "__main__":
+    raise NotImplementedError
+
+[paths]
+source =
+    .
+
+[xml]
+output = security-reports/coverage.xml
