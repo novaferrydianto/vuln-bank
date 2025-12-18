@@ -128,12 +128,23 @@ jobs:
           fi
           trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
-      - name: Semgrep Scan
+      - name: Semgrep Banking Scan
         if: matrix.scan_type == 'semgrep'
-        shell: bash
         run: |
-          set -euo pipefail
-          semgrep scan --config auto --json > "${REPORT_DIR}/semgrep.json" || true
+          semgrep scan --config auto \
+            --config "p/security-audit" \
+            --config "p/secrets" \
+            --config "p/owasp-top-ten" \
+            --config "p/python" \
+            --json > "${REPORT_DIR}/semgrep.json" || true
+
+      - name: Checkov IaC Scan
+        if: matrix.scan_type == 'checkov'
+        run: |
+          # Install checkov jika belum ada
+          pip install --upgrade checkov
+          # Scan direktori ansible, abaikan kegagalan kecil agar laporan tetap terbuat
+          checkov -d ansible --output json > "${REPORT_DIR}/checkov.json" || true
 
       - name: Trivy Scan (Config)
         if: matrix.scan_type == 'trivy'
