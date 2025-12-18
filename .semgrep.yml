@@ -1,0 +1,41 @@
+rules:
+  - id: banking-sensitive-data-logging
+    metadata:
+      category: security
+      technology: [python, flask, django]
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: print(..., $PII, ...)
+          - pattern: logging.$METHOD(..., $PII, ...)
+          - pattern: logger.$METHOD(..., $PII, ...)
+      - metavariable-regex:
+          metavariable: '$PII'
+          regex: '(?i)(card_number|cvv|pin_code|credit_card|customer_balance|account_number|nomor_rekening|saldo_nasabah)'
+    message: "BAHAYA: Data sensitif perbankan (PII/Finansial) terdeteksi dicetak ke log. Ini melanggar kepatuhan data."
+    severity: ERROR
+
+  - id: insecure-balance-manipulation
+    metadata:
+      category: business-logic
+    patterns:
+      - pattern: $ACCOUNT.balance += $AMOUNT
+      - pattern-not:
+          - patterns:
+              - pattern-inside: |
+                  with transaction.atomic():
+                      ...
+              - pattern: $ACCOUNT.balance += $AMOUNT
+    message: "LOGIKA BERBAHAYA: Perubahan saldo dilakukan tanpa pembungkus transaksi (atomic transaction). Berisiko menyebabkan race condition pada saldo nasabah."
+    severity: ERROR
+
+  - id: hardcoded-bank-api-keys
+    metadata:
+      category: secrets
+    patterns:
+      - pattern-either:
+          - pattern: $KEY = "bank_api_..."
+          - pattern: $KEY = "secret_key_..."
+          - pattern: $KEY = "jwt_banking_..."
+    message: "KREDENSIAL TERDETEKSI: Kunci API perbankan terdeteksi dalam kode. Gunakan Environment Variables atau Key Vault."
+    severity: ERROR
