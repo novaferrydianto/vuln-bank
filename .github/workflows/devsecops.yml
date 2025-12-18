@@ -258,7 +258,7 @@ jobs:
           crit=0
           notes=()
 
-          # Helper untuk aman baca file JSON
+          # Safe JQ Read Helper
           safe_jq_count() {
             local file="$1"
             local expr="$2"
@@ -269,9 +269,13 @@ jobs:
             fi
           }
 
-          # TruffleHog (verified secrets)
+          # ======================================================
+          # 1. TruffleHog (Verified Secrets Only)
+          # ======================================================
           c=$(safe_jq_count "all-reports/reports-trufflehog/trufflehog.json" '
-            [ . as $line? | try ( if type=="array" then .[] else . end ) catch empty
+            [
+              . as $line? 
+              | try (if type=="array" then .[] else . end) catch empty
               | select(.Verified==true)
             ] | length
           ')
@@ -280,7 +284,25 @@ jobs:
             notes+=("TruffleHog Verified Secrets: $c")
           fi
 
-          # Snyk Code (critical)
+          # ======================================================
+          # 2. Semgrep (ERROR / HIGH → Critical)
+          # ======================================================
+          c=$(safe_jq_count "all-reports/reports-semgrep/semgrep.json" '
+            [
+              .results[]?
+              | .extra.severity? 
+              | ascii_downcase
+              | select(.=="error" or .=="high")
+            ] | length
+          ')
+          if [ "$c" -gt 0 ]; then
+            crit=$((crit + c))
+            notes+=("Semgrep High/Error Findings: $c")
+          fi
+
+          # ======================================================
+          # 3. Snyk Code (Critical Vulnerabilities)
+          # ======================================================
           c=$(safe_jq_count "all-reports/reports-snyk/snyk-code.json" '
             [ .vulnerabilities[]? | select(.severity=="critical") ] | length
           ')
@@ -289,7 +311,9 @@ jobs:
             notes+=("Snyk Code Critical: $c")
           fi
 
-          # Snyk SCA (critical)
+          # ======================================================
+          # 4. Snyk SCA (Critical Libraries)
+          # ======================================================
           c=$(safe_jq_count "all-reports/reports-snyk/snyk-sca.json" '
             [ .vulnerabilities[]? | select(.severity=="critical") ] | length
           ')
@@ -298,30 +322,36 @@ jobs:
             notes+=("Snyk SCA Critical: $c")
           fi
 
-          # Checkov Ansible (severity CRITICAL)
+          # ======================================================
+          # 5. Checkov (IaC / Ansible / Dockerfile CRITICAL)
+          # ======================================================
           c=$(safe_jq_count "all-reports/reports-checkov/checkov_ansible.json" '
             [ .results.failed_checks[]? | select(.severity=="CRITICAL") ] | length
           ')
           if [ "$c" -gt 0 ]; then
             crit=$((crit + c))
-            notes+=("Checkov Ansible CIS Violations (CRITICAL): $c")
+            notes+=("Checkov Ansible CRITICAL: $c")
           fi
 
+          # ======================================================
+          # Summary
+          # ======================================================
           {
             echo "### 🛡️ DevSecOps Security Gate"
             echo ""
             echo "- 🔴 TOTAL CRITICAL FOUND: **$crit**"
             if [ "${#notes[@]}" -eq 0 ]; then
-              echo "- ✅ No critical issues detected in configured sources."
+              echo "- ✅ No critical issues detected across all scanners."
             else
-              for n in "${notes[@]}"; do
-                echo "- $n"
-              done
+              for n in "${notes[@]}"; do echo "- $n"; done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # ======================================================
+          # Block Deployment if Critical
+          # ======================================================
           if [ "$crit" -gt 0 ]; then
-            msg="🚨 *SECURITY GATE FAILED* - Found $crit CRITICAL issues! Deployment Blocked."
+            msg="🚨 *SECURITY GATE FAILED* — Found $crit CRITICAL issues! Deployment Blocked."
             curl -sS -X POST -H 'Content-type: application/json' \
               --data "$(jq -n --arg text "$msg" '{text:$text}')" \
               "$SLACK_URL" >/dev/null
