@@ -20,9 +20,8 @@
 
 - name: 3. Buat file Kunci Publik Cosign
   copy:
-    # Menggunakan block scalar '|' untuk menjaga integritas format PEM
     content: |
-      {{ lookup('env', 'COSIGN_PUBLIC_KEY') }}
+      {{ lookup('env', 'COSIGN_PUBLIC_KEY') | replace('\\n', '\n') }}
     dest: /tmp/cosign.pub
     mode: '0644'
 
@@ -49,10 +48,7 @@
     executable: /bin/bash
 
 - name: 7. Verifikasi Image Docker menggunakan Digest
-  shell: >
-    /usr/local/bin/cosign verify
-    --key /tmp/cosign.pub
-    {{ image_ref }}
+  shell: "/usr/local/bin/cosign verify --key /tmp/cosign.pub {{ image_ref }}"
   register: cosign_verify
   failed_when: cosign_verify.rc != 0
 

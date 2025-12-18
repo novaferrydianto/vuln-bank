@@ -344,7 +344,7 @@ jobs:
   # ---------------------------------------------------------
   build_and_sign:
     name: Build + Push + Sign + SBOM
-    needs: security_scans
+    needs: [security_scans]
     runs-on: self-hosted
     if: |
       always() &&
@@ -391,7 +391,6 @@ jobs:
           DIGEST="${{ steps.build.outputs.digest }}"
           IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
           echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
 
       # =========================================================
       # GENERATE & ATTEST SBOM
