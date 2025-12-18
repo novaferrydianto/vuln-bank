@@ -452,7 +452,7 @@ jobs:
   # =========================
   upload_to_defectdojo:
     name: DefectDojo Integration
-    needs: security_scans
+    needs: [security_scans, gate_and_summary]
     if: always()
     runs-on: self-hosted
     steps:
@@ -517,8 +517,8 @@ jobs:
           upload_to_dd "all-reports/reports-snyk/snyk-sca.json" "Snyk Scan"
 
   # =====================================================================
-# 5. SECURITY SCORECARD + BOARD REPORT
-# =====================================================================
+  # 5. SECURITY SCORECARD + BOARD REPORT
+  # =====================================================================
   scorecard_and_report:
     name: Security Scorecard + Board Report
     needs: [gate_and_summary, upload_to_defectdojo]
