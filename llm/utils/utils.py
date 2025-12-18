@@ -1,8 +1,5 @@
-import json
 
-def load_prompt(path: str) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except:
-        return ""
+import os
+
+def sanitize_path(p): return os.path.normpath(p)
+def safe_join(root,p): return os.path.join(root,sanitize_path(p))

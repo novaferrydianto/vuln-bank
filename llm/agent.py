@@ -1,15 +1,9 @@
-import json
-from pydantic import BaseModel
 
-class AgentResult(BaseModel):
-    file: str
-    type: str
-    severity: str
-    description: str
-    recommendation: str
+class Agent:
+    def __init__(self, name, prompt):
+        self.name = name
+        self.prompt = prompt
 
-def safe_json_parse(output: str, fallback):
-    try:
-        return json.loads(output)
-    except:
-        return fallback
+    def analyze(self, provider, content):
+        query = self.prompt.format(code=content)
+        return provider.ask(query)

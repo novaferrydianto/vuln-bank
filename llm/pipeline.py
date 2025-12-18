@@ -1,56 +1,37 @@
-#!/usr/bin/env python3
-import os
-import json
-import argparse
 
+import argparse, os, json
+from llm.provider import ModelProvider
+from llm.analyzers import BacAgent, SQLiAgent, SSRFAgent, SSTIAgent, TraversalAgent
+from llm.utils.scanner import scan_files
 from llm.utils.file_loader import read_file
-from llm.utils.scanner import walk_targets
-from llm.provider import get_client
 
-from llm.analyzers.bac_agent import BacAgent
-from llm.analyzers.sqli_agent import SQLiAgent
-from llm.analyzers.ssrf_agent import SSRFAgent
-from llm.analyzers.ssti_agent import SSTIAgent
-from llm.analyzers.traversal_agent import TraversalAgent
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scan-path", required=True)
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args()
-
-    client = get_client()
+def run(scan_path, output):
+    provider = ModelProvider(
+        os.getenv("AI_API_ENDPOINT"),
+        os.getenv("AI_API_KEY")
+    )
 
     agents = [
-        ("BAC", BacAgent(client)),
-        ("SQLI", SQLiAgent(client)),
-        ("SSRF", SSRFAgent(client)),
-        ("SSTI", SSTIAgent(client)),
-        ("TRAVERSAL", TraversalAgent(client)),
+        BacAgent(), SQLiAgent(),
+        SSRFAgent(), SSTIAgent(),
+        TraversalAgent()
     ]
 
-    targets = walk_targets(args.scan_path)
+    files = scan_files(scan_path)
     results = []
 
-    for file_path in targets:
-        code = read_file(file_path)
-        if not code.strip():
-            continue
+    for f in files:
+        content = read_file(f)
+        for agent in agents:
+            r = agent.analyze(provider, content)
+            results.append({"file": f, "agent": agent.name, "result": r})
 
-        for name, agent in agents:
-            res = agent.run(code, file_path)
-            results.append(res.dict())
-
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump({
-            "total": len(results),
-            "results": results
-        }, f, indent=2)
-
-    print(f"[OK] LLM multi-agent report generated → {args.output}")
-
+    with open(output, "w") as fp:
+        json.dump(results, fp, indent=2)
 
 if __name__ == "__main__":
-    main()
+    p=argparse.ArgumentParser()
+    p.add_argument("--scan-path",required=True)
+    p.add_argument("--output",required=True)
+    args=p.parse_args()
+    run(args.scan_path,args.output)
