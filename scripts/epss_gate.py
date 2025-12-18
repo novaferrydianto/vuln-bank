@@ -1,201 +1,203 @@
 #!/usr/bin/env python3
 """
-EPSS + CISA KEV Gating for Vuln Bank DevSecOps
-Hybrid Mode (Mode C): Combine strict threshold AND weighted risk score.
+EPSS + KEV Gate Evaluator (Refactored, Low-Complexity)
 
-Outputs:
-- epss-findings.json
-- high_risk[] = merged risk from Trivy + Snyk (SCA) enriched with:
-    - EPSS score
-    - EPSS percentile
-    - CVSS
-    - is_kev
-    - reasons[]
+Modes:
+  A = Strict (fail if any EPSS >= threshold or KEV)
+  B = Weighted (compute risk score only, do not fail)
+  C = Hybrid (strict fail AND weighted score)
 """
 
-import os
 import json
+import os
+import sys
 import argparse
+from typing import List, Dict, Any
 import urllib.request
-import urllib.parse
-
-EPSS_API = "https://api.first.org/data/v1/epss?cve="
-KEV_API = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+import urllib.error
 
 
-def safe_load_json(path):
-    """Load JSON safely."""
+# =========================================================
+# Helpers: File + HTTP
+# =========================================================
+
+def load_json(path: str) -> dict:
     if not os.path.exists(path):
-        return None
+        return {}
     try:
         with open(path) as f:
             return json.load(f)
     except Exception:
-        return None
+        return {}
 
 
-def fetch_json(url: str):
-    """HTTP GET with best-effort behavior."""
+def fetch_json(url: str) -> dict:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read().decode())
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.loads(r.read().decode("utf-8"))
     except Exception:
-        return None
+        return {}
 
 
-def load_kev_cves():
-    """Return a set of all KEV CVEs."""
-    data = fetch_json(KEV_API)
-    if not data or "vulnerabilities" not in data:
-        return set()
-    return {v.get("cveID", "") for v in data["vulnerabilities"]}
+# =========================================================
+# Extract CVEs from input scanners
+# =========================================================
 
-
-KEV_SET = load_kev_cves()
-
-
-def extract_cves_from_trivy(trivy_json):
+def collect_cves_from_inputs(files: List[str]) -> List[Dict[str, Any]]:
+    """Flatten inputs → list of {cve, severity, pkg...} items."""
     results = []
-    for res in trivy_json or []:
-        vulns = res.get("Vulnerabilities", []) or []
-        for v in vulns:
-            cve = v.get("VulnerabilityID", "")
-            if cve:
-                results.append(
-                    {
-                        "cve": cve,
-                        "pkg_name": v.get("PkgName", ""),
-                        "installed_version": v.get("InstalledVersion", ""),
-                        "fixed_version": v.get("FixedVersion", ""),
-                        "severity": v.get("Severity", "").upper(),
-                        "cvss": v.get("CVSS", {}).get("nvd", {}).get("V3Score"),
-                    }
-                )
-    return results
+    for path in files:
+        data = load_json(path)
+        if "Results" in data:  # Trivy SCA
+            for res in data.get("Results", []):
+                for vuln in res.get("Vulnerabilities", []):
+                    results.append({
+                        "cve": vuln.get("VulnerabilityID"),
+                        "severity": vuln.get("Severity", "UNKNOWN"),
+                        "pkg_name": vuln.get("PkgName"),
+                        "installed_version": vuln.get("InstalledVersion"),
+                        "fixed_version": vuln.get("FixedVersion", "N/A"),
+                    })
+        elif "vulnerabilities" in data:  # Snyk SCA
+            for vuln in data.get("vulnerabilities", []):
+                results.append({
+                    "cve": vuln.get("id"),
+                    "severity": vuln.get("severity", "UNKNOWN"),
+                    "pkg_name": vuln.get("packageName"),
+                    "installed_version": vuln.get("version"),
+                    "fixed_version": vuln.get("fixedIn", ["N/A"])[0],
+                })
+    return [v for v in results if v.get("cve")]
 
 
-def extract_cves_from_snyk(snyk_json):
-    results = []
-    vulns = snyk_json.get("vulnerabilities", []) or []
-    for v in vulns:
-        cve = ""
-        if "identifiers" in v:
-            cve_list = v["identifiers"].get("CVE", [])
-            if cve_list:
-                cve = cve_list[0]
-        if not cve:
-            continue
-        results.append(
-            {
-                "cve": cve,
-                "pkg_name": v.get("packageName", ""),
-                "installed_version": v.get("version", ""),
-                "fixed_version": v.get("fixedIn", ""),
-                "severity": v.get("severity", "").upper(),
-                "cvss": (v.get("cvssScore") or 0),
-            }
-        )
-    return results
+# =========================================================
+# EPSS + KEV Data Fetch
+# =========================================================
+
+def enrich_epss(cves: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Query FIRST EPSS v2 bulk API."""
+    if not cves:
+        return {}
+
+    url = "https://api.first.org/data/v1/epss?cve=" + ",".join(cves)
+    data = fetch_json(url).get("data", {})
+    return {k: v for k, v in data.items()}
 
 
-def enrich_with_epss(v):
-    """Attach EPSS score + percentile + KEV flags."""
+def load_kev() -> set:
+    kev_feed = fetch_json("https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json")
+    items = kev_feed.get("vulnerabilities", [])
+    return {v.get("cveID") for v in items if v.get("cveID")}
+
+
+# =========================================================
+# Risk Evaluation
+# =========================================================
+
+def evaluate_item(v: Dict[str, Any], epss: Dict[str, Any], kev: set) -> Dict[str, Any]:
     cve = v["cve"]
-    url = EPSS_API + urllib.parse.quote(cve)
-    epss_data = fetch_json(url)
-
-    score = 0
-    percentile = 0
-    if epss_data and "data" in epss_data and epss_data["data"]:
-        row = epss_data["data"][0]
-        score = float(row.get("epss", 0))
-        percentile = float(row.get("percentile", 0))
-
-    v["epss"] = round(score, 4)
-    v["percentile"] = round(percentile, 4)
-    v["is_kev"] = cve in KEV_SET
-    return v
-
-
-def risk_filter_strict(v, threshold: float):
-    """Strict EPSS/KEV gating."""
-    return (v["epss"] >= threshold) or v["is_kev"]
-
-
-def risk_filter_weighted(v):
-    """Weighted risk scoring: CVSS + EPSS percentile."""
-    cvss = v.get("cvss") or 0
-    perc = v.get("percentile") or 0
-    return (0.7 * cvss + 0.3 * perc * 10) >= 6
-
-
-def process_reports(inputs, mode, threshold):
-    merged = []
-
-    for path in inputs:
-        data = safe_load_json(path)
-        if not data:
-            continue
-
-        # Trivy format
-        if isinstance(data, list):
-            merged.extend(extract_cves_from_trivy(data))
-
-        # Snyk SCA
-        if isinstance(data, dict) and "vulnerabilities" in data:
-            merged.extend(extract_cves_from_snyk(data))
-
-    enriched = [enrich_with_epss(v) for v in merged]
-
-    high_risk = []
-    for v in enriched:
-        reasons = []
-
-        if mode == "A":
-            if risk_filter_strict(v, threshold):
-                reasons.append("STRICT:EPSS>=threshold")
-        elif mode == "B":
-            if risk_filter_weighted(v):
-                reasons.append("WEIGHTED:RISK_SCORE")
-        elif mode == "C":
-            if risk_filter_strict(v, threshold):
-                reasons.append("STRICT:EPSS>=threshold")
-            if risk_filter_weighted(v):
-                reasons.append("WEIGHTED:RISK_SCORE")
-
-        if v["is_kev"]:
-            reasons.append("CISA_KEV")
-
-        if reasons:
-            v["reasons"] = reasons
-            high_risk.append(v)
+    epss_data = epss.get(cve, {})
+    epss_score = round(float(epss_data.get("epss", 0)), 4)
+    epss_pct = round(float(epss_data.get("percentile", 0)), 4)
+    is_kev = cve in kev
 
     return {
-        "mode": mode,
-        "threshold": threshold,
-        "total_findings": len(enriched),
-        "high_risk": high_risk,
+        **v,
+        "epss": epss_score,
+        "percentile": epss_pct,
+        "is_kev": is_kev,
     }
 
 
+def compute_risk_score(item: Dict[str, Any]) -> float:
+    # Weight formula: severity + EPSS + KEV
+    sev = item.get("severity", "").upper()
+    sev_w = {
+        "CRITICAL": 0.45,
+        "HIGH": 0.35,
+        "MEDIUM": 0.20,
+        "LOW": 0.10,
+    }.get(sev, 0.10)
+
+    epss_w = item["epss"] * 0.35
+    kev_w = 0.20 if item["is_kev"] else 0.0
+    return round(sev_w + epss_w + kev_w, 4)
+
+
+# =========================================================
+# Mode Logic (A / B / C)
+# =========================================================
+
+def filter_high_risk(items: List[Dict[str, Any]], thr: float) -> List[Dict[str, Any]]:
+    return [i for i in items if i["epss"] >= thr or i["is_kev"]]
+
+
+def should_fail(mode: str, high_risk: List[Dict[str, Any]]) -> bool:
+    if mode == "A":   # Strict
+        return len(high_risk) > 0
+    if mode == "C":   # Hybrid
+        return len(high_risk) > 0
+    return False       # Mode B never fails
+
+
+# =========================================================
+# Main EPSS Gate Flow
+# =========================================================
+
+def run_gate(mode: str, input_files: List[str], output_path: str, threshold: float) -> int:
+    findings = collect_cves_from_inputs(input_files)
+    if not findings:
+        save_output(output_path, [], 0, mode, threshold)
+        return 0
+
+    cves = [f["cve"] for f in findings]
+    epss = enrich_epss(cves)
+    kev = load_kev()
+
+    enriched = [evaluate_item(v, epss, kev) for v in findings]
+
+    for i in enriched:
+        i["risk_score"] = compute_risk_score(i)
+
+    high_risk = filter_high_risk(enriched, threshold)
+
+    save_output(output_path, high_risk, len(high_risk), mode, threshold)
+
+    return 1 if should_fail(mode, high_risk) else 0
+
+
+# =========================================================
+# Output Writer
+# =========================================================
+
+def save_output(path: str, high_risk: List[Dict[str, Any]], count: int, mode: str, thr: float) -> None:
+    out = {
+        "mode": mode,
+        "threshold": thr,
+        "total_high_risk": count,
+        "high_risk": high_risk,
+    }
+    with open(path, "w") as f:
+        json.dump(out, f, indent=2)
+
+
+# =========================================================
+# Entry Point
+# =========================================================
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", required=True, choices=["A", "B", "C"])
+    p.add_argument("--input", nargs="+", required=True, help="Trivy/Snyk JSON inputs")
+    p.add_argument("--output", required=True)
+    p.add_argument("--threshold", required=True, type=float)
+    return p.parse_args()
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="C")
-    parser.add_argument("--input", nargs="+", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--threshold", type=float, default=0.5)
-    args = parser.parse_args()
-
-    result = process_reports(args.input, args.mode, args.threshold)
-
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    with open(args.output, "w") as f:
-        json.dump(result, f, indent=2)
-
-    # hybrid mode may produce empty results, that's allowed
-    if args.mode == "A" and len(result["high_risk"]) > 0:
-        exit(1)
+    args = parse_args()
+    rc = run_gate(args.mode, args.input, args.output, args.threshold)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

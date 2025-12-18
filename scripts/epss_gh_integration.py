@@ -1,235 +1,172 @@
 #!/usr/bin/env python3
 """
-GitHub Integration for EPSS/KEV Risk Findings:
-- Auto-comment on PR
-- Auto-create or update GitHub Issues per CVE
-- Auto-close resolved Issues
-- Auto-assign + auto-label severity
-- Idempotent behavior
+GitHub Integration for EPSS/KEV findings:
+- Auto-PR Comment
+- Auto-create Issues
+- Auto-assign
+- Auto-label severity
+- Auto-close resolved issues
 
-Requirements:
-- GITHUB_REPOSITORY
-- GITHUB_TOKEN
-- EPSS_FINDINGS (JSON output from epss_gate.py)
+Refactored to reduce Cognitive Complexity (<15).
 """
 
-import os
 import json
-import urllib.request
-import urllib.error
+import os
+import sys
+import subprocess
+from typing import List, Dict, Any
 
-# -----------------------------------------------------
+
+EPSS_FILE = os.environ.get("EPSS_FINDINGS", "security-reports/epss-findings.json")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+REPO = os.environ.get("GITHUB_REPOSITORY", "")
+
+
+# ================================================
 # Helpers
-# -----------------------------------------------------
-
-def load_json(path):
-    """Safe loader."""
+# ================================================
+def load_epss_findings(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
-        return None
+        return {"high_risk": []}
+
     try:
         with open(path) as f:
             return json.load(f)
     except Exception:
-        return None
+        return {"high_risk": []}
 
 
-def gh_api(url, method="GET", data=None, token=""):
-    """Wrapper for GitHub REST API calls."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "EPSS-GH-Integration",
-        "Authorization": f"Bearer {token}",
+def gh_api(args: List[str], payload: dict | None = None) -> None:
+    """Wrapper for gh CLI calls."""
+    base = ["gh"] + args + ["--repo", REPO]
+    if payload:
+        proc = subprocess.Popen(
+            base, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        proc.communicate(json.dumps(payload).encode("utf-8"))
+    else:
+        subprocess.run(base, check=False)
+
+
+# ================================================
+# Rendering
+# ================================================
+def format_pr_comment(findings: List[Dict[str, Any]]) -> str:
+    if not findings:
+        return "### EPSS / KEV\nNo high-risk vulnerabilities detected."
+
+    lines = ["### EPSS High-Risk CVEs Detected", ""]
+    for item in findings:
+        lines.append(
+            f"- **{item['cve']}** | EPSS={item['epss']} "
+            f"| KEV={item.get('is_kev', False)} "
+            f"| Severity={item.get('severity', 'N/A')}"
+        )
+    return "\n".join(lines)
+
+
+def map_severity_tag(sev: str) -> str:
+    mapping = {
+        "CRITICAL": "severity-critical",
+        "HIGH": "severity-high",
+        "MEDIUM": "severity-medium",
+        "LOW": "severity-low",
     }
-    body = None
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-        body = json.dumps(data).encode()
-
-    req = urllib.request.Request(url, headers=headers, method=method, data=body)
-
-    try:
-        with urllib.request.urlopen(req) as r:
-            return json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        msg = e.read().decode()
-        print(f"[ERROR] API {method} {url}: {msg}")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Unexpected API error: {e}")
-        return None
+    return mapping.get(sev.upper(), "severity-unknown")
 
 
-# -----------------------------------------------------
-# GitHub Operations
-# -----------------------------------------------------
-
-def get_existing_issues(repo, token):
-    issues = gh_api(f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100", token=token)
-    if not issues:
-        return []
-    return issues
-
-
-def find_issue_by_cve(issues, cve):
-    for i in issues:
-        if f"[{cve}]" in i.get("title", ""):
-            return i
-    return None
-
-
-def create_issue(repo, token, v, assignee):
-    title = f"[{v['cve']}] EPSS High-Risk Vulnerability"
-    labels = [
-        "security",
-        f"severity-{v['severity'].lower()}",
-    ]
-    if v.get("is_kev"):
-        labels.append("CISA-KEV")
-    if v.get("epss", 0) >= 0.5:
-        labels.append("EPSS-HIGH")
-
+# ================================================
+# Issue Management
+# ================================================
+def create_issue(item: Dict[str, Any]) -> None:
+    title = f"[EPSS] {item['cve']} – High-Risk Vulnerability"
     body = (
-        f"### High-risk vulnerability detected\n"
-        f"**CVE:** {v['cve']}\n"
-        f"**Package:** {v.get('pkg_name')}\n"
-        f"**Installed:** {v.get('installed_version')}\n"
-        f"**Fixed:** {v.get('fixed_version')}\n"
-        f"**Severity:** {v.get('severity')}\n"
-        f"**CVSS:** {v.get('cvss')}\n"
-        f"**EPSS Score:** {v.get('epss')}\n"
-        f"**Percentile:** {v.get('percentile')}\n"
-        f"**KEV:** {v.get('is_kev')}\n"
-        f"**Reasons:** {', '.join(v.get('reasons', []))}\n"
-        f"---\n"
-        f"Auto-generated by EPSS Gate."
+        f"EPSS Score: **{item['epss']}**\n"
+        f"KEV: **{item.get('is_kev', False)}**\n"
+        f"Severity: **{item['severity']}**\n"
+        f"CVSS: **{item.get('cvss', 'N/A')}**\n"
+        f"Package: **{item.get('pkg_name', '-') }**\n"
+        f"Installed: **{item.get('installed_version', '-') }**\n"
+        f"Fixed: **{item.get('fixed_version', '-') }**\n"
     )
 
-    data = {
+    labels = [
+        "EPSS",
+        map_severity_tag(item.get("severity", "")),
+        "needs-triage",
+    ]
+    payload = {
         "title": title,
         "body": body,
         "labels": labels,
+        "assignees": ["novaferrydianto"],
     }
-
-    if assignee:
-        data["assignees"] = [assignee]
-
-    return gh_api(f"https://api.github.com/repos/{repo}/issues", method="POST", data=data, token=token)
+    gh_api(["issue", "create"], payload)
 
 
-def update_issue(repo, token, issue_number, body):
-    return gh_api(
-        f"https://api.github.com/repos/{repo}/issues/{issue_number}",
-        method="PATCH",
-        data={"body": body},
-        token=token,
+def close_obsolete_issues(existing: List[str], active: List[str]) -> None:
+    """Close issues whose CVEs are no longer high-risk."""
+    obsolete = set(existing) - set(active)
+    for cve in obsolete:
+        gh_api(["issue", "close", "--reason", "completed", "--title", f"[EPSS] {cve}"])
+
+
+def list_existing_epss_issues() -> List[str]:
+    """Fetch titles of existing EPSS issues."""
+    proc = subprocess.Popen(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--search",
+            "EPSS",
+            "--json",
+            "title",
+            "--repo",
+            REPO,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+    out, _ = proc.communicate()
+
+    try:
+        items = json.loads(out.decode("utf-8"))
+        return [i["title"].split()[1] for i in items if i["title"].startswith("[EPSS]")]
+    except Exception:
+        return []
 
 
-def close_issue(repo, token, issue_number, comment="Resolved and auto-closed."):
-    gh_api(
-        f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments",
-        method="POST",
-        data={"body": comment},
-        token=token,
-    )
-    return gh_api(
-        f"https://api.github.com/repos/{repo}/issues/{issue_number}",
-        method="PATCH",
-        data={"state": "closed"},
-        token=token,
-    )
-
-
-def post_pr_comment(repo, pr_number, token, summary):
-    data = {
-        "body": summary
-    }
-    return gh_api(
-        f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
-        method="POST",
-        data=data,
-        token=token,
-    )
-
-
-# -----------------------------------------------------
-# MAIN LOGIC
-# -----------------------------------------------------
-
-def main():
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    token = os.environ.get("GITHUB_TOKEN", "")
-    findings_path = os.environ.get("EPSS_FINDINGS", "")
-    pr_number = os.environ.get("PR_NUMBER")
-
-    if not repo or not token or not findings_path:
-        print("[WARN] Missing environment variables for GH integration.")
+# ================================================
+# PR Comment
+# ================================================
+def post_pr_comment(findings: List[Dict[str, Any]]) -> None:
+    if not os.environ.get("GITHUB_REF", "").startswith("refs/pull/"):
         return
 
-    findings = load_json(findings_path)
-    if not findings:
-        print("[INFO] No findings, skipping GH sync.")
-        return
+    comment = format_pr_comment(findings)
+    gh_api(["pr", "comment"], {"body": comment})
 
-    high_risk = findings.get("high_risk", [])
-    existing = get_existing_issues(repo, token)
 
-    # -------------------------------------------------
-    # Auto-comment PR
-    # -------------------------------------------------
-    if pr_number:
-        summary = (
-            f"### EPSS/KEV High-Risk Summary\n"
-            f"Mode: **{findings.get('mode')}** | Threshold: **{findings.get('threshold')}**\n"
-            f"Total High-Risk CVEs: **{len(high_risk)}**\n\n"
-        )
-        if high_risk:
-            for v in high_risk:
-                summary += f"- {v['cve']} (EPSS={v['epss']}, KEV={v['is_kev']})\n"
-        else:
-            summary += "No high-risk CVEs found.\n"
+# ================================================
+# Main
+# ================================================
+def main() -> None:
+    data = load_epss_findings(EPSS_FILE)
+    findings = data.get("high_risk", [])
 
-        post_pr_comment(repo, pr_number, token, summary)
+    # PR Auto-comment
+    post_pr_comment(findings)
 
-    # -------------------------------------------------
-    # Create/Update Issues
-    # -------------------------------------------------
-    active_cves = set()
-    for v in high_risk:
-        active_cves.add(v["cve"])
+    # Issue sync
+    existing = list_existing_epss_issues()
+    active = [i["cve"] for i in findings]
 
-        issue = find_issue_by_cve(existing, v["cve"])
-        assignee = os.environ.get("DEFAULT_ASSIGNEE", "")
+    for item in findings:
+        if item["cve"] not in existing:
+            create_issue(item)
 
-        if issue:
-            new_body = (
-                f"### Updated high-risk CVE\n"
-                f"**CVE:** {v['cve']}\n"
-                f"**EPSS:** {v['epss']}\n"
-                f"**Reasons:** {', '.join(v.get('reasons', []))}\n"
-                f"---\n"
-                f"Updated automatically."
-            )
-            update_issue(repo, token, issue["number"], new_body)
-        else:
-            create_issue(repo, token, v, assignee)
-
-    # -------------------------------------------------
-    # Auto-close stale Issues
-    # -------------------------------------------------
-    for i in existing:
-        # Skip PR comments which also appear in issues API
-        if "pull_request" in i:
-            continue
-
-        title = i.get("title", "")
-        if "[" in title and "]" in title:
-            cve = title.split("[")[1].split("]")[0].strip()
-            if cve and cve not in active_cves:
-                print(f"[INFO] Closing resolved CVE issue: {cve}")
-                close_issue(repo, token, i["number"])
-
-    print("[INFO] EPSS GitHub integration complete.")
+    close_obsolete_issues(existing, active)
 
 
 if __name__ == "__main__":
