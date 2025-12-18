@@ -1,12 +1,29 @@
-import os
-from llm.provider_dual import DualProvider
-from llm.utils.file_loader import read_prompt
+import json
+from openai import OpenAI
+from llm.agent import AgentResult
+from llm.utils.utils import load_prompt
 
 class SSRFAgent:
-    def __init__(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "prompts", "ssrf.txt")
-        self.system_prompt = read_prompt(path)
-        self.agent = DualProvider(system_message=self.system_prompt)
+    def __init__(self, client: OpenAI):
+        self.client = client
+        self.prompt = load_prompt("llm/prompts/ssrf.txt")
 
-    def analyze(self, code_context: str):
-        return self.agent.ask(code_context)
+    def run(self, code: str, filepath: str):
+        prompt = self.prompt.replace("{{CODE}}", code)
+
+        out = self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        try:
+            data = json.loads(out.choices[0].message.content)
+            return AgentResult(**data)
+        except:
+            return AgentResult(
+                file=filepath,
+                type="SSRF",
+                severity="LOW",
+                description="Invalid LLM JSON response",
+                recommendation="Fix model output"
+            )

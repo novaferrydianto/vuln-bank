@@ -1,25 +1,29 @@
 import json
-from llm.provider import get_llm_client
-from llm.utils.file_loader import load_prompt
-from llm.utils.utils import detect_cwe
-
+from openai import OpenAI
+from llm.agent import AgentResult
+from llm.utils.utils import load_prompt
 
 class TraversalAgent:
-    def __init__(self):
-        self.prompt = load_prompt("traversal.txt")
-        self.client = get_llm_client()
+    def __init__(self, client: OpenAI):
+        self.client = client
+        self.prompt = load_prompt("llm/prompts/traversal.txt")
 
-    def analyze(self, code_text: str):
-        msg = self.prompt + "\n\n" + code_text
+    def run(self, code: str, filepath: str):
+        prompt = self.prompt.replace("{{CODE}}", code)
+
+        res = self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}]
+        )
 
         try:
-            result = self.client.chat(msg)
-            parsed = json.loads(result)
-        except Exception:
-            return []
-
-        # Add CWE classification automatically
-        for f in parsed:
-            f["cwe"] = detect_cwe(f.get("summary", ""))
-
-        return parsed
+            data = json.loads(res.choices[0].message.content)
+            return AgentResult(**data)
+        except:
+            return AgentResult(
+                file=filepath,
+                type="TRAVERSAL",
+                severity="LOW",
+                description="Traversal scan JSON error",
+                recommendation="Fix model output"
+            )

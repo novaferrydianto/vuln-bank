@@ -1,47 +1,71 @@
 #!/usr/bin/env python3
-
+import os
 import json
-import sys
-from pathlib import Path
-from datetime import datetime
+import argparse
 
 
-def load_json(path: Path):
-    text = path.read_text()  # UP015 fixed → no mode
-    return json.loads(text)
+def safe_load_json(path: str, base_dir="docs/data"):
+    base_real = os.path.realpath(base_dir)
+    target_real = os.path.realpath(path)
+
+    if not target_real.startswith(base_real + os.sep):
+        raise ValueError(f"Unsafe path: {path}")
+
+    if not os.path.exists(target_real):
+        return None
+
+    try:
+        with open(target_real) as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
-def grade(score: float) -> str:
-    if score >= 90:
-        return "A"
-    if score >= 80:
-        return "B"
-    if score >= 70:
-        return "C"
-    if score >= 60:
-        return "D"
-    return "E"
+def render_md(data: dict) -> str:
+    overview = data.get("overview", {})
+    epss = data.get("epss", {})
+    llm = data.get("llm", {})
+    sla = data.get("sla", {})
+
+    md = []
+    md.append("# Security Board Report\n")
+
+    md.append("## Executive Summary")
+    md.append(f"- Overall Risk: **{overview.get('overall_risk', 'UNKNOWN')}**")
+    md.append(f"- Total Findings: {overview.get('total_findings', 0)}")
+    md.append(f"- Critical Issues: {overview.get('critical', 0)}\n")
+
+    md.append("## EPSS Summary")
+    md.append(f"- High-risk EPSS: {epss.get('high_risk', 0)}")
+    md.append(f"- Threshold: {epss.get('threshold', 'N/A')}\n")
+
+    md.append("## LLM Findings")
+    md.append(f"- Total LLM findings: {llm.get('count', 0)}")
+    md.append(f"- High-risk: {llm.get('high', 0)}\n")
+
+    md.append("## SLA")
+    md.append(f"- Violations: {sla.get('violations', 0)}")
+    md.append(f"- Near expiry: {sla.get('near_expiry', 0)}\n")
+
+    return "\n".join(md)
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: render_security_markdown.py <scorecard_json>")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("scorecard_json")
+    args = parser.parse_args()
 
-    path = Path(sys.argv[1])
-    data = load_json(path)
+    try:
+        data = safe_load_json(args.scorecard_json)
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        data = None
 
-    gen = data.get("generated_at", datetime.utcnow().isoformat() + "Z")
-    overall = data.get("overall_score", 0.0)
+    if not data:
+        print("# Security Board Report\nNo data available.")
+        return
 
-    lines = [
-        "# Security Board Report",
-        f"_Generated at: `{gen}`_",
-        "",
-        f"## Overall Score: **{overall}** (Grade {grade(overall)})",
-        "",
-    ]
-
-    print("\n".join(lines))
+    print(render_md(data))
 
 
 if __name__ == "__main__":

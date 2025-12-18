@@ -1,5 +1,4 @@
-openai
-python-dotenv
-requests
-httpx
-tiktoken
+openai>=1.55.0
+pydantic>=2.8.0
+tiktoken>=0.7.0
+requests>=2.31.0

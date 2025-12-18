@@ -1,14 +1,15 @@
-from provider import AIProvider
+import json
+from pydantic import BaseModel
 
+class AgentResult(BaseModel):
+    file: str
+    type: str
+    severity: str
+    description: str
+    recommendation: str
 
-class Agent:
-    def __init__(self, model, system_message):
-        self.model = model
-        self.messages = [{"role": "system", "content": system_message}]
-        self.provider = AIProvider()
-
-    def chat(self, user_message: str):
-        self.messages.append({"role": "user", "content": user_message})
-        reply = self.provider.chat(self.model, self.messages)
-        self.messages.append({"role": "assistant", "content": reply})
-        return reply
+def safe_json_parse(output: str, fallback):
+    try:
+        return json.loads(output)
+    except:
+        return fallback

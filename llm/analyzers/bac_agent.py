@@ -1,11 +1,30 @@
-from agent import Agent
+import json
+from openai import OpenAI
+from llm.agent import AgentResult
+from llm.utils.utils import load_prompt
 
-def load_prompt(path="prompts/bac.txt"):
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+class BacAgent:
+    def __init__(self, client: OpenAI):
+        self.client = client
+        self.prompt = load_prompt("llm/prompts/bac.txt")
 
-def create_bac_agent():
-    return Agent(
-        model="gpt-4o-mini",     # fallback via LLM7
-        system_message=load_prompt()
-    )
+    def run(self, code: str, filepath: str):
+        final_prompt = self.prompt.replace("{{CODE}}", code)
+
+        result = self.client.chat.completions.create(
+            model="deepseek-chat",
+            temperature=0,
+            messages=[{"role": "user", "content": final_prompt}]
+        )
+
+        try:
+            js = json.loads(result.choices[0].message.content)
+            return AgentResult(**js)
+        except:
+            return AgentResult(
+                file=filepath,
+                type="BAC",
+                severity="LOW",
+                description="Failed to parse model output",
+                recommendation="Improve formatting"
+            )

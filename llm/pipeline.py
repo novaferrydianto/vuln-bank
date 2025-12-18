@@ -1,89 +1,55 @@
-# llm/pipeline.py
-
-from __future__ import annotations
-
-import argparse
+#!/usr/bin/env python3
+import os
 import json
-from pathlib import Path
-from typing import Dict, Any
+import argparse
+
+from llm.utils.file_loader import read_file
+from llm.utils.scanner import walk_targets
+from llm.provider import get_client
 
 from llm.analyzers.bac_agent import BacAgent
+from llm.analyzers.sqli_agent import SQLiAgent
 from llm.analyzers.ssrf_agent import SSRFAgent
 from llm.analyzers.ssti_agent import SSTIAgent
-from llm.analyzers.sqli_agent import SQLIAgent
 from llm.analyzers.traversal_agent import TraversalAgent
-from llm.utils.scanner import scan_codebase
 
 
-def run_llm_sast(project_root: str | Path) -> Dict[str, Any]:
-    """
-    Jalankan semua agent LLM terhadap codebase dan kembalikan findings terstruktur.
-    Struktur output:
-
-    {
-      "meta": {...},
-      "findings": {
-        "bac": [...],
-        "ssrf": [...],
-        "ssti": [...],
-        "sqli": [...],
-        "traversal": [...]
-      }
-    }
-    """
-    root = Path(project_root).resolve()
-    code_context = scan_codebase(root)
-
-    agents = {
-      "bac": BacAgent(),
-      "ssrf": SSRFAgent(),
-      "ssti": SSTIAgent(),
-      "sqli": SQLIAgent(),
-      "traversal": TraversalAgent(),
-    }
-
-    findings: Dict[str, Any] = {}
-    for key, agent in agents.items():
-        print(f"[LLM] Running {key} analyzer...")
-        try:
-            findings[key] = agent.analyze(code_context) or []
-        except Exception as exc:  # defensive: jangan jatuhkan pipeline
-            print(f"[LLM] {key} analyzer error: {exc}")
-            findings[key] = []
-
-    return {
-        "meta": {
-            "root": str(root),
-            "agents": list(agents.keys()),
-            "version": "2025.01",
-        },
-        "findings": findings,
-    }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="LLM SAST Multi-Agent Pipeline (BAC/SSRF/SSTI/SQLi/Traversal)")
-    parser.add_argument(
-        "--scan-path",
-        "-s",
-        required=True,
-        help="Path ke codebase (root project)."
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        default="security-reports/llm-findings.json",
-        help="Path output JSON findings."
-    )
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scan-path", required=True)
+    parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    result = run_llm_sast(args.scan_path)
+    client = get_client()
 
-    out_path = Path(args.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    agents = [
+        ("BAC", BacAgent(client)),
+        ("SQLI", SQLiAgent(client)),
+        ("SSRF", SSRFAgent(client)),
+        ("SSTI", SSTIAgent(client)),
+        ("TRAVERSAL", TraversalAgent(client)),
+    ]
 
-    print(f"[LLM] Findings written to {out_path}")
+    targets = walk_targets(args.scan_path)
+    results = []
+
+    for file_path in targets:
+        code = read_file(file_path)
+        if not code.strip():
+            continue
+
+        for name, agent in agents:
+            res = agent.run(code, file_path)
+            results.append(res.dict())
+
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump({
+            "total": len(results),
+            "results": results
+        }, f, indent=2)
+
+    print(f"[OK] LLM multi-agent report generated → {args.output}")
 
 
 if __name__ == "__main__":

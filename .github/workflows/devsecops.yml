@@ -208,6 +208,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Add repo to PYTHONPATH
+        run: |
+          echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
+
       - name: Install LLM deps
         run: |
           set -euo pipefail
@@ -221,7 +225,7 @@ jobs:
           LLM_REPORT: ${{ env.LLM_REPORT }}
         run: |
           set -euo pipefail
-          python llm/pipeline.py \
+          python -m llm.pipeline \
             --scan-path "${LLM_SCAN_PATH}" \
             --output "${LLM_REPORT}"
 
@@ -269,9 +273,9 @@ jobs:
           else
             python3 scripts/epss_gate.py \
               --mode "${EPSS_MODE}" \
-              "${inputs[@]}" \
+              --threshold "${EPSS_THRESHOLD}" \
               --output "${EPSS_FINDINGS}" \
-              --threshold "${EPSS_THRESHOLD}"
+              "${inputs[@]}"
           fi
 
       - name: Upload EPSS Findings

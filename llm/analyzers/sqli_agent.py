@@ -1,26 +1,29 @@
-from ..agent import Agent
-from ..provider import LLMProvider
-from pathlib import Path
+import json
+from openai import OpenAI
+from llm.agent import AgentResult
+from llm.utils.utils import load_prompt
 
-class SQLIAgent:
-    name = "SQL Injection Agent"
+class SQLiAgent:
+    def __init__(self, client: OpenAI):
+        self.client = client
+        self.prompt = load_prompt("llm/prompts/sqli.txt")
 
-    def __init__(self):
-        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "sqli.txt"
-        with open(prompt_path, "r") as f:
-            self.prompt = f.read()
+    def run(self, code: str, filepath: str):
+        prompt = self.prompt.replace("{{CODE}}", code)
 
-        self.agent = Agent(
-            model="gpt-4.1",
-            system_message=self.prompt,
-            provider=LLMProvider()
+        out = self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}]
         )
 
-    def analyze(self, files):
-        content = "\n\n".join([f"[FILE] {p}\n{c}" for p, c in files.items()])
-        reply = self.agent.chat(content)
-
         try:
-            return json.loads(reply)
+            data = json.loads(out.choices[0].message.content)
+            return AgentResult(**data)
         except:
-            return []
+            return AgentResult(
+                file=filepath,
+                type="SQLI",
+                severity="LOW",
+                description="Error parsing model output",
+                recommendation="Fix formatting"
+            )
