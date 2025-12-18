@@ -389,11 +389,9 @@ jobs:
         id: export
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
-          # Pastikan variabel IMAGE_REF terbentuk dengan benar
           IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
           
           echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
-          # Ini baris krusial: Daftarkan ke ENV agar step Syft bisa baca
           echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
 
       # =========================================================
@@ -401,11 +399,12 @@ jobs:
       # =========================================================
       - name: Generate SBOM (CycloneDX)
         run: |
+          echo "Processing SBOM for: ${IMAGE_TO_SIGN}"
           syft "${{ env.IMAGE_TO_SIGN }}" -o cyclonedx-json=sbom.json
 
       - name: Sign Image & Attest SBOM
         run: |
-          # Menandatangani Image
+          echo "Signing image: ${IMAGE_TO_SIGN}"
           cosign sign --yes "${{ env.IMAGE_TO_SIGN }}"
           
           # Mengesahkan SBOM ke Image
