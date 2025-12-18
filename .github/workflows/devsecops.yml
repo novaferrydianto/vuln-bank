@@ -149,22 +149,30 @@ jobs:
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
-      - name: Snyk Scan
+      - name: Snyk Advanced Scans
         if: matrix.scan_type == 'snyk'
         shell: bash
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${SNYK_TOKEN:-}" ]; then
-            echo '{"tool":"snyk","status":"skipped","reason":"missing_token"}' > "${REPORT_DIR}/snyk.json"
-            exit 0
-          fi
-          if ! command -v snyk >/dev/null 2>&1; then
-            echo '{"tool":"snyk","status":"skipped","reason":"not_installed"}' > "${REPORT_DIR}/snyk.json"
-            exit 0
-          fi
-          snyk test --json > "${REPORT_DIR}/snyk.json" || true
+          
+          # 1. SAST - Snyk Code (Output SARIF untuk GitHub & JSON untuk DefectDojo)
+          snyk code test --sarif > snyk-code.sarif || true
+          snyk code test --json > "${REPORT_DIR}/snyk-code.json" || true
+
+          # 2. SCA - Snyk Open Source
+          snyk test --json > "${REPORT_DIR}/snyk-sca.json" || true
+          snyk monitor --all-projects || true
+
+          # 3. IaC - Infrastructure as Code
+          snyk iac test --json > "${REPORT_DIR}/snyk-iac.json" || true
+
+      - name: Upload SARIF to GitHub
+        if: matrix.scan_type == 'snyk' && always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-code.sarif
 
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
@@ -389,11 +397,9 @@ jobs:
         id: export
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
-          # Pastikan variabel IMAGE_REF terbentuk dengan benar
           IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
           
           echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
-          # Ini baris krusial: Daftarkan ke ENV agar step Syft bisa baca
           echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
 
       # =========================================================
@@ -401,11 +407,12 @@ jobs:
       # =========================================================
       - name: Generate SBOM (CycloneDX)
         run: |
+          echo "Processing SBOM for: ${IMAGE_TO_SIGN}"
           syft "${{ env.IMAGE_TO_SIGN }}" -o cyclonedx-json=sbom.json
 
       - name: Sign Image & Attest SBOM
         run: |
-          # Menandatangani Image
+          echo "Signing image: ${IMAGE_TO_SIGN}"
           cosign sign --yes "${{ env.IMAGE_TO_SIGN }}"
           
           # Mengesahkan SBOM ke Image
