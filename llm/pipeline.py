@@ -44,12 +44,12 @@ def build_agents():
     ]
 
 
-def run(scan_path: str, output: str):
+def run(scan_path: str, output: str) -> None:
     provider = build_provider()
     agents = build_agents()
 
     files = scan_files(scan_path)
-    findings: List[Dict[str, Any]] = []
+    findings = []  # type: List[Dict[str, Any]]
 
     for path in files:
         content = read_file(path)
@@ -63,13 +63,18 @@ def run(scan_path: str, output: str):
                 },
             )
 
-    os.makedirs(os.path.dirname(output), exist_ok=True)
+    dirname = os.path.dirname(output)
+    if dirname and not os.path.exists(dirname):
+        os.makedirs(dirname)
+
     with open(output, "w", encoding="utf-8") as fp:
         json.dump({"findings": findings}, fp, indent=2)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="LLM Multi-Agent SAST Pipeline (LLM7)")
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="LLM Multi-Agent SAST Pipeline (LLM7, Python 3.9 compatible)",
+    )
     parser.add_argument("--scan-path", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
