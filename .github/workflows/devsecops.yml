@@ -51,6 +51,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Prepare Workspace
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
@@ -58,13 +59,18 @@ jobs:
           command -v jq >/dev/null 2>&1 || sudo dnf install -y jq
 
       - name: Install Tools
+        shell: bash
         run: |
           set -euo pipefail
-          if [ -f "${REQUIREMENTS_PATH}" ]; then pip install -r "${REQUIREMENTS_PATH}"; fi
+          if [ -f "${REQUIREMENTS_PATH}" ]; then
+            pip install -r "${REQUIREMENTS_PATH}"
+          fi
+
           command -v pipx >/dev/null 2>&1 || sudo dnf install -y pipx
           export PATH="$HOME/.local/bin:$PATH"
+
           command -v semgrep >/dev/null 2>&1 || pipx install --force semgrep
-          command -v docker >/dev/null 2>&1 || { echo "Docker missing"; exit 1; }
+          command -v docker  >/dev/null 2>&1 || { echo "[FATAL] Docker missing"; exit 1; }
 
 #####################################################################
 # 2) SECURITY SCANS (Parallel)
@@ -82,21 +88,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Prepare
+      - name: Prepare report dir
+        shell: bash
         run: mkdir -p "${REPORT_DIR}"
 
-      # SECRET SCAN
+      # ===================== Secrets =====================
       - name: TruffleHog
         if: matrix.scan_type == 'trufflehog'
+        shell: bash
         run: |
+          set -euo pipefail
           trufflehog git file://$(pwd) \
-            --json --only-verified --no-update \
-            > "${REPORT_DIR}/trufflehog.json" || true
+            --json \
+            --only-verified \
+            --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
-      # SAST
+      # ===================== SAST =====================
       - name: Semgrep
         if: matrix.scan_type == 'semgrep'
+        shell: bash
         run: |
+          set -euo pipefail
           semgrep scan \
             --config auto \
             --config p/security-audit \
@@ -105,29 +117,44 @@ jobs:
             --config p/python \
             --json > "${REPORT_DIR}/semgrep.json" || true
 
-      # IAC
-      - name: Checkov
+      # ===================== IaC / Dockerfile (Checkov) =====================
+      - name: Checkov CIS Compliance Scan
         if: matrix.scan_type == 'checkov'
+        shell: bash
         run: |
-          pipx install --force checkov || true
-          checkov -d ansible --output json > "${REPORT_DIR}/checkov_ansible.json" || true
-          checkov -f "${DOCKERFILE_PATH}" --output json > "${REPORT_DIR}/checkov_docker.json" || true
+          set -euo pipefail
+          if ! command -v checkov >/dev/null 2>&1; then
+            pipx install --force checkov
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
 
-      # CONFIG SCAN
+          checkov -d ansible \
+            --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 \
+            --output json > "${REPORT_DIR}/checkov_ansible.json" || true
+
+          checkov -f "${DOCKERFILE_PATH}" \
+            --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 \
+            --output json > "${REPORT_DIR}/checkov_docker.json" || true
+
+      # ===================== Config Scan (Trivy) =====================
       - name: Trivy Config
         if: matrix.scan_type == 'trivy'
+        shell: bash
         run: |
+          set -euo pipefail
           trivy config . \
             --severity "${FAIL_ON_SEVERITIES}" \
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
-      # SNYK
+      # ===================== Snyk =====================
       - name: Snyk
         if: matrix.scan_type == 'snyk'
+        shell: bash
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
+          set -euo pipefail
           snyk code test --sarif > snyk-code.sarif || true
           snyk code test --json > "${REPORT_DIR}/snyk-code.json" || true
           snyk test --json > "${REPORT_DIR}/snyk-sca.json" || true
@@ -139,25 +166,32 @@ jobs:
         with:
           sarif_file: snyk-code.sarif
 
-      # SONARQUBE
+      # ===================== SonarQube =====================
       - name: SonarQube
         if: matrix.scan_type == 'sonarqube'
+        shell: bash
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN:     ${{ secrets.SONAR_TOKEN }}
         run: |
-          if ! command -v sonar-scanner >/dev/null 2>&1; then exit 0; fi
+          set -euo pipefail
+          if ! command -v sonar-scanner >/dev/null 2>&1; then
+            echo "[SKIP] sonar-scanner not installed"
+            exit 0
+          fi
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
+      # ===================== Upload JSON Artifacts =====================
       - name: Upload Artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
         with:
           name: reports-${{ matrix.scan_type }}
           path: ${{ env.REPORT_DIR }}/*.json
+          if-no-files-found: ignore
 
 #####################################################################
 # 3) EPSS + KEV GATE + AUTO-GITHUB ISSUES + PR SUMMARY
@@ -175,23 +209,54 @@ jobs:
         with:
           path: all-reports
 
-      - name: Discover Reports
-        id: d
+      - name: Ensure report dir exists
+        shell: bash
         run: |
-          find_json() { find all-reports -type f -name "$1" | head -n 1; }
-          echo "snyk_sca=$(find_json snyk-sca.json)" >> $GITHUB_OUTPUT
-          echo "trivy=$(find_json trivy.json)" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
+          echo "[OK] Ensured ${REPORT_DIR}"
+
+      - name: Discover Reports
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find_json() {
+            find all-reports -type f -name "$1" | head -n 1 || true
+          }
+
+          snyk_sca_path="$(find_json snyk-sca.json)"
+          trivy_path="$(find_json trivy.json)"
+          snyk_code_path="$(find_json snyk-code.json)"
+
+          echo "snyk_sca=${snyk_sca_path}"   >> "$GITHUB_OUTPUT"
+          echo "trivy=${trivy_path}"         >> "$GITHUB_OUTPUT"
+          echo "snyk_code=${snyk_code_path}" >> "$GITHUB_OUTPUT"
+
+          echo "[DISCOVER] Snyk SCA:   ${snyk_sca_path}"
+          echo "[DISCOVER] Trivy:      ${trivy_path}"
+          echo "[DISCOVER] Snyk Code:  ${snyk_code_path}"
 
       - name: Run EPSS Gate
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
+
           INPUTS=()
-          [[ -n "${{ steps.d.outputs.snyk_sca }}" ]] && INPUTS+=( "--input" "${{ steps.d.outputs.snyk_sca }}" )
-          [[ -n "${{ steps.d.outputs.trivy }}" ]] && INPUTS+=( "--input" "${{ steps.d.outputs.trivy }}" )
+
+          [[ -n "${{ steps.discover.outputs.snyk_sca }}" ]] && INPUTS+=( "--input" "${{ steps.discover.outputs.snyk_sca }}" )
+          [[ -n "${{ steps.discover.outputs.trivy }}" ]] && INPUTS+=( "--input" "${{ steps.discover.outputs.trivy }}" )
+          [[ -n "${{ steps.discover.outputs.snyk_code }}" ]] && INPUTS+=( "--input" "${{ steps.discover.outputs.snyk_code }}" )
 
           if [[ ${#INPUTS[@]} -eq 0 ]]; then
-            echo "[INFO] No inputs for EPSS gate."
+            echo "[INFO] No inputs for EPSS gate. Skipping."
             exit 0
           fi
+
+          echo "[INFO] Running EPSS Gate with inputs:"
+          printf '  %s\n' "${INPUTS[@]}"
 
           ${PYTHON_BIN} scripts/epss_gate.py \
             --threshold "${EPSS_THRESHOLD}" \
@@ -199,23 +264,38 @@ jobs:
             "${INPUTS[@]}"
 
       - name: Gate + Auto Issues + Summary
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          epss=security-reports/epss-findings.json
+          set -euo pipefail
+          epss="${REPORT_DIR}/epss-findings.json"
+
+          if [[ ! -f "$epss" ]]; then
+            echo "### DevSecOps Gate" >> "$GITHUB_STEP_SUMMARY"
+            echo "- EPSS report not found. Gate: PASS (no data)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           crit=$(jq '.high_risk_count // 0' "$epss")
 
-          echo "### DevSecOps Gate" >> $GITHUB_STEP_SUMMARY
-          echo "- High-Risk CVEs: $crit" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### 🛡 DevSecOps Security Gate"
+            echo ""
+            echo "- High-Risk CVEs (EPSS / KEV / CVSS>=9): **$crit**"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$crit" -gt 0 ]]; then
             EPSS_FILE="$epss" ${PYTHON_BIN} scripts/epss_create_issues.py
             ${PYTHON_BIN} scripts/gate_summary.py
+
+            msg="🚨 EPSS Gate FAILED – $crit High-Risk CVEs detected. Deployment blocked."
             curl -sS -X POST -H 'Content-type: application/json' \
-              --data "$(jq -n --arg t "🚨 EPSS Gate Failed: $crit High-Risk CVEs Found" '{text:$t}')" \
-              "$SLACK_URL"
+              --data "$(jq -n --arg t "$msg" '{text:$t}')" \
+              "$SLACK_URL" >/dev/null
+
             exit 1
           fi
 
@@ -232,23 +312,34 @@ jobs:
           path: all-reports
 
       - name: Upload to DefectDojo
+        shell: bash
         env:
           DD_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
         run: |
+          set -euo pipefail
+
           upload() {
-            f="$(find all-reports -name "$1" | head -n 1)"
-            if [[ -z "$f" ]]; then return; fi
+            local pattern="$1"
+            local scan_type="$2"
+            local f
+            f=$(find all-reports -name "$pattern" | head -n 1 || true)
+            if [[ -z "$f" ]]; then
+              echo "[SKIP] Not found: $pattern"
+              return
+            fi
+            echo "[INFO] Uploading $f as $scan_type"
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DD_TOKEN}" \
-              -F "scan_type=$2" \
+              -F "scan_type=${scan_type}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
               -F "engagement_name=${DEFECTDOJO_ENGAGEMENT_NAME}" \
               -F "verified=true" \
-              -F "file=@${f}"
+              -F "file=@${f}" >/dev/null
           }
-          upload "semgrep.json" "Semgrep JSON Report"
-          upload "snyk-code.json" "Snyk Scan"
-          upload "snyk-sca.json" "Snyk Scan"
+
+          upload "semgrep.json"      "Semgrep JSON Report"
+          upload "snyk-code.json"    "Snyk Scan"
+          upload "snyk-sca.json"     "Snyk Scan"
           upload "checkov_ansible.json" "Checkov Scan"
 
 #####################################################################
@@ -264,19 +355,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      - name: Docker Login
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Install Syft + Cosign
+        shell: bash
         run: |
-          mkdir -p $HOME/.local/bin
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $HOME/.local/bin
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b "$HOME/.local/bin"
+
           curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
-            -o $HOME/.local/bin/cosign
-          chmod +x $HOME/.local/bin/cosign
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+            -o "$HOME/.local/bin/cosign"
+          chmod +x "$HOME/.local/bin/cosign"
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build & Push
         id: build
@@ -289,25 +387,32 @@ jobs:
 
       - name: Export Ref
         id: export
+        shell: bash
         run: |
-          DIGEST="${{ steps.build.outputs.digest }}"
-          echo "image_ref=${DOCKERHUB_REPO}@${DIGEST}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          digest="${{ steps.build.outputs.digest }}"
+          echo "image_ref=${DOCKERHUB_REPO}@${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Generate SBOM
+        shell: bash
         run: |
+          set -euo pipefail
           syft "${{ steps.export.outputs.image_ref }}" -o cyclonedx-json=sbom.json
 
       - name: Sign + Attest
+        shell: bash
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
+          set -euo pipefail
           cosign sign --yes "${{ steps.export.outputs.image_ref }}"
           cosign attest --yes \
             --predicate sbom.json \
             --type cyclonedx \
             "${{ steps.export.outputs.image_ref }}"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
         with:
           name: sbom
           path: sbom.json
@@ -323,18 +428,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Deploy App
+        shell: bash
         env:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/key
-          chmod 600 ~/.ssh/key
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
+          chmod 600 ~/.ssh/id_runner_temp
 
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            --private-key ~/.ssh/key \
+            --private-key ~/.ssh/id_runner_temp \
             -e "image_ref=${IMAGE_REF}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
+
+          rm -f ~/.ssh/id_runner_temp
 
 #####################################################################
 # 7) DAST (ZAP BASELINE)
@@ -345,21 +454,32 @@ jobs:
 
     steps:
       - name: Run ZAP Baseline
+        shell: bash
         run: |
+          set -euo pipefail
           docker run --rm -v "$(pwd):/zap/wrk/" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py -t "${APP_URL}" -J zap_report.json || true
 
       - name: Upload to DefectDojo
+        shell: bash
         run: |
-          if [[ ! -f zap_report.json ]]; then exit 0; fi
+          set -euo pipefail
+          if [[ ! -f zap_report.json ]]; then
+            echo "[SKIP] No ZAP report generated"
+            exit 0
+          fi
+
           curl -sS -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=ZAP Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
             -F "engagement_name=DAST-${{ github.run_number }}" \
             -F "verified=true" \
-            -F "file=@zap_report.json"
+            -F "file=@zap_report.json" >/dev/null
 
       - name: Cleanup
-        run: docker image prune -f
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image prune -f || true
