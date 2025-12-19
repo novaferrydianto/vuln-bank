@@ -367,11 +367,9 @@ jobs:
 # 6. BUILD & SIGN (COSIGN v3)
 # =====================================================================
   build_and_sign:
-    name: Build + Push + Sign + SBOM
     runs-on: self-hosted
     needs: epss_gate
     if: needs.epss_gate.outputs.can_deploy == 'true'
-
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
 
@@ -387,25 +385,14 @@ jobs:
       - name: Install Tools (Syft + Cosign)
         run: |
           mkdir -p $HOME/.local/bin
-
-          # Syft
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b $HOME/.local/bin
-
-          # Cosign v3
           curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
             -o $HOME/.local/bin/cosign
           chmod +x $HOME/.local/bin/cosign
-
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          export PATH="$HOME/.local/bin:$PATH"
 
-      - name: Debug Cosign
-        run: |
-          which cosign
-          cosign version || true
-
-      - name: Build and Push Image
+      - name: Build and Push
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -422,28 +409,28 @@ jobs:
           DIGEST="${{ steps.build.outputs.digest }}"
 
           if [ -z "$DIGEST" ]; then
-            IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
+            echo "WARNING: Digest kosong — fallback ke tag"
+            IMAGE_REF="$IMAGE_REPO:$IMAGE_TAG"
           else
-            IMAGE_REF="${IMAGE_REPO}@${DIGEST}"
+            IMAGE_REF="$IMAGE_REPO@$DIGEST"
           fi
 
-          echo "IMAGE_REF_RESOLVED=${IMAGE_REF}"
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
-          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> "$GITHUB_ENV"
+          echo "Resolved IMAGE_REF = $IMAGE_REF"
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
 
-      - name: Generate SBOM (CycloneDX)
-        run: syft "${IMAGE_TO_SIGN}" -o cyclonedx-json=sbom.json
+      - name: Generate SBOM
+        run: syft "$IMAGE_TO_SIGN" -o cyclonedx-json=sbom.json
 
       - name: Sign Image & Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          cosign sign --yes "${IMAGE_TO_SIGN}"
+          cosign sign --yes "$IMAGE_TO_SIGN"
           cosign attest \
             --predicate sbom.json \
             --type cyclonedx \
-            "${IMAGE_TO_SIGN}"
+            "$IMAGE_TO_SIGN"
 
       - uses: actions/upload-artifact@v4
         with:
