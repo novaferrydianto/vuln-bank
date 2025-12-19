@@ -33,10 +33,11 @@ env:
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
-# ======================================================
-# SELECT ENV (STAGING / PRODUCTION)
-# ======================================================
 jobs:
+
+  # ======================================================
+  # ENV SELECTOR (NO env.* USED)
+  # ======================================================
   select_env:
     runs-on: ubuntu-latest
     outputs:
@@ -53,61 +54,41 @@ jobs:
             echo "dast_url=http://192.168.107.135:5500" >> $GITHUB_OUTPUT
           fi
 
-# ======================================================
-# SECURITY SCANS
-# ======================================================
+  # ======================================================
+  # SECURITY SCANS
+  # ======================================================
   security_scans:
-    name: Security Scans
-    runs-on: self-hosted
     needs: select_env
+    runs-on: self-hosted
     env:
-      IMAGE_REF: ${{ secrets.DOCKERHUB_REPO }}:${{ github.sha }}
       APP_ENV: ${{ needs.select_env.outputs.app_env }}
       DAST_URL: ${{ needs.select_env.outputs.dast_url }}
+      IMAGE_REF: ${{ secrets.DOCKERHUB_REPO }}:${{ github.sha }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare directories
-        run: mkdir -p $REPORT_DIR $SBOM_DIR
+      - run: mkdir -p $REPORT_DIR $SBOM_DIR
 
-      # ---------------- Secret Scan ----------------
-      - name: Secret Scanning (Gitleaks)
-        run: gitleaks detect --source . --report-format json --report-path "$REPORT_DIR/gitleaks.json" || true
+      - run: gitleaks detect --source . --report-format json --report-path "$REPORT_DIR/gitleaks.json" || true
 
-      # ---------------- Build + Push Image ----------------
-      - name: Login DockerHub
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+      - run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Build Image
-        run: docker build -t "${IMAGE_REF}" -f "${DOCKERFILE_PATH}" .
+      - run: docker build -t "${IMAGE_REF}" -f "${DOCKERFILE_PATH}" .
 
-      - name: Push Image
-        run: docker push "${IMAGE_REF}"
+      - run: docker push "${IMAGE_REF}"
 
-      # ---------------- SCA ----------------
-      - name: Trivy SCA
-        run: trivy fs --security-checks vuln --format json --output "$REPORT_DIR/trivy-sca.json" .
+      - run: trivy fs --security-checks vuln --format json --output "$REPORT_DIR/trivy-sca.json" .
 
-      # ---------------- Misconfig ----------------
-      - name: Trivy Config
-        run: trivy config --format json --output "$REPORT_DIR/trivy-misconfig.json" .
+      - run: trivy config --format json --output "$REPORT_DIR/trivy-misconfig.json" .
 
-      # ---------------- Image Scan ----------------
-      - name: Trivy Image
-        run: trivy image --format json --output "$REPORT_DIR/trivy-image.json" "${IMAGE_REF}" || true
+      - run: trivy image --format json --output "$REPORT_DIR/trivy-image.json" "${IMAGE_REF}" || true
 
-      # ---------------- SBOM ----------------
-      - name: SBOM (SPDX)
-        run: trivy image --format spdx-json --output "$SBOM_DIR/sbom.spdx.json" "${IMAGE_REF}" || true
+      - run: trivy image --format spdx-json --output "$SBOM_DIR/sbom.spdx.json" "${IMAGE_REF}" || true
 
-      # ---------------- Semgrep SAST ----------------
-      - name: Semgrep SAST
-        run: semgrep ci --config p/owasp-top-ten --json --output "$REPORT_DIR/semgrep.json" || true
+      - run: semgrep ci --config p/owasp-top-ten --json --output "$REPORT_DIR/semgrep.json" || true
 
-      # ---------------- EPSS Gate ----------------
-      - name: EPSS Gate
-        id: epss
+      - id: epss
         run: |
           ${PYTHON_BIN} scripts/epss_gate.py \
             --input "$REPORT_DIR/trivy-sca.json" \
@@ -116,11 +97,8 @@ jobs:
           HIGH=$(jq '.high_risk | length' "$REPORT_DIR/epss-findings.json")
           echo "HIGH=$HIGH" >> $GITHUB_OUTPUT
 
-      - name: Block Production If EPSS High
-        if: needs.select_env.outputs.app_env == 'production' && steps.epss.outputs.HIGH != '0'
-        run: |
-          echo "EPSS High-Risk detected. PRODUCTION blocked."
-          exit 1
+      - if: needs.select_env.outputs.app_env == 'production' && steps.epss.outputs.HIGH != '0'
+        run: exit 1
 
       - uses: actions/upload-artifact@v4
         with:
@@ -129,39 +107,34 @@ jobs:
             $REPORT_DIR
             $SBOM_DIR
 
-# ======================================================
-# SONARQUBE
-# ======================================================
+  # ======================================================
+  # SONARQUBE
+  # ======================================================
   sonarqube_scan:
-    name: SonarQube Scan
     runs-on: self-hosted
     needs: security_scans
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           java-version: "17"
 
-      - name: Execute SonarScanner
-        run: |
+      - run: |
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
             -Dsonar.sources=. \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
-      - name: Quality Gate Check
-        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+      - uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
 
-# ======================================================
-# DAST (ZAP)
-# ======================================================
+  # ======================================================
+  # ZAP DAST
+  # ======================================================
   dast_scan:
-    name: DAST (OWASP ZAP)
     runs-on: self-hosted
     needs:
       - select_env
@@ -169,19 +142,15 @@ jobs:
       - sonarqube_scan
     env:
       DAST_URL: ${{ needs.select_env.outputs.dast_url }}
-
     steps:
       - uses: actions/checkout@v4
-      - name: Make folder
-        run: mkdir -p $REPORT_DIR/zap
+      - run: mkdir -p $REPORT_DIR/zap
 
-      - name: Run ZAP
-        run: |
+      - run: |
           docker run --rm \
             -v "${PWD}/${REPORT_DIR}/zap:/zap/wrk" \
             owasp/zap2docker-stable \
-              zap-baseline.py \
-              -t "${DAST_URL}" \
+              zap-baseline.py -t "${DAST_URL}" \
               -J zap.json -r zap.html || true
 
       - uses: actions/upload-artifact@v4
@@ -189,18 +158,16 @@ jobs:
           name: dast-zap
           path: $REPORT_DIR/zap
 
-# ======================================================
-# DEFECTDOJO (PRODUCTION ONLY)
-# ======================================================
+  # ======================================================
+  # DEFECT DOJO (PRODUCTION)
+  # ======================================================
   defectdojo_import:
-    name: DefectDojo Import
-    runs-on: self-hosted
     if: needs.select_env.outputs.app_env == 'production'
+    runs-on: self-hosted
     needs:
       - security_scans
       - sonarqube_scan
       - dast_scan
-
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -212,37 +179,30 @@ jobs:
           name: dast-zap
           path: reports/zap
 
-      - name: Import SCA
-        run: |
+      - run: |
           FILE="reports/security/security-reports/trivy-sca.json"
           if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=Trivy Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+              -F "scan_type=Trivy Scan" -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
 
-      - name: Import ZAP
-        run: |
+      - run: |
           FILE="reports/zap/zap.json"
           if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=ZAP Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+              -F "scan_type=ZAP Scan" -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
 
-# ======================================================
-# DEPLOY (PRODUCTION ONLY)
-# ======================================================
+  # ======================================================
+  # DEPLOY (PRODUCTION ONLY)
+  # ======================================================
   deploy:
-    name: Deploy (Production Only)
-    runs-on: self-hosted
     if: needs.select_env.outputs.app_env == 'production'
+    runs-on: self-hosted
     needs:
       - select_env
       - security_scans
@@ -251,35 +211,30 @@ jobs:
       - defectdojo_import
     env:
       IMAGE_REF: ${{ secrets.DOCKERHUB_REPO }}:${{ github.sha }}
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup SSH
-        run: |
+      - run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Deploy via Ansible
-        run: |
+      - run: |
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_rsa \
             -e "app_image=${IMAGE_REF}" \
             -e "app_env=production"
 
-# ======================================================
-# NOTIFICATION
-# ======================================================
+  # ======================================================
+  # NOTIFICATION
+  # ======================================================
   notify:
-    name: Slack Notify
     runs-on: self-hosted
     needs:
       - select_env
       - security_scans
       - sonarqube_scan
       - dast_scan
-
     env:
       APP_ENV: ${{ needs.select_env.outputs.app_env }}
 
@@ -289,16 +244,14 @@ jobs:
           name: security-reports
           path: reports/security
 
-      - id: check
+      - id: checkepss
         run: |
-          FILE="reports/security/security-reports/epss-findings.json"
-          COUNT=$(jq '.high_risk | length' "$FILE")
+          COUNT=$(jq '.high_risk | length' "reports/security/security-reports/epss-findings.json")
           echo "COUNT=$COUNT" >> $GITHUB_OUTPUT
 
-      - name: Slack Alert
-        if: steps.check.outputs.COUNT != '0'
+      - if: steps.checkepss.outputs.COUNT != '0'
         run: |
-          MSG="[${APP_ENV}] High EPSS vulnerabilities found!"
+          MSG="[${APP_ENV}] High EPSS vulnerabilities detected!"
           curl -X POST -H "Content-Type: application/json" \
             --data "{\"text\": \"$MSG\"}" \
             "${SLACK_WEBHOOK_URL}"
