@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline
+name: Vuln Bank DevSecOps Pipeline (Self-Hosted Complete)
 
 on:
   push:
@@ -43,7 +43,7 @@ jobs:
   # 1. SECURITY SCANS
   # =====================================================
   security_scans:
-    name: Security Scans
+    name: Security Scans (All Tools)
     runs-on: self-hosted
 
     steps:
@@ -144,7 +144,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
   # =====================================================
-  # 2. EPSS GATE + DASHBOARD
+  # 2. EPSS GATE
   # =====================================================
   epss_gate:
     name: EPSS Gate
@@ -176,7 +176,7 @@ jobs:
       - name: Decision
         id: decision
         run: |
-          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
             exit 1
           else
@@ -184,10 +184,10 @@ jobs:
           fi
 
   # =====================================================
-  # 3. SLACK NOTIFY
+  # 3. SLACK ALERT
   # =====================================================
   notify:
-    name: Slack Notification (Critical or EPSS High)
+    name: Slack Notification
     runs-on: self-hosted
     needs: [security_scans, epss_gate]
 
@@ -206,11 +206,11 @@ jobs:
           EPSS=false
 
           if jq -e '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH")' \
-             "${REPORT_DIR}/trivy-sca.json" >/dev/null 2>&1; then
+             "${REPORT_DIR}/trivy-sca.json"; then
              CRIT=true
           fi
 
-          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then
              EPSS=true
           fi
 
@@ -220,22 +220,16 @@ jobs:
       - name: Send Slack Alert
         if: steps.parse.outputs.crit == 'true' || steps.parse.outputs.epss == 'true'
         run: |
-          TEXT="⚠️ *Vuln Bank Security Alert* ⚠️"
-          if [ "${{ steps.parse.outputs.crit }}" = "true" ]; then
-            TEXT="$TEXT\n• Critical/High vulnerabilities detected"
-          fi
-          if [ "${{ steps.parse.outputs.epss }}" = "true" ]; then
-            TEXT="$TEXT\n• EPSS High-Risk CVEs detected"
-          fi
+          MSG="⚠️ Vuln Bank Security Alert"
           curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\": \"$TEXT\"}" \
+            --data "{\"text\": \"$MSG\"}" \
             $SLACK_WEBHOOK_URL
 
   # =====================================================
-  # 4. CREATE GITHUB ISSUES
+  # 4. GITHUB ISSUES
   # =====================================================
   create_issues:
-    name: Create GitHub Issues (High / Critical / EPSS High)
+    name: Create GitHub Issues from Findings
     runs-on: self-hosted
     needs: [security_scans, epss_gate]
 
@@ -247,7 +241,7 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Create Issues from EPSS + SCA
+      - name: Create Issues
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -258,10 +252,10 @@ jobs:
             --snyk-sca "${REPORT_DIR}/snyk/snyk-sca.json"
 
   # =====================================================
-  # 5. BUILD + PUSH + COSIGN SIGN
+  # 5. BUILD + PUSH + COSIGN SIGN (PATCHED)
   # =====================================================
   build_and_push:
-    name: Build & Push Docker Image (with Cosign Sign)
+    name: Build & Push Docker Image (with Cosign Keyless)
     runs-on: self-hosted
     needs: [epss_gate, notify, create_issues]
     if: needs.epss_gate.outputs.can_deploy == 'true'
@@ -271,6 +265,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure correct Cosign v3
+        run: |
+          export PATH="/usr/local/bin:$PATH"
+          which cosign
+          cosign version
 
       - name: Docker Login
         run: |
@@ -283,13 +283,12 @@ jobs:
       - name: Push Image
         run: docker push ${IMAGE_REPO}:${IMAGE_TAG}
 
-      - name: Cosign Sign (Keyless Signing)
+      - name: Cosign Sign (Keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          cosign sign \
-            --keyless \
-            ${IMAGE_REPO}:${IMAGE_TAG}
+          export PATH="/usr/local/bin:$PATH"
+          cosign sign --keyless ${IMAGE_REPO}:${IMAGE_TAG}
 
       - name: Set image_ref output
         id: img
@@ -297,7 +296,7 @@ jobs:
           echo "image_ref=${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
   # =====================================================
-  # 6. DEPLOY (VERIFY COSIGN BEFORE DEPLOY)
+  # 6. DEPLOY + COSIGN VERIFY (PATCHED)
   # =====================================================
   deploy:
     name: Deploy to VMs (Ansible)
@@ -308,13 +307,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify Cosign Signature (Keyless)
+      - name: Cosign Verify (Keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          cosign verify \
-            --keyless \
-            ${{ needs.build_and_push.outputs.image_ref }}
+          export PATH="/usr/local/bin:$PATH"
+          cosign verify --keyless ${{ needs.build_and_push.outputs.image_ref }}
 
       - name: Setup SSH
         run: |
@@ -407,7 +405,6 @@ jobs:
           FILE="${REPORT_DIR}/snyk/snyk-sast.json"
           if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=Snyk Code Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
@@ -419,7 +416,6 @@ jobs:
           FILE="${REPORT_DIR}/snyk/snyk-container.json"
           if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=Snyk Container Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
@@ -427,7 +423,7 @@ jobs:
           fi
 
   # =====================================================
-  # 9. DEFECTDOJO CLEANUP (ENGAGEMENT + FINDINGS)
+  # 9. DEFECTDOJO CLEANUP
   # =====================================================
   cleanup_defectdojo:
     name: Cleanup & Enrich DefectDojo
