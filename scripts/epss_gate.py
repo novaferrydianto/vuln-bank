@@ -8,12 +8,13 @@ from typing import List, Dict, Any, Set
 
 
 # ======================================================
-# SAFE JSON LOADER (Path Traversal Mitigation)
+# SAFE JSON LOADER (Prevents Path Traversal)
 # ======================================================
 def safe_load_json(path: str, base_dir: str) -> Any:
     base_real = os.path.realpath(base_dir)
     target_real = os.path.realpath(path)
 
+    # Block attempts to escape workspace
     if not target_real.startswith(base_real + os.sep):
         raise ValueError(f"Unsafe path detected: {path}")
 
@@ -28,74 +29,90 @@ def safe_load_json(path: str, base_dir: str) -> Any:
 
 
 # ======================================================
-# Extract vulns from Trivy / Snyk output
+# Extract vulns from Trivy / Snyk
 # ======================================================
 def extract_vulns(files: List[str], base_dir: str) -> List[Dict[str, Any]]:
-    results = []
+    vulns = []
 
     for path in files:
         data = safe_load_json(path, base_dir)
         if not data:
             continue
 
-        # Trivy SBOM / Config
+        # -------------------------------
+        # TRIVY FORMAT
+        # -------------------------------
         if "Results" in data:
-            for r in data.get("Results", []):
-                for v in r.get("Vulnerabilities", []):
+            for result in data.get("Results", []):
+                for v in result.get("Vulnerabilities", []):
                     cve = v.get("VulnerabilityID")
-                    if cve:
-                        results.append(
-                            {
-                                "file": path,
-                                "source": "trivy",
-                                "cve": cve,
-                                "severity": v.get("Severity", "UNKNOWN").upper(),
-                                "pkg": v.get("PkgName") or v.get("PkgPath"),
-                                "version": v.get("InstalledVersion"),
-                            }
-                        )
+                    if not cve:
+                        continue
+                    vulns.append(
+                        {
+                            "file": path,
+                            "source": "trivy",
+                            "cve": cve,
+                            "severity": v.get("Severity", "UNKNOWN").upper(),
+                            "pkg": v.get("PkgName") or v.get("PkgPath"),
+                            "version": v.get("InstalledVersion"),
+                        }
+                    )
             continue
 
-        # Snyk SCA: vulnerabilities
+        # -------------------------------
+        # SNYK SCA FORMAT
+        # -------------------------------
         if "vulnerabilities" in data:
             for v in data["vulnerabilities"]:
-                ids = v.get("identifiers", {})
-                cve_list = ids.get("CVE") or []
-                cve = cve_list[0] if cve_list else None
-                if cve:
-                    results.append(
-                        {
-                            "file": path,
-                            "source": "snyk",
-                            "cve": cve,
-                            "severity": v.get("severity", "UNKNOWN").upper(),
-                            "pkg": v.get("packageName"),
-                            "version": v.get("version"),
-                        }
-                    )
+                cve_list = (
+                    v.get("identifiers", {}).get("CVE")
+                    or v.get("id")  # fallback Snyk ID
+                )
+                cve = cve_list[0] if isinstance(cve_list, list) else cve_list
+                if not cve:
+                    continue
+
+                vulns.append(
+                    {
+                        "file": path,
+                        "source": "snyk-sca",
+                        "cve": cve,
+                        "severity": v.get("severity", "UNKNOWN").upper(),
+                        "pkg": v.get("packageName"),
+                        "version": v.get("version"),
+                    }
+                )
             continue
 
-        # Snyk Code / Issues
+        # -------------------------------
+        # SNYK CODE (SAST)
+        # -------------------------------
         if "issues" in data:
             for v in data["issues"]:
-                cve = v.get("issueData", {}).get("cve") or v.get("cve")
-                if cve:
-                    results.append(
-                        {
-                            "file": path,
-                            "source": "snyk",
-                            "cve": cve,
-                            "severity": v.get("severity", "UNKNOWN").upper(),
-                            "pkg": v.get("package"),
-                            "version": v.get("version"),
-                        }
-                    )
+                cve = (
+                    v.get("issueData", {}).get("cve")
+                    or v.get("cve")
+                )
+                if not cve:
+                    continue
 
-    return results
+                vulns.append(
+                    {
+                        "file": path,
+                        "source": "snyk-code",
+                        "cve": cve,
+                        "severity": v.get("severity", "UNKNOWN").upper(),
+                        "pkg": v.get("package"),
+                        "version": v.get("version"),
+                    }
+                )
+
+    return vulns
 
 
 # ======================================================
-# EPSS Fetch
+# EPSS Fetch: FIRST.org API
 # ======================================================
 def fetch_epss_map(cves: Set[str]) -> Dict[str, Dict[str, float]]:
     if not cves:
@@ -108,20 +125,20 @@ def fetch_epss_map(cves: Set[str]) -> Dict[str, Dict[str, float]]:
 
     for i in range(0, len(cve_list), batch_size):
         batch = cve_list[i : i + batch_size]
+
         qs = urllib.parse.urlencode({"cve": ",".join(batch)})
-        full = f"{url}?{qs}"
+        full_url = f"{url}?{qs}"
 
         try:
-            with urllib.request.urlopen(full, timeout=10) as resp:
-                payload = json.loads(resp.read().decode())
+            with urllib.request.urlopen(full_url, timeout=10) as resp:
+                d = json.loads(resp.read().decode())
         except Exception:
             continue
 
-        for row in payload.get("data", []):
+        for row in d.get("data", []):
             c = row.get("cve")
             if not c:
                 continue
-
             try:
                 epss_map[c] = {
                     "epss": float(row.get("epss", 0.0)),
@@ -144,15 +161,15 @@ def fetch_kev_set() -> Set[str]:
 
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
-            payload = json.loads(resp.read().decode())
+            d = json.loads(resp.read().decode())
     except Exception:
         return set()
 
     kev = set()
-    for row in payload.get("vulnerabilities", []):
-        c = row.get("cveID")
-        if c:
-            kev.add(c)
+    for row in d.get("vulnerabilities", []):
+        cve = row.get("cveID")
+        if cve:
+            kev.add(cve)
 
     return kev
 
@@ -165,13 +182,16 @@ def compute_risk(vulns, epss_map, kev_set, threshold: float):
 
     for v in vulns:
         cve = v.get("cve")
-        sev = v.get("severity", "LOW").upper()
+        if not cve:
+            continue
+
+        severity = v.get("severity", "LOW").upper()
         epss = epss_map.get(cve, {}).get("epss", 0.0)
-        perc = epss_map.get(cve, {}).get("percentile", 0.0)
+        percentile = epss_map.get(cve, {}).get("percentile", 0.0)
         is_kev = cve in kev_set
 
         reasons = []
-        if sev in {"HIGH", "CRITICAL"}:
+        if severity in {"HIGH", "CRITICAL"}:
             reasons.append("SEVERITY_HIGH")
         if epss >= threshold:
             reasons.append("EPSS_THRESHOLD")
@@ -179,16 +199,16 @@ def compute_risk(vulns, epss_map, kev_set, threshold: float):
             reasons.append("CISA_KEV")
 
         if reasons:
-            item = dict(v)
-            item.update(
+            enriched = dict(v)
+            enriched.update(
                 {
                     "epss": epss,
-                    "percentile": perc,
+                    "percentile": percentile,
                     "is_kev": is_kev,
                     "reasons": reasons,
                 }
             )
-            high_risk.append(item)
+            high_risk.append(enriched)
 
     return {
         "total_vulns": len(vulns),
@@ -201,27 +221,34 @@ def compute_risk(vulns, epss_map, kev_set, threshold: float):
 # MAIN
 # ======================================================
 def main():
-    parser = argparse.ArgumentParser(description="Secure EPSS Gate")
-    parser.add_argument("--mode", default="C")
-    parser.add_argument("--threshold", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--input", action="append", required=True)
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="EPSS + KEV Security Gate")
+    p.add_argument("--mode", default="C", help="A=Block if any high_risk B=Block CRITICAL only C=Report only")
+    p.add_argument("--threshold", required=True, help="EPSS threshold, e.g. 0.5")
+    p.add_argument("--output", required=True)
+    p.add_argument("--input", action="append", required=True)
+    args = p.parse_args()
 
     threshold = float(args.threshold)
 
+    # Deduce base directory from all input files
     base_dir = os.path.commonpath(
         [os.path.dirname(os.path.realpath(p)) for p in args.input]
     )
 
+    # Extract vulnerabilities
     vulns = extract_vulns(args.input, base_dir)
-    cves = {v["cve"] for v in vulns if v["cve"]}
 
+    # Collect CVEs
+    cves = {v["cve"] for v in vulns if v.get("cve")}
+
+    # Fetch EPSS + KEV
     epss_map = fetch_epss_map(cves)
     kev_set = fetch_kev_set()
 
+    # Compute risk
     risk = compute_risk(vulns, epss_map, kev_set, threshold)
 
+    # Prepare output
     result = {
         "mode": args.mode,
         "threshold": threshold,
@@ -236,15 +263,17 @@ def main():
         result["gate_failed"] = risk["high_risk_count"] > 0
     elif mode == "B":
         result["gate_failed"] = any(
-            v.get("severity") == "CRITICAL" for v in risk["high_risk"]
+            r.get("severity") == "CRITICAL" for r in risk["high_risk"]
         )
     else:
         result["gate_failed"] = False
 
+    # Write output
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, "w") as f:
         json.dump(result, f, indent=2)
 
+    # Exit with failure to block CI
     if result["gate_failed"]:
         raise SystemExit(1)
 
