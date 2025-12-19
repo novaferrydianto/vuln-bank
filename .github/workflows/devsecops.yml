@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline (Self-Hosted Complete)
+name: Vuln Bank DevSecOps Pipeline
 
 on:
   push:
@@ -55,9 +55,6 @@ jobs:
           mkdir -p ${REPORT_DIR}
           mkdir -p ${REPORT_DIR}/snyk
 
-      # ---------------------------
-      # GITLEAKS
-      # ---------------------------
       - name: Secret Scan (Gitleaks)
         run: |
           gitleaks detect \
@@ -65,9 +62,6 @@ jobs:
             --report-format json \
             --report-path "${REPORT_DIR}/gitleaks.json" || true
 
-      # ---------------------------
-      # TRIVY FS (SCA)
-      # ---------------------------
       - name: SCA Scan (Trivy FS)
         run: |
           trivy fs \
@@ -76,9 +70,6 @@ jobs:
             --output "${REPORT_DIR}/trivy-sca.json" \
             .
 
-      # ---------------------------
-      # BANDIT
-      # ---------------------------
       - name: SAST Python (Bandit)
         run: |
           bandit -r \
@@ -86,9 +77,6 @@ jobs:
             containers/app containers/db \
             -f json -o "${REPORT_DIR}/bandit.json" || true
 
-      # ---------------------------
-      # SEMGREP FIXED
-      # ---------------------------
       - name: SAST Semgrep (Fixed)
         run: |
           semgrep scan \
@@ -103,9 +91,6 @@ jobs:
             static \
             > "${REPORT_DIR}/semgrep.json" || true
 
-      # ---------------------------
-      # TRIVY MISCONFIG
-      # ---------------------------
       - name: Misconfig Scan (Trivy Config)
         run: |
           trivy config \
@@ -113,23 +98,14 @@ jobs:
             --output "${REPORT_DIR}/trivy-misconfig.json" \
             .
 
-      # ---------------------------
-      # CHECKOV
-      # ---------------------------
       - name: Misconfig Scan (Checkov)
         run: |
           checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
 
-      # ---------------------------
-      # SYFT SBOM
-      # ---------------------------
       - name: SBOM Scan (Syft)
         run: |
           syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
-      # ---------------------------
-      # SONARQUBE LOCAL
-      # ---------------------------
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -140,17 +116,11 @@ jobs:
             -Dsonar.host.url=${SONAR_HOST_URL} \
             -Dsonar.login=${SONAR_TOKEN}
 
-      # ---------------------------
-      # SNYK AUTH
-      # ---------------------------
       - name: Snyk Authenticate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk auth "$SNYK_TOKEN"
 
-      # ---------------------------
-      # SNYK SCA
-      # ---------------------------
       - name: Snyk SCA (pip)
         run: |
           snyk test \
@@ -158,26 +128,17 @@ jobs:
             --package-manager=pip \
             --json > "${REPORT_DIR}/snyk/snyk-sca.json" || true
 
-      # ---------------------------
-      # SNYK SAST
-      # ---------------------------
       - name: Snyk Code Test (SAST)
         run: |
           snyk code test \
             --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
 
-      # ---------------------------
-      # SNYK CONTAINER
-      # ---------------------------
       - name: Snyk Container Scan
         run: |
           snyk container test "${IMAGE_REPO}:${IMAGE_TAG}" \
             --file=${DOCKERFILE_PATH} \
             --json > "${REPORT_DIR}/snyk/snyk-container.json" || true
 
-      # ---------------------------
-      # UPLOAD REPORTS
-      # ---------------------------
       - uses: actions/upload-artifact@v4
         with:
           name: security-reports
@@ -214,12 +175,83 @@ jobs:
         run: echo "can_deploy=true" >> "$GITHUB_OUTPUT"
 
   # =====================================================
-  # 3. BUILD & PUSH
+  # 3. NOTIFICATION (CRITICAL + EPSS HIGH)
+  # =====================================================
+  notify:
+    name: Slack Notification (Critical or EPSS High)
+    runs-on: self-hosted
+    needs: [security_scans, epss_gate]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Parse Findings
+        id: parse
+        run: |
+          CRIT_FOUND="false"
+          EPSS_FOUND="false"
+
+          if jq -e '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH")' \
+            "${REPORT_DIR}/trivy-sca.json" >/dev/null 2>&1; then
+            CRIT_FOUND="true"
+          fi
+
+          for f in "${REPORT_DIR}/snyk/snyk-sca.json" \
+                   "${REPORT_DIR}/snyk/snyk-sast.json" \
+                   "${REPORT_DIR}/snyk/snyk-container.json"; do
+            if [ -f "$f" ]; then
+              if jq -e '.vulnerabilities[] | select(.severity=="high" or .severity=="critical")' \
+                "$f" >/dev/null 2>&1; then
+                CRIT_FOUND="true"
+              fi
+            fi
+          done
+
+          if jq -e '.results[] | select(.extra.severity=="ERROR" or .extra.severity=="WARNING")' \
+            "${REPORT_DIR}/semgrep.json" >/dev/null 2>&1; then
+            CRIT_FOUND="true"
+          fi
+
+          if jq -e '.high_risk | length > 0' \
+            "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+            EPSS_FOUND="true"
+          fi
+
+          echo "crit=$CRIT_FOUND" >> "$GITHUB_OUTPUT"
+          echo "epss=$EPSS_FOUND" >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack Alert
+        if: steps.parse.outputs.crit == 'true' || steps.parse.outputs.epss == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          TEXT="⚠️ *Vuln Bank Security Alert* ⚠️"
+
+          if [ "${{ steps.parse.outputs.crit }}" = "true" ]; then
+            TEXT="$TEXT\n• *Critical/High vulnerabilities detected*"
+          fi
+
+          if [ "${{ steps.parse.outputs.epss }}" = "true" ]; then
+            TEXT="$TEXT\n• *EPSS High-Risk CVEs detected (>= ${EPSS_THRESHOLD})*"
+          fi
+
+          TEXT="$TEXT\n\nCommit: $GITHUB_SHA\nRepo: $GITHUB_REPOSITORY"
+
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"$TEXT\"}" "$SLACK_WEBHOOK_URL"
+
+  # =====================================================
+  # 4. BUILD & PUSH
   # =====================================================
   build_and_push:
     name: Build & Push Docker Image
     runs-on: self-hosted
-    needs: epss_gate
+    needs: [epss_gate, notify]
     if: needs.epss_gate.outputs.can_deploy == 'true'
 
     outputs:
@@ -244,7 +276,7 @@ jobs:
         run: echo "image=${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
   # =====================================================
-  # 4. DEPLOY (ANSIBLE)
+  # 5. DEPLOY (ANSIBLE)
   # =====================================================
   deploy:
     name: Deploy to VMs (Ansible)
@@ -273,7 +305,7 @@ jobs:
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
 
   # =====================================================
-  # 5. DAST SCAN
+  # 6. DAST SCAN
   # =====================================================
   dast:
     name: DAST Scan (OWASP ZAP)
@@ -295,7 +327,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}/zap
 
   # =====================================================
-  # 6. DEFECTDOJO IMPORT (ZAP + SNYK)
+  # 7. DEFECTDOJO IMPORT (ZAP + SNYK)
   # =====================================================
   defectdojo_import:
     name: Import Scan Results to DefectDojo
@@ -322,10 +354,7 @@ jobs:
             exit 0
           fi
 
-      # ---------------------------
-      # ZAP
-      # ---------------------------
-      - name: Import ZAP Scan to DefectDojo
+      - name: Import ZAP Scan
         run: |
           FILE="${REPORT_DIR}/zap/zap_alerts.json"
           if [ -f "$FILE" ]; then
@@ -339,10 +368,7 @@ jobs:
               -F "verified=true"
           fi
 
-      # ---------------------------
-      # SNYK SCA
-      # ---------------------------
-      - name: Import Snyk SCA to DefectDojo
+      - name: Import Snyk SCA
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-sca.json"
           if [ -f "$FILE" ]; then
@@ -356,10 +382,7 @@ jobs:
               -F "verified=true"
           fi
 
-      # ---------------------------
-      # SNYK CODE
-      # ---------------------------
-      - name: Import Snyk Code Scan to DefectDojo
+      - name: Import Snyk Code Scan
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-sast.json"
           if [ -f "$FILE" ]; then
@@ -373,10 +396,7 @@ jobs:
               -F "verified=true"
           fi
 
-      # ---------------------------
-      # SNYK CONTAINER
-      # ---------------------------
-      - name: Import Snyk Container Scan to DefectDojo
+      - name: Import Snyk Container Scan
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-container.json"
           if [ -f "$FILE" ]; then
