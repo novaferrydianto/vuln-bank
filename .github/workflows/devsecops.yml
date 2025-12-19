@@ -422,7 +422,6 @@ jobs:
           DIGEST="${{ steps.build.outputs.digest }}"
 
           if [ -z "$DIGEST" ]; then
-            echo "WARN: digest empty, fallback to tag"
             IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
           else
             IMAGE_REF="${IMAGE_REPO}@${DIGEST}"
@@ -463,13 +462,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify Signed Image (Strict Keyless)
+      - name: Verify Signed Image (Strict)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
 
           IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
+
           if [ -z "$IMAGE_REF" ]; then
-            echo "ERROR: IMAGE_REF is empty, cannot verify"
+            echo "FATAL: IMAGE_REF empty — cannot verify"
             exit 1
           fi
 
