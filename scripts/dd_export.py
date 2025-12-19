@@ -1,98 +1,69 @@
 #!/usr/bin/env python3
 """
-Convert LLM findings JSON → DefectDojo Generic Findings Import JSON.
+Export DefectDojo metrics for dashboards.
+
+Output:
+  docs/data/defectdojo-sla-weekly.json
+  docs/data/defectdojo-summary.json
 """
 
-import argparse
+import os
 import json
+import requests
 from pathlib import Path
 
+DD_URL = os.getenv("DEFECTDOJO_URL", "").rstrip("/")
+DD_API_KEY = os.getenv("DEFECTDOJO_API_KEY", "")
+DD_PRODUCT_ID = os.getenv("DEFECTDOJO_PRODUCT_ID", "")
 
-SEVERITY_MAP = {
-    "LOW": "Low",
-    "MEDIUM": "Medium",
-    "HIGH": "High",
-    "CRITICAL": "Critical",
-}
+API = f"{DD_URL}/api/v2"
+headers = {"Authorization": f"Token {DD_API_KEY}"}
 
+OUTPUT_SUMMARY = Path("docs/data/defectdojo-summary.json")
+OUTPUT_SLA = Path("docs/data/defectdojo-sla-weekly.json")
 
-def parse_cwe(cwe_id: str) -> int:
-    cwe_id = cwe_id.upper().strip()
-    if cwe_id.startswith("CWE-"):
-        cwe_id = cwe_id[4:]
-    try:
-        return int(cwe_id)
-    except ValueError:
-        return 0
+def fetch_all(endpoint):
+    items = []
+    url = f"{API}/{endpoint}"
+    while url:
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            break
+        data = r.json()
+        items.extend(data.get("results", []))
+        url = data.get("next")
+    return items
 
+def summarize(findings):
+    summary = {
+        "total": len(findings),
+        "severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0},
+        "open": 0,
+        "closed": 0,
+    }
+    for f in findings:
+        sev = (f.get("severity") or "INFO").upper()
+        if sev not in summary["severity"]:
+            summary["severity"][sev] = 0
+        summary["severity"][sev] += 1
+        if f.get("active"):
+            summary["open"] += 1
+        else:
+            summary["closed"] += 1
+    return summary
 
-def build_description(f: dict) -> str:
-    parts: list[str] = []
+def main():
+    findings = fetch_all(f"findings/?product={DD_PRODUCT_ID}")
+    summary = summarize(findings)
 
-    if summary := f.get("summary"):
-        parts.append("Summary:")
-        parts.append(summary)
-        parts.append("")
+    OUTPUT_SUMMARY.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_SLA.parent.mkdir(parents=True, exist_ok=True)
 
-    if reasoning := f.get("reasoning"):
-        parts.append("Reasoning / Analysis:")
-        parts.append(reasoning)
-        parts.append("")
+    OUTPUT_SUMMARY.write_text(json.dumps(summary, indent=2))
+    OUTPUT_SLA.write_text(json.dumps(findings, indent=2))
 
-    if remediation := f.get("remediation"):
-        parts.append("Suggested Remediation:")
-        parts.append(remediation)
-        parts.append("")
-
-    for vc in (f.get("vulnerable_code") or [])[:5]:
-        path = vc.get("path", "")
-        snippet = vc.get("snippet", "")
-        parts.append(f"- File: `{path}`")
-        parts.append("```")
-        parts.append(snippet[:4000])
-        parts.append("```")
-        parts.append("")
-
-    return "\n".join(parts).strip()
-
-
-def convert_findings(in_data: dict) -> dict:
-    out: list[dict] = []
-
-    for f in in_data.get("findings", []):
-        sev = SEVERITY_MAP.get(str(f.get("severity", "MEDIUM")).upper(), "Medium")
-        cwe = parse_cwe(str(f.get("cwe_id", "") or ""))
-
-        vc = f.get("vulnerable_code") or []
-        file_path = vc[0]["path"] if vc else ""
-
-        out.append(
-            {
-                "title": f"LLM {str(f.get('type')).upper()}: {f.get('name')}",
-                "description": build_description(f),
-                "severity": sev,
-                "cwe": cwe,
-                "file_path": file_path,
-                "line": 0,
-                "references": "",
-            },
-        )
-
-    return {"findings": out}
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", "-i", required=True)
-    parser.add_argument("--output", "-o", required=True)
-    args = parser.parse_args()
-
-    data = json.loads(Path(args.input).read_text("utf-8"))
-    out_data = convert_findings(data)
-
-    Path(args.output).write_text(json.dumps(out_data, indent=2), "utf-8")
-    print(f"[OK] DefectDojo LLM export → {args.output}")
-
+    print(f"[DD] Exported summary → {OUTPUT_SUMMARY}")
+    print(f"[DD] Exported SLA → {OUTPUT_SLA}")
 
 if __name__ == "__main__":
     main()
