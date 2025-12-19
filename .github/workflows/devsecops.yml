@@ -53,29 +53,45 @@ env:
 
 jobs:
 ################################################################################
-# 0) AUTO-FIX (Copilot Autofix)
+# 0) AUTO-FIX (Copilot Autofix via CodeQL)
 ################################################################################
   autofix:
     name: Copilot Autofix (via CodeQL)
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     permissions:
       security-events: write
       pull-requests: write
       contents: write
-    if: github.event_name == 'pull_request'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Remove old CodeQL cache (critical)
+        run: |
+          rm -rf ~/.cache/codeql || true
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: python # Sesuaikan dengan bahasa Vuln Bank (Python)
+          languages: python
+
+      - name: Prepare SARIF output directory
+        run: mkdir -p security-reports
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:python"
+          output: security-reports
+          upload: "never"
+
+      - name: Upload CodeQL SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif
+          path: security-reports/*.sarif
 
 ################################################################################
 # 1) SETUP
@@ -102,7 +118,7 @@ jobs:
           command -v trivy     || echo "[WARN] trivy not installed"
           command -v snyk      || echo "[WARN] snyk not installed"
           command -v sonar-scanner || echo "[WARN] sonar not installed"
-          command -v docker || { echo "[FATAL] docker missing"; exit 1; }
+          command -v docker >/dev/null || { echo "[FATAL] docker missing in self-hosted runner"; exit 1; }
 
 ################################################################################
 # 2) SECURITY SCANS (Parallel Matrix)
@@ -161,12 +177,12 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
-          snyk code test --sarif > snyk-code.sarif || echo "{}" > snyk-code.sarif
+          snyk code test --sarif > snyk-code.sarif || echo '{"runs":[{"results":[]}]}'>snyk-code.sarif
           snyk code test --json > ${REPORT_DIR}/snyk-code.json || true
           snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
           snyk iac test --json > ${REPORT_DIR}/snyk-iac.json || true
 
-      - name: Upload SARIF artifact instead of CodeQL
+      - name: Upload SARIF artifact (Snyk)
         if: matrix.scan == 'snyk'
         uses: actions/upload-artifact@v4
         with:
@@ -186,7 +202,7 @@ jobs:
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
-      # Upload artifacts
+      # Upload JSON artifacts
       - name: Upload Reports
         if: matrix.scan != 'sonarqube'
         uses: actions/upload-artifact@v4
@@ -195,7 +211,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}/*.json
 
 ################################################################################
-# 3) AI SECURITY (LLM + COPILOT SECURITY)
+# 3) AI SECURITY (LLM + COLLECT SARIF)
 ################################################################################
   ai_security:
     needs: security_scans
@@ -203,30 +219,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download All Scan Reports
+      - name: Download all artifacts (JSON + SARIF)
         uses: actions/download-artifact@v4
         with:
           path: all-reports
 
-      # STEP 1: LLM SECURITY SCAN
       - name: Run LLM Security Pipeline
         run: |
+          mkdir -p security-reports
           ${PYTHON_BIN} scripts/llm_pipeline.py
 
-      # STEP 2: COPY CODEQL SARIF (already generated in previous job)
-      - name: Copy CodeQL SARIF for Composite Gate
+      - name: Collect SARIF (CodeQL + Snyk)
         run: |
           mkdir -p security-reports
-          CODEQL_SARIF_FILE="$(find all-reports -name '*.sarif' | head -n 1 || true)"
-          if [ -z "$CODEQL_SARIF_FILE" ]; then
-            echo "[WARN] No CodeQL SARIF found, creating empty SARIF."
-            echo '{"runs":[{"results":[]}]}'>security-reports/codeql-results.sarif
-          else
-            cp "$CODEQL_SARIF_FILE" security-reports/codeql-results.sarif
-          fi
+          find all-reports -type f -name "*.sarif" -exec cp {} security-reports/ \; || true
+          # Normalize empty SARIF files
+          for f in security-reports/*.sarif; do
+            [ -s "$f" ] || echo '{"runs":[{"results":[]}]}'>"$f"
+          done
 
-      # Upload AI Security Report
-      - name: Upload AI Reports
+      - name: Upload AI Security Reports
         uses: actions/upload-artifact@v4
         with:
           name: ai-security
@@ -241,13 +253,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: EPSS Gate
+      - name: Download all reports for gate
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports
+
+      - name: EPSS Gate (autodiscovery Snyk + Trivy)
         run: |
+          mkdir -p "${REPORT_DIR}"
           ${PYTHON_BIN} scripts/epss_gate.py \
             --threshold "${EPSS_THRESHOLD}" \
             --output "${REPORT_DIR}/epss-findings.json" \
-            --input all-reports/reports-snyk/snyk-sca.json \
-            --input all-reports/reports-trivy/trivy.json \
+            $(find all-reports -name "snyk-sca.json" -printf "--input %p " 2>/dev/null) \
+            $(find all-reports -name "trivy.json" -printf "--input %p " 2>/dev/null) \
             || true
 
       - name: Run Composite Security Gate
@@ -256,7 +274,7 @@ jobs:
 
       - name: Render Composite Dashboard
         run: |
-          export COMPOSITE_FINDINGS="security-reports/epss-findings.json"
+          export COMPOSITE_FINDINGS="security-reports/composite-findings.json"
           export COMPOSITE_DASHBOARD="security-reports/composite-dashboard.md"
           python3 scripts/render_composite_dashboard.py >> $GITHUB_STEP_SUMMARY
 
@@ -270,6 +288,25 @@ jobs:
           status=$(jq -r '.status' security-reports/composite-findings.json)
           echo "Composite status: $status"
           [[ "$status" == "FAIL" ]] && exit 1 || exit 0
+
+      - name: Post PR Security Summary Comment
+        if: github.event_name == 'pull_request'
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            ## Security Summary (Automated)
+            
+            **Composite Gate Status:** `$(jq -r .status security-reports/composite-findings.json)`
+
+            **High-Risk CVEs (EPSS ≥ 0.5):**
+            ```json
+            $(jq '.high_risk' security-reports/epss-findings.json)
+            ```
+
+            **LLM Security Findings (excerpt):**
+            ```json
+            $(cat security-reports/llm-findings.json 2>/dev/null || echo "{}")
+            ```
 
 ################################################################################
 # 5) BUILD + SIGN + SBOM
@@ -388,4 +425,9 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_COLOR: ${{ contains(needs.*.result, 'failure') && 'danger' || 'good' }}
           SLACK_TITLE: "VulnBank Security Report"
-          SLACK_MESSAGE: "Pipeline Status: ${{ github.run_id }}\nCheck GitHub Actions Summary for Details."
+          SLACK_MESSAGE: |
+            Pipeline Run ID: ${{ github.run_id }}
+            Composite Gate: ${{ needs.composite_gate.result }}
+            Deploy: ${{ needs.deploy.result }}
+            DAST: ${{ needs.dast_scan.result }}
+            Check GitHub Actions Summary for full security details.
