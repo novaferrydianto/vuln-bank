@@ -22,53 +22,61 @@ env:
   REPORT_DIR: security-reports
   SBOM_DIR: security-sbom
   PYTHON_BIN: python3
-
-  IMAGE_REPO: ${{ secrets.DOCKERHUB_REPO }}
-  IMAGE_TAG: ${{ github.sha }}
+  EPSS_THRESHOLD: "0.5"
   DOCKERFILE_PATH: containers/app/Dockerfile
 
-  # Dynamic environment
-  APP_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
-
-  DAST_TARGET_STAGING: http://192.168.107.135:5500
-  DAST_TARGET_PRODUCTION: http://192.168.107.135:5500
-
-  EPSS_THRESHOLD: "0.5"
-
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
-  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
+# ======================================================
+# SELECT ENV (STAGING / PRODUCTION)
+# ======================================================
 jobs:
+  select_env:
+    runs-on: ubuntu-latest
+    outputs:
+      app_env: ${{ steps.envset.outputs.app_env }}
+      dast_url: ${{ steps.envset.outputs.dast_url }}
+    steps:
+      - id: envset
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "app_env=production" >> $GITHUB_OUTPUT
+            echo "dast_url=http://192.168.107.135:5500" >> $GITHUB_OUTPUT
+          else
+            echo "app_env=staging" >> $GITHUB_OUTPUT
+            echo "dast_url=http://192.168.107.135:5500" >> $GITHUB_OUTPUT
+          fi
 
-  # ======================================================
-  # SECURITY SCANS (RUNS ON STAGING & PRODUCTION)
-  # ======================================================
+# ======================================================
+# SECURITY SCANS
+# ======================================================
   security_scans:
     name: Security Scans
     runs-on: self-hosted
+    needs: select_env
     env:
-      IMAGE_REF: ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
-      DAST_URL: ${{ github.ref == 'refs/heads/main' && env.DAST_TARGET_PRODUCTION || env.DAST_TARGET_STAGING }}
+      IMAGE_REF: ${{ secrets.DOCKERHUB_REPO }}:${{ github.sha }}
+      APP_ENV: ${{ needs.select_env.outputs.app_env }}
+      DAST_URL: ${{ needs.select_env.outputs.dast_url }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare report directories
+      - name: Prepare directories
         run: mkdir -p $REPORT_DIR $SBOM_DIR
 
-      # SECRET SCAN
+      # ---------------- Secret Scan ----------------
       - name: Secret Scanning (Gitleaks)
         run: gitleaks detect --source . --report-format json --report-path "$REPORT_DIR/gitleaks.json" || true
 
-      # BUILD IMAGE
-      - name: Login to DockerHub
+      # ---------------- Build + Push Image ----------------
+      - name: Login DockerHub
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build Image
@@ -77,27 +85,27 @@ jobs:
       - name: Push Image
         run: docker push "${IMAGE_REF}"
 
-      # SCA
+      # ---------------- SCA ----------------
       - name: Trivy SCA
         run: trivy fs --security-checks vuln --format json --output "$REPORT_DIR/trivy-sca.json" .
 
-      # MISCONFIG
+      # ---------------- Misconfig ----------------
       - name: Trivy Config
         run: trivy config --format json --output "$REPORT_DIR/trivy-misconfig.json" .
 
-      # IMAGE SCAN
+      # ---------------- Image Scan ----------------
       - name: Trivy Image
         run: trivy image --format json --output "$REPORT_DIR/trivy-image.json" "${IMAGE_REF}" || true
 
-      # SBOM
+      # ---------------- SBOM ----------------
       - name: SBOM (SPDX)
         run: trivy image --format spdx-json --output "$SBOM_DIR/sbom.spdx.json" "${IMAGE_REF}" || true
 
-      # SEMGREP
+      # ---------------- Semgrep SAST ----------------
       - name: Semgrep SAST
         run: semgrep ci --config p/owasp-top-ten --json --output "$REPORT_DIR/semgrep.json" || true
 
-      # EPSS GATE
+      # ---------------- EPSS Gate ----------------
       - name: EPSS Gate
         id: epss
         run: |
@@ -105,13 +113,13 @@ jobs:
             --input "$REPORT_DIR/trivy-sca.json" \
             --output "$REPORT_DIR/epss-findings.json" \
             --threshold "${EPSS_THRESHOLD}"
+          HIGH=$(jq '.high_risk | length' "$REPORT_DIR/epss-findings.json")
+          echo "HIGH=$HIGH" >> $GITHUB_OUTPUT
 
-          echo "HIGH_RISK=$(jq '.high_risk | length' $REPORT_DIR/epss-findings.json)" >> $GITHUB_OUTPUT
-
-      - name: Fail if high EPSS in production
-        if: github.ref == 'refs/heads/main' && steps.epss.outputs.HIGH_RISK != '0'
+      - name: Block Production If EPSS High
+        if: needs.select_env.outputs.app_env == 'production' && steps.epss.outputs.HIGH != '0'
         run: |
-          echo "High-risk EPSS vulnerabilities detected. Blocking PRODUCTION deploy."
+          echo "EPSS High-Risk detected. PRODUCTION blocked."
           exit 1
 
       - uses: actions/upload-artifact@v4
@@ -121,11 +129,11 @@ jobs:
             $REPORT_DIR
             $SBOM_DIR
 
-  # ======================================================
-  # SONARQUBE SCAN (RUNS ON STAGING & PRODUCTION)
-  # ======================================================
+# ======================================================
+# SONARQUBE
+# ======================================================
   sonarqube_scan:
-    name: SonarQube SAST
+    name: SonarQube Scan
     runs-on: self-hosted
     needs: security_scans
 
@@ -135,7 +143,7 @@ jobs:
         with:
           java-version: "17"
 
-      - name: SonarScanner
+      - name: Execute SonarScanner
         run: |
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
@@ -143,37 +151,37 @@ jobs:
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}"
 
-      - name: SonarQube Quality Gate
+      - name: Quality Gate Check
         uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
 
-  # ======================================================
-  # DAST (RUNS ON STAGING & PRODUCTION)
-  # ======================================================
+# ======================================================
+# DAST (ZAP)
+# ======================================================
   dast_scan:
     name: DAST (OWASP ZAP)
     runs-on: self-hosted
     needs:
+      - select_env
       - security_scans
       - sonarqube_scan
-
     env:
-      DAST_URL: ${{ github.ref == 'refs/heads/main' && env.DAST_TARGET_PRODUCTION || env.DAST_TARGET_STAGING }}
+      DAST_URL: ${{ needs.select_env.outputs.dast_url }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Create report folder
+      - name: Make folder
         run: mkdir -p $REPORT_DIR/zap
 
-      - name: Run ZAP Baseline
+      - name: Run ZAP
         run: |
           docker run --rm \
             -v "${PWD}/${REPORT_DIR}/zap:/zap/wrk" \
             owasp/zap2docker-stable \
-              zap-baseline.py -t "${DAST_URL}" \
+              zap-baseline.py \
+              -t "${DAST_URL}" \
               -J zap.json -r zap.html || true
 
       - uses: actions/upload-artifact@v4
@@ -181,13 +189,13 @@ jobs:
           name: dast-zap
           path: $REPORT_DIR/zap
 
-  # ======================================================
-  # DEFECTDOJO IMPORT (PRODUCTION ONLY)
-  # ======================================================
+# ======================================================
+# DEFECTDOJO (PRODUCTION ONLY)
+# ======================================================
   defectdojo_import:
-    name: Import to DefectDojo
+    name: DefectDojo Import
     runs-on: self-hosted
-    if: github.ref == 'refs/heads/main'
+    if: needs.select_env.outputs.app_env == 'production'
     needs:
       - security_scans
       - sonarqube_scan
@@ -204,72 +212,76 @@ jobs:
           name: dast-zap
           path: reports/zap
 
-      - name: Import SCA to DefectDojo
+      - name: Import SCA
         run: |
           FILE="reports/security/security-reports/trivy-sca.json"
           if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=Trivy Scan" -F "file=@$FILE" \
+              -F "scan_type=Trivy Scan" \
+              -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-              -F "active=true" -F "verified=true"
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
 
-      - name: Import ZAP to DefectDojo
+      - name: Import ZAP
         run: |
           FILE="reports/zap/zap.json"
           if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=ZAP Scan" -F "file=@$FILE" \
+              -F "scan_type=ZAP Scan" \
+              -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-              -F "active=true" -F "verified=true"
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
 
-  # ======================================================
-  # DEPLOY ONLY PRODUCTION
-  # ======================================================
+# ======================================================
+# DEPLOY (PRODUCTION ONLY)
+# ======================================================
   deploy:
-    name: Deploy to VM2/VM3 (Production Only)
+    name: Deploy (Production Only)
     runs-on: self-hosted
-    if: github.ref == 'refs/heads/main'
+    if: needs.select_env.outputs.app_env == 'production'
     needs:
+      - select_env
       - security_scans
       - sonarqube_scan
       - dast_scan
       - defectdojo_import
-
     env:
-      IMAGE_REF: ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+      IMAGE_REF: ${{ secrets.DOCKERHUB_REPO }}:${{ github.sha }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare SSH key
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Deploy with Ansible
+      - name: Deploy via Ansible
         run: |
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_rsa \
             -e "app_image=${IMAGE_REF}" \
             -e "app_env=production"
 
-  # ======================================================
-  # NOTIFICATION (RUNS ON STAGING & PRODUCTION)
-  # ======================================================
+# ======================================================
+# NOTIFICATION
+# ======================================================
   notify:
-    name: Notify Slack
+    name: Slack Notify
     runs-on: self-hosted
     needs:
+      - select_env
       - security_scans
       - sonarqube_scan
       - dast_scan
+
+    env:
+      APP_ENV: ${{ needs.select_env.outputs.app_env }}
 
     steps:
       - uses: actions/download-artifact@v4
@@ -277,8 +289,7 @@ jobs:
           name: security-reports
           path: reports/security
 
-      - name: Parse EPSS
-        id: check
+      - id: check
         run: |
           FILE="reports/security/security-reports/epss-findings.json"
           COUNT=$(jq '.high_risk | length' "$FILE")
@@ -287,7 +298,7 @@ jobs:
       - name: Slack Alert
         if: steps.check.outputs.COUNT != '0'
         run: |
-          MSG="[${{ env.APP_ENV }}] High EPSS vulnerabilities found. Check pipeline."
-          curl -X POST -H 'Content-Type: application/json' \
+          MSG="[${APP_ENV}] High EPSS vulnerabilities found!"
+          curl -X POST -H "Content-Type: application/json" \
             --data "{\"text\": \"$MSG\"}" \
             "${SLACK_WEBHOOK_URL}"
