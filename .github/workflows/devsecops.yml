@@ -19,7 +19,7 @@ concurrency:
 
 env:
   APP_NAME: vuln-bank
-  APP_URL: "http://192.168.107.135"   # <--- PATCH FIXED
+  APP_URL: "http://192.168.107.135"
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
 
@@ -39,10 +39,10 @@ env:
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
+# =====================================================================
+# 1. SECURITY SCANS
+# =====================================================================
 jobs:
-  # =====================================================
-  # 1. SECURITY SCANS
-  # =====================================================
   security_scans:
     name: Security Scans (All Tools)
     runs-on: self-hosted
@@ -64,32 +64,24 @@ jobs:
 
       - name: SCA Scan (Trivy FS)
         run: |
-          trivy fs \
-            --scanners vuln,secret \
+          trivy fs --scanners vuln,secret \
             --format json \
             --output "${REPORT_DIR}/trivy-sca.json" .
 
       - name: SAST Python (Bandit)
         run: |
-          bandit -r \
-            app.py auth.py database.py \
-            containers/app containers/db \
+          bandit -r app.py auth.py database.py containers/app containers/db \
             -f json -o "${REPORT_DIR}/bandit.json" || true
 
       - name: SAST Semgrep
         run: |
-          semgrep scan \
-            --config auto \
-            --json \
-            app.py auth.py database.py \
-            containers/app containers/db \
-            templates static \
+          semgrep scan --config auto --json \
+            app.py auth.py database.py containers/app containers/db templates static \
             > "${REPORT_DIR}/semgrep.json" || true
 
       - name: Misconfig Scan (Trivy Config)
         run: |
-          trivy config \
-            --format json \
+          trivy config --format json \
             --output "${REPORT_DIR}/trivy-misconfig.json" .
 
       - name: Misconfig Scan (Checkov)
@@ -116,8 +108,7 @@ jobs:
 
       - name: Snyk SCA (pip)
         run: |
-          snyk test --file=requirements.txt \
-            --package-manager=pip \
+          snyk test --file=requirements.txt --package-manager=pip \
             --json > "${REPORT_DIR}/snyk/snyk-sca.json" || true
 
       - name: Snyk Code Test (SAST)
@@ -134,13 +125,151 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-  # =====================================================
-  # 2. EPSS GATE
-  # =====================================================
+# =====================================================================
+# 2. IMPORT STATIC SCANS → DEFECTDOJO
+# =====================================================================
+  defectdojo_import_scans:
+    name: Import Static Scans to DefectDojo
+    runs-on: self-hosted
+    needs: security_scans
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: ${{ env.REPORT_DIR }}
+
+      # Gitleaks
+      - name: Import Gitleaks
+        run: |
+          FILE="${REPORT_DIR}/gitleaks.json"
+          if [ -f "$FILE" ]; then
+            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+              -F "scan_type=Gitleaks Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Trivy SCA
+      - name: Import Trivy SCA
+        run: |
+          FILE="${REPORT_DIR}/trivy-sca.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+              -F "scan_type=Trivy Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Bandit
+      - name: Import Bandit
+        run: |
+          FILE="${REPORT_DIR}/bandit.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Bandit Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Semgrep
+      - name: Import Semgrep
+        run: |
+          FILE="${REPORT_DIR}/semgrep.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Semgrep JSON Report" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Trivy Config
+      - name: Import Trivy Config
+        run: |
+          FILE="${REPORT_DIR}/trivy-misconfig.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Trivy Config Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Checkov
+      - name: Import Checkov
+        run: |
+          FILE="${REPORT_DIR}/checkov.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Checkov Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # SBOM (Syft)
+      - name: Import SBOM
+        run: |
+          FILE="${REPORT_DIR}/sbom.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=CycloneDX Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Snyk SCA
+      - name: Import Snyk SCA
+        run: |
+          FILE="${REPORT_DIR}/snyk/snyk-sca.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Snyk Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Snyk SAST
+      - name: Import Snyk SAST
+        run: |
+          FILE="${REPORT_DIR}/snyk/snyk-sast.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Snyk Code Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+      # Snyk Container
+      - name: Import Snyk Container
+        run: |
+          FILE="${REPORT_DIR}/snyk/snyk-container.json"
+          if [ -f "$FILE" ]; then
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -F "scan_type=Snyk Container Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
+          fi
+
+# =====================================================================
+# 3. EPSS GATE (AFTER IMPORT OF STATIC SCANS)
+# =====================================================================
   epss_gate:
     name: EPSS Gate
     runs-on: self-hosted
-    needs: security_scans
+    needs: defectdojo_import_scans
 
     outputs:
       can_deploy: ${{ steps.dec.outputs.can_deploy }}
@@ -153,7 +282,7 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: EPSS Gate Execution
+      - name: Run EPSS Gate
         run: |
           python3 scripts/epss_gate.py \
             --input "${REPORT_DIR}/trivy-sca.json" \
@@ -173,9 +302,9 @@ jobs:
             echo "can_deploy=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # =====================================================
-  # 3. SLACK NOTIFY
-  # =====================================================
+# =====================================================================
+# 4. NOTIFICATION
+# =====================================================================
   notify:
     name: Slack Notification
     runs-on: self-hosted
@@ -183,7 +312,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -196,7 +324,7 @@ jobs:
           EPSS=false
 
           if jq -e '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH")' \
-             "${REPORT_DIR}/trivy-sca.json"; then CRIT=true; fi
+              "${REPORT_DIR}/trivy-sca.json"; then CRIT=true; fi
 
           if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then EPSS=true; fi
 
@@ -206,13 +334,13 @@ jobs:
       - name: Send Slack Alert
         if: steps.parse.outputs.crit == 'true' || steps.parse.outputs.epss == 'true'
         run: |
-          MSG="⚠️ Vuln Bank Security Alert — Critical/EPSS High detected."
+          MSG="⚠️ Vuln Bank Security Alert — Critical/High/EPSS High Detected."
           curl -X POST -H 'Content-Type: application/json' \
             --data "{\"text\": \"$MSG\"}" "$SLACK_WEBHOOK_URL"
 
-  # =====================================================
-  # 4. GitHub Issues
-  # =====================================================
+# =====================================================================
+# 5. CREATE GITHUB ISSUES
+# =====================================================================
   create_issues:
     name: Create GitHub Issues
     runs-on: self-hosted
@@ -225,7 +353,7 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Create Issues
+      - name: Create Issues from Findings
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -235,13 +363,13 @@ jobs:
             --epss "${REPORT_DIR}/epss-findings.json" \
             --snyk-sca "${REPORT_DIR}/snyk/snyk-sca.json"
 
-  # =====================================================
-  # 5. BUILD & SIGN (COSIGN v3 PATCH)
-  # =====================================================
+# =====================================================================
+# 6. BUILD & SIGN (COSIGN v3)
+# =====================================================================
   build_and_sign:
     name: Build + Push + Sign + SBOM
-    needs: epss_gate
     runs-on: self-hosted
+    needs: epss_gate
     if: needs.epss_gate.outputs.can_deploy == 'true'
 
     outputs:
@@ -256,13 +384,15 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Install Tools (Cosign & Syft)
+      - name: Install Tools (Syft + Cosign)
         run: |
           mkdir -p $HOME/.local/bin
 
+          # Syft
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b $HOME/.local/bin
 
+          # Cosign v3
           curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
             -o $HOME/.local/bin/cosign
           chmod +x $HOME/.local/bin/cosign
@@ -270,12 +400,12 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           export PATH="$HOME/.local/bin:$PATH"
 
-      - name: Debug Cosign Binary
+      - name: Debug Cosign
         run: |
           which cosign
-          cosign version
+          cosign version || true
 
-      - name: Build and Push
+      - name: Build and Push Image
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -283,16 +413,15 @@ jobs:
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
           tags: |
-            ${{ env.DOCKERHUB_REPO }}:latest
-            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_REPO }}:latest
+            ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
 
       - name: Export Image Ref
         id: export
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
-          IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
-          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
+          echo "image_ref=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TO_SIGN=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_ENV
 
       - name: Generate SBOM (CycloneDX)
         run: syft "${IMAGE_TO_SIGN}" -o cyclonedx-json=sbom.json
@@ -302,9 +431,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-
           cosign sign --yes "${IMAGE_TO_SIGN}"
-
           cosign attest --yes \
             --predicate sbom.json \
             --type cyclonedx \
@@ -315,9 +442,9 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.json
 
-  # =====================================================
-  # 6. DEPLOY (PATCHED: Added Cosign Verify)
-  # =====================================================
+# =====================================================================
+# 7. DEPLOY (ANSIBLE + VERIFY SIGNATURE)
+# =====================================================================
   deploy:
     name: Deploy (Ansible)
     needs: build_and_sign
@@ -332,13 +459,12 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           cosign verify --yes "${{ needs.build_and_sign.outputs.image_ref }}"
 
-      - name: Execute Ansible
+      - name: Execute Ansible Deployment
         env:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          echo "Deploying image: ${IMAGE_REF}"
           if [ -z "${IMAGE_REF}" ]; then
-            IMAGE_REF="${{ env.IMAGE_REPO }}:latest"
+            IMAGE_REF="${IMAGE_REPO}:latest"
           fi
 
           mkdir -p ~/.ssh
@@ -361,14 +487,13 @@ jobs:
           SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          msg="🚀 Deployment Success\n• Image: ${IMAGE_REF}\n• Target: ${{ env.APP_URL }}"
+          msg="🚀 Deployment Success\n• Image: ${IMAGE_REF}\n• Target: ${APP_URL}"
           curl -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"$msg\"}" \
-              "$SLACK_URL"
+            --data "{\"text\":\"$msg\"}" "$SLACK_URL"
 
-  # =====================================================
-  # 7. DAST (OWASP ZAP)
-  # =====================================================
+# =====================================================================
+# 8. DAST (ZAP)
+# =====================================================================
   dast:
     name: DAST Scan (OWASP ZAP)
     runs-on: self-hosted
@@ -388,21 +513,16 @@ jobs:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
 
-  # =====================================================
-  # 8. IMPORT TO DEFECTDOJO
-  # =====================================================
-  defectdojo_import:
-    name: Import Scan Results to DefectDojo
+# =====================================================================
+# 9. IMPORT ZAP → DEFECTDOJO
+# =====================================================================
+  defectdojo_import_dast:
+    name: Import ZAP DAST to DefectDojo
     runs-on: self-hosted
     needs: dast
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: security-reports
-          path: ${{ env.REPORT_DIR }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -423,47 +543,13 @@ jobs:
               -F "verified=true"
           fi
 
-      - name: Import Snyk SCA
-        run: |
-          FILE="${REPORT_DIR}/snyk/snyk-sca.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=Snyk Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      - name: Import Snyk SAST
-        run: |
-          FILE="${REPORT_DIR}/snyk/snyk-sast.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Snyk Code Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      - name: Import Snyk Container
-        run: |
-          FILE="${REPORT_DIR}/snyk/snyk-container.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Snyk Container Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-  # =====================================================
-  # 9. DEFECTDOJO CLEANUP
-  # =====================================================
+# =====================================================================
+# 10. DEFECTDOJO CLEANUP (FINAL STEP)
+# =====================================================================
   cleanup_defectdojo:
     name: Cleanup & Enrich DefectDojo
     runs-on: self-hosted
-    needs: defectdojo_import
+    needs: [defectdojo_import_scans, defectdojo_import_dast]
     if: always()
 
     steps:
@@ -476,3 +562,4 @@ jobs:
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
           DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+          EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
