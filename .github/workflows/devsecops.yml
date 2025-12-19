@@ -358,11 +358,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          EPSS_FILE: "${REPORT_DIR}/epss-findings.json"
+          SNYK_FILE: "${REPORT_DIR}/snyk/snyk-sca.json"
         run: |
-          python3 scripts/epss_create_issues.py \
-            --repo "$REPO" \
-            --epss "${REPORT_DIR}/epss-findings.json" \
-            --snyk-sca "${REPORT_DIR}/snyk/snyk-sca.json"
+          python3 scripts/epss_create_issues.py
 
 # =====================================================================
 # 6. BUILD & SIGN (COSIGN v3)
@@ -427,7 +426,7 @@ jobs:
           else
             IMAGE_REF="${IMAGE_REPO}@${DIGEST}"
           fi
-          
+
           echo "image_ref=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_OUTPUT
           echo "IMAGE_TO_SIGN=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_ENV
 

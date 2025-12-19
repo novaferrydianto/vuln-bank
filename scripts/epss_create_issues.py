@@ -1,61 +1,134 @@
 #!/usr/bin/env python3
-import os, json, sys
-from urllib import request, parse
+import os, json, requests
 
-token = os.environ["GITHUB_TOKEN"]
-repo  = os.environ.get("REPO")
+REPO = os.getenv("REPO")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+EPSS_FILE = os.getenv("EPSS_FILE")
+SNYK_FILE = os.getenv("SNYK_FILE")
 
-epss_file   = os.environ.get("EPSS_FILE", "security-reports/epss-findings.json")
-snyk_sca    = os.environ.get("SNYK_SCA", "security-reports/snyk/snyk-sca.json")
-
-API = f"https://api.github.com/repos/{repo}/issues"
+API_URL = f"https://api.github.com/repos/{REPO}/issues"
 HEADERS = {
-    "Authorization": f"token {token}",
-    "Accept": "application/vnd.github+json",
-    "User-Agent": "vuln-bank-epxs-bot"
+    "Authorization": f"token {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json"
 }
 
+def load_existing_issue_titles():
+    """Load ALL issue titles (open & closed) to avoid duplicates."""
+    titles = set()
+
+    for state in ["open", "closed"]:
+        resp = requests.get(API_URL, headers=HEADERS, params={"state": state})
+        if resp.status_code == 200:
+            for issue in resp.json():
+                titles.add(issue["title"])
+
+    return titles
+
+EXISTING_TITLES = load_existing_issue_titles()
+
+
 def create_issue(title, body, labels):
-    data = json.dumps({"title": title, "body": body, "labels": labels}).encode()
-    req = request.Request(API, data=data, headers=HEADERS, method="POST")
-    with request.urlopen(req) as resp:
-        print("Created issue:", resp.status)
+    if title in EXISTING_TITLES:
+        print(f"[SKIP] Already exists: {title}")
+        return
 
-def main():
-    # EPSS high_risk
-    if os.path.isfile(epss_file):
-        with open(epss_file) as f:
-            epss = json.load(f)
-        for item in epss.get("high_risk", []):
-            title = f"[EPSS HIGH] {item['cve']} on {item['pkg_name']}"
-            body  = (
-                f"* CVE: {item['cve']}\n"
-                f"* Package: {item['pkg_name']} {item['installed_version']}\n"
-                f"* Severity: {item['severity']}\n"
-                f"* CVSS: {item.get('cvss')}\n"
-                f"* EPSS: {item.get('epss')} (percentile {item.get('percentile')})\n"
-                f"* Reasons: {', '.join(item.get('reasons', []))}\n"
-            )
-            labels = ["security", "EPSS-high", "auto-created"]
-            create_issue(title, body, labels)
+    payload = {"title": title, "body": body, "labels": labels}
 
-    # Snyk SCA high/critical
-    if os.path.isfile(snyk_sca):
-        with open(snyk_sca) as f:
-            snyk = json.load(f)
-        for v in snyk.get("vulnerabilities", []):
-            if v.get("severity") not in ("high", "critical"):
-                continue
-            title = f"[Snyk {v['severity'].upper()}] {v['id']} in {v['packageName']}"
-            body  = (
-                f"* ID: {v['id']}\n"
-                f"* Package: {v['packageName']} {v.get('version')}\n"
-                f"* Severity: {v['severity']}\n"
-                f"* CVSS: {v.get('cvssScore')}\n"
-                f"* URL: {v.get('url')}\n"
-            )
-            labels = ["security", "SCA", v["severity"], "auto-created"]
-            create_issue(title, body, labels)
+    r = requests.post(API_URL, headers=HEADERS, json=payload)
+    if r.status_code >= 300:
+        print("[ERROR] Could not create issue:", r.text)
+    else:
+        print("[OK] Created:", title)
+        EXISTING_TITLES.add(title)
+
+
+# ==============================================================
+# SNYK SECTION (SCA)
+# ==============================================================
+
+def process_snyk():
+    if not os.path.exists(SNYK_FILE):
+        print("[INFO] No Snyk file found")
+        return
+
+    data = json.load(open(SNYK_FILE))
+    vulns = data.get("vulnerabilities", [])
+
+    seen = set()
+
+    for v in vulns:
+        cve = v.get("id")
+        pkg = v.get("packageName")
+        severity = v.get("severity", "").upper()
+
+        if not cve or not pkg:
+            continue
+
+        # Dedup by CVE + package
+        key = f"{cve}:{pkg}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        title = f"[Snyk {severity}] {cve} in {pkg}"
+
+        body = f"""
+## Snyk Vulnerability
+- Package: **{pkg}**
+- Severity: **{severity}**
+- ID: **{cve}**
+- URL: {v.get("url")}
+"""
+
+        labels = ["auto-created", "security", "sca", severity.lower()]
+        create_issue(title, body, labels)
+
+
+# ==============================================================
+# EPSS SECTION
+# ==============================================================
+
+def process_epss():
+    if not os.path.exists(EPSS_FILE):
+        print("[INFO] No EPSS file found")
+        return
+
+    data = json.load(open(EPSS_FILE))
+    vulns = data.get("high_risk", [])
+
+    seen = set()
+
+    for v in vulns:
+        cve = v.get("cve")
+        if not cve:
+            continue
+
+        if cve in seen:
+            continue
+        seen.add(cve)
+
+        epss = v.get("epss")
+        percentile = v.get("percentile")
+        reasons = ", ".join(v.get("reasons", []))
+
+        title = f"[CVE HIGH] EPSS High-Risk Vulnerability {cve}"
+
+        body = f"""
+## EPSS High-Risk CVE
+- CVE: **{cve}**
+- EPSS Score: **{epss}**
+- Percentile: **{percentile}**
+- Reasons: {reasons}
+"""
+
+        labels = ["security", "severity-high", "epss"]
+        create_issue(title, body, labels)
+
+
+# ==============================================================
+# MAIN
+# ==============================================================
 
 if __name__ == "__main__":
-    main()
+    process_epss()
+    process_snyk()
