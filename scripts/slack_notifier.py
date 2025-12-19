@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
 """
-Slack Notifier (Enterprise Grade v2025 - Refactored)
-
-Features:
-- Sends a main "Security Gate" summary message with rich Slack blocks.
-- Sends per-scanner findings as threaded replies (TruffleHog, Semgrep, Snyk, Checkov, Trivy).
-- Sends EPSS/KEV detailed findings as another threaded reply.
-- Structured and modular to keep Cognitive Complexity low and pass SonarQube checks.
+Enterprise Slack Notifier (Threaded Version, 2025)
+--------------------------------------------------
+- Posts a primary "Security Gate Result" message
+- Sends scanner-specific detail replies in the thread
+- SonarQube-clean: reduces cognitive complexity by decomposition
+- Ruff-clean: no unused vars, minimal nesting, safe JSON loader
 """
 
-import json
 import os
+import json
 import requests
+from typing import Any, Dict, List
 
 
-SLACK_POST = "https://slack.com/api/chat.postMessage"
+# ============================================================
+# Utility Functions
+# ============================================================
 
-
-# ======================================================
-# Generic helpers
-# ======================================================
-def load_json(path: str):
-    """Load JSON file if exists, otherwise return None."""
+def load_json(path: str) -> Any:
+    """Load JSON safely; return None if invalid."""
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
@@ -29,153 +27,108 @@ def load_json(path: str):
         return None
 
 
-def slack_api(token: str, payload: dict) -> dict:
-    """Call Slack chat.postMessage API and return the parsed JSON response."""
+def slack_post(token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST to Slack chat.postMessage."""
+    url = "https://slack.com/api/chat.postMessage"
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {token}",
     }
     try:
-        response = requests.post(
-            SLACK_POST,
-            headers=headers,
-            json=payload,
-            timeout=12,
-        )
-        data = response.json()
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        parsed = response.json()
+        if not parsed.get("ok"):
+            print(f"[WARN] Slack error: {parsed}")
+        return parsed
     except Exception as exc:
-        print(f"[ERROR] Slack request failed: {exc}")
+        print(f"[ERROR] Slack network failure: {exc}")
         return {}
 
-    if not data.get("ok"):
-        print(f"[WARN] Slack API error: {data}")
-    return data
+
+def slack_field(title: str, value: Any) -> Dict[str, Any]:
+    """Slack field helper."""
+    return {"type": "mrkdwn", "text": f"*{title}:*\n{value}"}
 
 
-def build_metric(title: str, value, emoji: str = "•") -> dict:
-    """Build a Slack mrkdwn field for metric-style display."""
-    return {"type": "mrkdwn", "text": f"*{emoji} {title}:*\n{value}"}
+def count_items(data: Any, predicate) -> int:
+    """Count list items that satisfy a predicate."""
+    if not isinstance(data, list):
+        return 0
+    return sum(1 for item in data if predicate(item))
 
 
-def send_reply(token: str, channel: str, thread_ts: str, title: str, body: str) -> dict:
-    """Send a threaded reply message under the main Slack message."""
-    payload = {
-        "channel": channel,
-        "thread_ts": thread_ts,
-        "text": f"*{title}*\n{body}",
-    }
-    return slack_api(token, payload)
+# ============================================================
+# Scanner-specific extraction helpers
+# ============================================================
 
-
-# ======================================================
-# Per-scanner counters (kept small & focused)
-# ======================================================
 def count_trufflehog(path: str) -> int:
-    data = load_json(path) or []
-    return sum(1 for item in data if isinstance(item, dict) and item.get("Verified"))
+    data = load_json(path)
+    return count_items(data, lambda i: isinstance(i, dict) and i.get("Verified"))
 
 
 def count_semgrep(path: str) -> int:
     data = load_json(path) or {}
     results = data.get("results", [])
-    severities = {"error", "high"}
-    return sum(
-        1
-        for finding in results
-        if finding.get("extra", {}).get("severity", "").lower() in severities
-    )
+    return count_items(results, lambda r: r.get("extra", {}).get("severity", "").lower() in ("high", "error"))
 
 
-def count_snyk_code(path: str) -> int:
+def count_snyk_vulns(path: str) -> int:
     data = load_json(path) or {}
-    vulns = data.get("vulnerabilities", [])
-    return sum(1 for v in vulns if v.get("severity") == "critical")
-
-
-def count_snyk_sca(path: str) -> int:
-    data = load_json(path) or {}
-    vulns = data.get("vulnerabilities", [])
-    return sum(1 for v in vulns if v.get("severity") == "critical")
+    return count_items(data.get("vulnerabilities", []), lambda v: v.get("severity") == "critical")
 
 
 def count_checkov(path: str) -> int:
     data = load_json(path) or {}
     failed = data.get("results", {}).get("failed_checks", [])
-    return sum(1 for f in failed if f.get("severity") == "CRITICAL")
+    return count_items(failed, lambda f: f.get("severity") == "CRITICAL")
 
 
 def count_trivy(path: str) -> int:
     data = load_json(path) or {}
     if not data:
         return 0
-
-    results = data.get("Results", [])
-    if not results:
-        return 0
-
+    results = data.get("Results", [{}])
     vulns = results[0].get("Vulnerabilities", [])
-    return sum(
-        1 for v in vulns if v.get("Severity", "") in ("HIGH", "CRITICAL")
-    )
+    return count_items(vulns, lambda v: v.get("Severity") in ("HIGH", "CRITICAL"))
 
 
-SCANNERS = [
-    ("TruffleHog (Verified Secrets)", "all-reports/reports-trufflehog/trufflehog.json", count_trufflehog),
-    ("Semgrep Findings", "all-reports/reports-semgrep/semgrep.json", count_semgrep),
-    ("Snyk Code", "all-reports/reports-snyk/snyk-code.json", count_snyk_code),
-    ("Snyk SCA", "all-reports/reports-snyk/snyk-sca.json", count_snyk_sca),
-    ("Checkov (Ansible)", "all-reports/reports-checkov/checkov_ansible.json", count_checkov),
-    ("Trivy Config Scan", "all-reports/reports-trivy/trivy.json", count_trivy),
-]
+def build_epss_details(epss_data: Dict[str, Any]) -> str:
+    high = epss_data.get("high_risk", [])
+    if not high:
+        return "No EPSS/KEV high-risk vulnerabilities."
+    lines = []
+    for item in high:
+        cve = item.get("cve")
+        epss = item.get("epss")
+        kev_flag = item.get("is_kev")
+        lines.append(f"- `{cve}` (EPSS={epss}, KEV={kev_flag})")
+    return "\n".join(lines)
 
 
-# ======================================================
-# MAIN
-# ======================================================
-def main() -> None:
-    # Core envs
-    slack_token = os.getenv("SLACK_TOKEN")
-    channel = os.getenv("SLACK_CHANNEL", "#devsecops")
+# ============================================================
+# Message Builders
+# ============================================================
 
-    static_crit = int(os.getenv("STATIC_CRITICAL", "0"))
-    epss_path = os.getenv("EPSS_FINDINGS", "security-reports/epss-findings.json")
-    epss_mode = os.getenv("EPSS_MODE", "C")
-    epss_thr = os.getenv("EPSS_THRESHOLD", "0.5")
+def build_main_blocks(repo: str, sha: str, run: str,
+                      static_crit: int, epss_high: int,
+                      epss_mode: str, epss_thr: str) -> List[Dict[str, Any]]:
 
-    repo = os.getenv("GITHUB_REPOSITORY", "repo")
-    sha = os.getenv("GITHUB_SHA", "")[:7]
-    run_number = os.getenv("GITHUB_RUN_NUMBER", "?")
+    status = "FAILED" if (static_crit > 0 or epss_high > 0) else "PASSED"
+    icon = "🚨" if status == "FAILED" else "✅"
 
-    if not slack_token:
-        print("[ERROR] SLACK_TOKEN missing.")
-        return
-
-    # EPSS / KEV
-    epss_data = load_json(epss_path) or {}
-    epss_high_risk = epss_data.get("high_risk", [])
-    epss_high = len(epss_high_risk)
-
-    gate_failed = static_crit > 0 or epss_high > 0
-    status = "FAILED" if gate_failed else "PASSED"
-    icon = "🚨" if gate_failed else "✅"
-
-    # Build main summary blocks
-    blocks = [
+    return [
         {
             "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": f"{icon} SECURITY GATE {status}",
-            },
+            "text": {"type": "plain_text", "text": f"{icon} SECURITY GATE {status}"}
         },
         {"type": "divider"},
         {
             "type": "section",
             "fields": [
-                build_metric("Static Critical", static_crit, "🔥"),
-                build_metric("EPSS/KEV High-Risk", epss_high, "🛑"),
-                build_metric("EPSS Mode", epss_mode, "⚙️"),
-                build_metric("Threshold", epss_thr, "📉"),
+                slack_field("Static Critical", static_crit),
+                slack_field("EPSS High-Risk", epss_high),
+                slack_field("EPSS Mode", epss_mode),
+                slack_field("Threshold", epss_thr),
             ],
         },
         {"type": "divider"},
@@ -183,43 +136,95 @@ def main() -> None:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Repo:* `{repo}`\n*Commit:* `{sha}`\n*Run:* `{run_number}`",
+                "text": f"*Repo:* `{repo}`\n*Commit:* `{sha}`\n*Run:* `{run}`"
             },
         },
     ]
 
-    main_msg = slack_api(
-        slack_token,
+
+def post_thread_reply(token: str, channel: str, thread_ts: str,
+                      title: str, body: str) -> None:
+    """Post a thread reply under the main message."""
+    slack_post(
+        token,
+        {"channel": channel, "thread_ts": thread_ts, "text": f"*{title}*\n{body}"}
+    )
+
+
+# ============================================================
+# Main Execution
+# ============================================================
+
+def main() -> None:
+    token = os.getenv("SLACK_TOKEN")
+    channel = os.getenv("SLACK_CHANNEL", "#devsecops")
+
+    if not token:
+        print("[ERROR] SLACK_TOKEN missing.")
+        return
+
+    repo = os.getenv("GITHUB_REPOSITORY", "repo")
+    sha = os.getenv("GITHUB_SHA", "")[:7]
+    run = os.getenv("GITHUB_RUN_NUMBER", "?")
+
+    epss_path = os.getenv("EPSS_FINDINGS", "security-reports/epss-findings.json")
+    static_crit = int(os.getenv("STATIC_CRITICAL", "0"))
+    epss_mode = os.getenv("EPSS_MODE", "C")
+    epss_thr = os.getenv("EPSS_THRESHOLD", "0.5")
+
+    epss_data = load_json(epss_path) or {}
+    epss_high = len(epss_data.get("high_risk", []))
+
+    # ---------------------------------------------------------
+    # MAIN MESSAGE
+    # ---------------------------------------------------------
+    main_msg = slack_post(
+        token,
         {
             "channel": channel,
-            "blocks": blocks,
+            "blocks": build_main_blocks(
+                repo=repo,
+                sha=sha,
+                run=run,
+                static_crit=static_crit,
+                epss_high=epss_high,
+                epss_mode=epss_mode,
+                epss_thr=epss_thr,
+            ),
         },
     )
 
     thread_ts = main_msg.get("ts")
     if not thread_ts:
-        print("[ERROR] Cannot create thread replies (ts is null).")
+        print("[ERROR] Missing Slack thread timestamp (ts).")
         return
 
-    # Per-scanner threaded replies
-    for scanner_name, report_path, counter in SCANNERS:
-        count = counter(report_path)
-        body = f"Findings: `{count}`\nFile: `{report_path}`"
-        send_reply(slack_token, channel, thread_ts, scanner_name, body)
+    # ---------------------------------------------------------
+    # THREAD REPLIES — scanner-by-scanner
+    # ---------------------------------------------------------
 
-    # EPSS / KEV detailed reply
-    if epss_high_risk:
-        details_lines = [
-            f"- `{item.get('cve')}` (EPSS={item.get('epss')}, KEV={item.get('is_kev')})"
-            for item in epss_high_risk
-        ]
-        details = "\n".join(details_lines)
-    else:
-        details = "No EPSS/KEV high-risk items."
+    scanners = [
+        ("TruffleHog Verified Secrets", "all-reports/reports-trufflehog/trufflehog.json", count_trufflehog),
+        ("Semgrep Findings", "all-reports/reports-semgrep/semgrep.json", count_semgrep),
+        ("Snyk Code", "all-reports/reports-snyk/snyk-code.json", count_snyk_vulns),
+        ("Snyk SCA", "all-reports/reports-snyk/snyk-sca.json", count_snyk_vulns),
+        ("Checkov Ansible", "all-reports/reports-checkov/checkov_ansible.json", count_checkov),
+        ("Trivy Config Scan", "all-reports/reports-trivy/trivy.json", count_trivy),
+    ]
 
-    send_reply(slack_token, channel, thread_ts, "EPSS/KEV Detailed", details)
+    for title, path, func in scanners:
+        count = func(path)
+        post_thread_reply(
+            token, channel, thread_ts,
+            title,
+            f"Findings: `{count}`\nFile: `{path}`"
+        )
 
-    print("[OK] Slack notification and thread replies delivered.")
+    # EPSS / KEV detail
+    epss_details = build_epss_details(epss_data)
+    post_thread_reply(token, channel, thread_ts, "EPSS/KEV Detail", epss_details)
+
+    print("[OK] Slack main message + threaded replies delivered.")
 
 
 if __name__ == "__main__":
