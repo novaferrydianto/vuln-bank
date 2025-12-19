@@ -33,6 +33,8 @@ env:
   EPSS_THRESHOLD: "0.5"
   COMPOSITE_THRESHOLD: "0.65"
   PYTHON_BIN: python3
+  PYTHONOPTIMIZE: "1"
+  PYTHONUNBUFFERED: "1"
 
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
   IMAGE_TAG: ${{ github.sha }}
@@ -102,6 +104,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Python Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.local/pipx/venvs
+            ~/.local/share/pipx
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Prepare Workspace
         run: |
           set -e
@@ -119,6 +132,14 @@ jobs:
           command -v snyk      || echo "[WARN] snyk not installed"
           command -v sonar-scanner || echo "[WARN] sonar not installed"
           command -v docker >/dev/null || { echo "[FATAL] docker missing in self-hosted runner"; exit 1; }
+
+      - name: Install Snyk CLI
+        run: |
+          if ! command -v snyk >/dev/null; then
+            curl -sSfL https://static.snyk.io/cli/latest/snyk-linux \
+              -o /usr/local/bin/snyk
+            chmod +x /usr/local/bin/snyk
+          fi
 
 ################################################################################
 # 2) SECURITY SCANS (Parallel Matrix)
@@ -148,6 +169,13 @@ jobs:
           [ -s ${REPORT_DIR}/trufflehog.json ] || echo "{}" > ${REPORT_DIR}/trufflehog.json
 
       # Semgrep
+      - name: Cache Semgrep Rules
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/semgrep
+          key: semgrep-rules-${{ runner.os }}
+          restore-keys: semgrep-rules- 
+
       - name: Semgrep
         if: matrix.scan == 'semgrep'
         run: |
@@ -168,13 +196,41 @@ jobs:
           [ -s ${REPORT_DIR}/checkov_docker.json ] || echo "{}" > ${REPORT_DIR}/checkov_docker.json
 
       # Trivy
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}
+          restore-keys: trivy-db-
+
       - name: Trivy Config
         if: matrix.scan == 'trivy'
         run: |
-          trivy config . --format json --output ${REPORT_DIR}/trivy.json || true
+          trivy fs . --scanners vuln --format json --output ${REPORT_DIR}/trivy-fs.json || echo "{}" > ${REPORT_DIR}/trivy-fs.json
           [ -s ${REPORT_DIR}/trivy.json ] || echo "{}" > ${REPORT_DIR}/trivy.json
 
+      - name: Trivy Image Scan
+        if: matrix.scan == 'trivy'
+        run: |
+          IMAGE="${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "[INFO] Pulling image for Trivy scan: $IMAGE"
+          docker pull "$IMAGE" || true
+
+          trivy image "$IMAGE" \
+            --format json \
+            --scanners vuln \
+            --output ${REPORT_DIR}/trivy-image.json || echo "{}" > ${REPORT_DIR}/trivy-image.json
+
+          [ -s ${REPORT_DIR}/trivy-image.json ] || echo "{}" > ${REPORT_DIR}/trivy-image.json
+
       # Snyk (full scan + fallback)
+      - name: Cache Snyk DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.config/snyk
+          key: snyk-db-${{ runner.os }}
+          restore-keys: snyk-db-
+
       - name: Snyk Scan
         if: matrix.scan == 'snyk'
         env:
@@ -289,8 +345,9 @@ jobs:
           ${PYTHON_BIN} scripts/epss_gate.py \
             --threshold "${EPSS_THRESHOLD}" \
             --output "${REPORT_DIR}/epss-findings.json" \
+            $(find all-reports -name "trivy-fs.json" -printf "--input %p " 2>/dev/null) \
+            $(find all-reports -name "trivy-image.json" -printf "--input %p " 2>/dev/null) \
             $(find all-reports -name "snyk-sca.json" -printf "--input %p " 2>/dev/null) \
-            $(find all-reports -name "trivy.json" -printf "--input %p " 2>/dev/null) \
             || true
 
       - name: Run Composite Security Gate
@@ -314,6 +371,13 @@ jobs:
           echo "Composite status: $status"
           [[ "$status" == "FAIL" ]] && exit 1 || exit 0
 
+      - name: Prepare Summary JSON for PR
+        id: prsummary
+        run: |
+          echo "gate_status=$(jq -r '.status' security-reports/composite-findings.json)" >> $GITHUB_OUTPUT
+          echo "epss_hr=$(jq -c '.high_risk' security-reports/epss-findings.json)" >> $GITHUB_OUTPUT
+          echo "llm_out=$(jq -c '.' security-reports/llm-findings.json)" >> $GITHUB_OUTPUT
+
       - name: Post PR Security Summary Comment
         if: github.event_name == 'pull_request'
         uses: thollander/actions-comment-pull-request@v2
@@ -323,16 +387,16 @@ jobs:
           message: |
             ## Security Summary
 
-            **Composite Gate Status:** `$(jq -r .status security-reports/composite-findings.json)`
+            **Composite Gate Status:** `${{ steps.prsummary.outputs.gate_status }}`
 
-            ### High-Risk CVEs (EPSS ≥ ${EPSS_THRESHOLD})
+            ### High-Risk CVEs (EPSS ≥ ${{ env.EPSS_THRESHOLD }})
             ```json
-            $(jq '.high_risk' security-reports/epss-findings.json)
+            ${{ steps.prsummary.outputs.epss_hr }}
             ```
 
             ### LLM Security Findings
             ```json
-            $(cat security-reports/llm-findings.json 2>/dev/null || echo "{}")
+            ${{ steps.prsummary.outputs.llm_out }}
             ```
 
             _Automated scan from DevSecOps pipeline._
@@ -376,6 +440,8 @@ jobs:
           context: .
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
+          cache-from: type=registry,ref=${{ env.DOCKERHUB_REPO }}:latest
+          cache-to: type=inline
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest
             ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
