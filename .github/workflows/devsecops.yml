@@ -15,12 +15,11 @@ on:
         options: ["true", "false"]
 
 permissions:
-  contents: write
+  contents: read
   security-events: write
   issues: write
   checks: write
   id-token: write
-  pull-requests: write # Penting untuk Post PR Comment
 
 concurrency:
   group: vulnbank-${{ github.workflow }}-${{ github.ref }}
@@ -29,56 +28,121 @@ concurrency:
 env:
   APP_NAME: vuln-bank
   APP_URL: http://192.168.107.135:5000
+
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
   COMPOSITE_THRESHOLD: "0.65"
   PYTHON_BIN: python3
+  PYTHONOPTIMIZE: "1"
+  PYTHONUNBUFFERED: "1"
+
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
   IMAGE_TAG: ${{ github.sha }}
   DOCKERFILE_PATH: containers/app/Dockerfile
+  REQUIREMENTS_PATH: containers/app/requirements.txt
+
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+  DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+  DEFECTDOJO_ENGAGEMENT_NAME: "Build-${{ github.run_number }}"
+
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  LLM_SCAN_PATH: "."
+  LLM_REPORT: "security-reports/llm-findings.json"
+
+  COPILOT_SECURITY_REPORT: security-reports/copilot-security.json
 
 jobs:
 ################################################################################
-# 0) AUTO-FIX & SETUP (Parallel Execution)
+# 0) AUTO-FIX (Copilot Autofix via CodeQL)
 ################################################################################
   autofix:
     name: Copilot Autofix (via CodeQL)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      security-events: write
+      pull-requests: write
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Remove old CodeQL cache (critical)
+        run: |
+          rm -rf ~/.cache/codeql || true
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: python
+
+      - name: Prepare SARIF output directory
+        run: mkdir -p security-reports
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:python"
-          upload: "always" # Upload langsung agar Autofix bekerja
+          output: security-reports
+          upload: "never"
 
+      - name: Upload CodeQL SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif
+          path: security-reports/*.sarif
+
+################################################################################
+# 1) SETUP
+################################################################################
   setup:
-    name: Infrastructure Setup
+    needs: [autofix]
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+
       - name: Python Cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
+          path: |
+            ~/.cache/pip
+            ~/.local/pipx/venvs
+            ~/.local/share/pipx
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-      - name: Prepare Workspace & Tools
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Prepare Workspace
         run: |
+          set -e
           mkdir -p "${REPORT_DIR}"
           python3 -m pip install --upgrade pip
-          # Ensure Tools are present (Trivy, Snyk, Semgrep, Checkov)
-          command -v semgrep || pip3 install semgrep
-          command -v checkov || pip3 install checkov
+          command -v jq || sudo dnf install -y jq
+
+      - name: Install Base Tools
+        run: |
+          command -v pipx >/dev/null || sudo dnf install -y pipx
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v semgrep   || pipx install --force semgrep
+          command -v checkov   || pipx install --force checkov
+          command -v trivy     || echo "[WARN] trivy not installed"
+          command -v snyk      || echo "[WARN] snyk not installed"
+          command -v sonar-scanner || echo "[WARN] sonar not installed"
+          command -v docker >/dev/null || { echo "[FATAL] docker missing in self-hosted runner"; exit 1; }
+
+      - name: Install Snyk CLI
+        run: |
+          if ! command -v snyk >/dev/null; then
+            curl -sSfL https://static.snyk.io/cli/latest/snyk-linux \
+              -o /usr/local/bin/snyk
+            chmod +x /usr/local/bin/snyk
+          fi
 
 ################################################################################
-# 1) SECURITY SCANS (Parallel Matrix)
+# 2) SECURITY SCANS (Parallel Matrix)
 ################################################################################
   security_scans:
     needs: setup
@@ -86,105 +150,401 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scan: [trufflehog, semgrep, trivy, snyk, checkov]
+        scan: [trufflehog, semgrep, trivy, snyk, sonarqube, checkov]
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - run: mkdir -p "${REPORT_DIR}"
 
-      - name: Run Scan (${{ matrix.scan }})
+      # TruffleHog
+      - name: TruffleHog
+        if: matrix.scan == 'trufflehog'
         run: |
-          if [ "${{ matrix.scan }}" == "trufflehog" ]; then
-            trufflehog git file://$(pwd) --json --only-verified > ${REPORT_DIR}/trufflehog.json || true
-          elif [ "${{ matrix.scan }}" == "semgrep" ]; then
-            semgrep scan --config p/owasp-top-ten --json > ${REPORT_DIR}/semgrep.json || true
-          elif [ "${{ matrix.scan }}" == "checkov" ]; then
-            checkov -d . --output json > ${REPORT_DIR}/checkov.json || true
-          elif [ "${{ matrix.scan }}" == "trivy" ]; then
-            trivy fs . --scanners vuln --format json --output ${REPORT_DIR}/trivy-fs.json || true
-          elif [ "${{ matrix.scan }}" == "snyk" ]; then
-            export SNYK_TOKEN=${{ secrets.SNYK_TOKEN }}
-            snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
-          fi
+          trufflehog git file://$(pwd) \
+            --json --only-verified --no-update \
+            > ${REPORT_DIR}/trufflehog.json || true
+          [ -s ${REPORT_DIR}/trufflehog.json ] || echo "{}" > ${REPORT_DIR}/trufflehog.json
 
-      - name: Upload Scan Artifacts
+      # Semgrep
+      - name: Cache Semgrep Rules
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/semgrep
+          key: semgrep-rules-${{ runner.os }}
+          restore-keys: semgrep-rules- 
+
+      - name: Semgrep
+        if: matrix.scan == 'semgrep'
+        run: |
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/security-audit \
+            --config p/python \
+            --json > ${REPORT_DIR}/semgrep.json || true
+          [ -s ${REPORT_DIR}/semgrep.json ] || echo "{}" > ${REPORT_DIR}/semgrep.json
+
+      # Checkov
+      - name: Checkov
+        if: matrix.scan == 'checkov'
+        run: |
+          checkov -d ansible --output json > ${REPORT_DIR}/checkov_ansible.json || true
+          checkov -f "${DOCKERFILE_PATH}" --output json > ${REPORT_DIR}/checkov_docker.json || true
+          [ -s ${REPORT_DIR}/checkov_ansible.json ] || echo "{}" > ${REPORT_DIR}/checkov_ansible.json
+          [ -s ${REPORT_DIR}/checkov_docker.json ] || echo "{}" > ${REPORT_DIR}/checkov_docker.json
+
+      # Trivy
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}
+          restore-keys: trivy-db-
+
+      - name: Trivy Config
+        if: matrix.scan == 'trivy'
+        run: |
+          trivy fs . --scanners vuln --format json --output ${REPORT_DIR}/trivy-fs.json || echo "{}" > ${REPORT_DIR}/trivy-fs.json
+          [ -s ${REPORT_DIR}/trivy.json ] || echo "{}" > ${REPORT_DIR}/trivy.json
+
+      - name: Trivy Image Scan
+        if: matrix.scan == 'trivy'
+        run: |
+          IMAGE="${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "[INFO] Pulling image for Trivy scan: $IMAGE"
+          docker pull "$IMAGE" || true
+
+          trivy image "$IMAGE" \
+            --format json \
+            --scanners vuln \
+            --output ${REPORT_DIR}/trivy-image.json || echo "{}" > ${REPORT_DIR}/trivy-image.json
+
+          [ -s ${REPORT_DIR}/trivy-image.json ] || echo "{}" > ${REPORT_DIR}/trivy-image.json
+
+      # Snyk (full scan + fallback)
+      - name: Cache Snyk DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.config/snyk
+          key: snyk-db-${{ runner.os }}
+          restore-keys: snyk-db-
+
+      - name: Snyk Scan
+        if: matrix.scan == 'snyk'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          # Snyk Code (SAST)
+          snyk code test --sarif > snyk-code.sarif || echo '{"runs":[{"results":[]}]}'>snyk-code.sarif
+          snyk code test --json > ${REPORT_DIR}/snyk-code.json || echo "{}" > ${REPORT_DIR}/snyk-code.json
+
+          # Snyk SCA (Dependencies)
+          snyk test --json > ${REPORT_DIR}/snyk-sca.json || echo "{}" > ${REPORT_DIR}/snyk-sca.json
+
+          # Snyk IaC (Terraform, Dockerfile, K8s)
+          snyk iac test --json > ${REPORT_DIR}/snyk-iac.json || echo "{}" > ${REPORT_DIR}/snyk-iac.json
+
+          # Guarantee JSON files never empty
+          [ -s ${REPORT_DIR}/snyk-code.json ] || echo "{}" > ${REPORT_DIR}/snyk-code.json
+          [ -s ${REPORT_DIR}/snyk-sca.json ] || echo "{}" > ${REPORT_DIR}/snyk-sca.json
+          [ -s ${REPORT_DIR}/snyk-iac.json ] || echo "{}" > ${REPORT_DIR}/snyk-iac.json
+
+      - name: Upload SARIF artifact (Snyk)
+        if: matrix.scan == 'snyk'
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sarif
+          path: snyk-code.sarif
+
+      # SonarQube
+      - name: SonarQube Analysis
+        if: matrix.scan == 'sonarqube'
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN:     ${{ secrets.SONAR_TOKEN }}
+        run: |
+          command -v sonar-scanner || exit 0
+          sonar-scanner \
+            -Dsonar.projectKey=vuln-bank \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.login="${SONAR_TOKEN}"
+
+      # Upload JSON artifacts
+      - name: Upload Reports
+        if: matrix.scan != 'sonarqube'
         uses: actions/upload-artifact@v4
         with:
           name: reports-${{ matrix.scan }}
           path: ${{ env.REPORT_DIR }}/*.json
 
 ################################################################################
-# 2) AI SECURITY & COMPOSITE GATE
+# 3) AI SECURITY (LLM + COLLECT SARIF)
 ################################################################################
-  ai_and_gate:
+  ai_security:
     needs: security_scans
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - name: Download Artifacts
+
+      - name: Download all artifacts (JSON + SARIF)
         uses: actions/download-artifact@v4
         with:
           path: all-reports
 
-      - name: Run AI & Risk Analysis
+      - name: Run LLM Security Pipeline
+        run: |
+          mkdir -p security-reports
+          ${PYTHON_BIN} scripts/llm_pipeline.py
+
+      - name: Collect SARIF (CodeQL + Snyk)
+        run: |
+          mkdir -p security-reports
+          find all-reports -type f -name "*.sarif" -exec cp {} security-reports/ \; || true
+          # Normalize empty SARIF files
+          for f in security-reports/*.sarif; do
+            [ -s "$f" ] || echo '{"runs":[{"results":[]}]}'>"$f"
+          done
+
+      - name: Upload AI Security Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-security
+          path: security-reports/*.json
+
+      - name: Normalize empty JSON files
+        run: |
+          echo "[Normalize] Ensuring no empty JSON files..."
+          find security-reports -type f -name "*.json" | while read f; do
+            if [ ! -s "$f" ]; then
+              echo "{}" > "$f"
+            fi
+          done
+
+################################################################################
+# 4) EPSS + KEV + Composite Security Gate
+################################################################################
+  composite_gate:
+    needs: ai_security
+    runs-on: self-hosted
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all reports for gate
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports
+
+      - name: EPSS Gate (autodiscovery Snyk + Trivy)
         run: |
           mkdir -p "${REPORT_DIR}"
-          # Jalankan skrip yang sudah Anda buat
-          ${PYTHON_BIN} scripts/llm_pipeline.py
-          ${PYTHON_BIN} scripts/epss_gate.py --threshold "${EPSS_THRESHOLD}" --output "${REPORT_DIR}/epss-findings.json" $(find all-reports -name "*.json" -printf "--input %p ")
-          ${PYTHON_BIN} scripts/composite_security_gate.py
-          ${PYTHON_BIN} scripts/render_composite_dashboard.py
+          ${PYTHON_BIN} scripts/epss_gate.py \
+            --threshold "${EPSS_THRESHOLD}" \
+            --output "${REPORT_DIR}/epss-findings.json" \
+            $(find all-reports -name "trivy-fs.json" -printf "--input %p " 2>/dev/null) \
+            $(find all-reports -name "trivy-image.json" -printf "--input %p " 2>/dev/null) \
+            $(find all-reports -name "snyk-sca.json" -printf "--input %p " 2>/dev/null) \
+            || true
 
-      # --- BEST PRACTICE: FEEDBACK LANGSUNG DI PR ---
+      - name: Run Composite Security Gate
+        run: |
+          ${PYTHON_BIN} scripts/composite_security_gate.py
+
+      - name: Render Composite Dashboard
+        run: |
+          export COMPOSITE_FINDINGS="security-reports/composite-findings.json"
+          export COMPOSITE_DASHBOARD="security-reports/composite-dashboard.md"
+          python3 scripts/render_composite_dashboard.py >> $GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: composite-dashboard
+          path: security-reports/composite-dashboard.md
+
+      - name: Fail if Composite Gate Failed
+        run: |
+          status=$(jq -r '.status' security-reports/composite-findings.json)
+          echo "Composite status: $status"
+          [[ "$status" == "FAIL" ]] && exit 1 || exit 0
+
+      - name: Prepare Summary JSON for PR
+        id: prsummary
+        run: |
+          echo "gate_status=$(jq -r '.status' security-reports/composite-findings.json)" >> $GITHUB_OUTPUT
+          echo "epss_hr=$(jq -c '.high_risk' security-reports/epss-findings.json)" >> $GITHUB_OUTPUT
+          echo "llm_out=$(jq -c '.' security-reports/llm-findings.json)" >> $GITHUB_OUTPUT
+
       - name: Post PR Dashboard
         if: github.event_name == 'pull_request'
         uses: thollander/actions-comment-pull-request@v2
         with:
           filePath: security-reports/composite-dashboard.md
-          comment_tag: security_dashboard
+          comment_tag: security_dashboard  # Tag agar komentar di-update, bukan spam komentar baru
           mode: upsert
 
-      - name: Check Gate Status
-        run: |
-          status=$(jq -r '.status' security-reports/composite-findings.json)
-          if [ "$status" == "FAIL" ]; then echo "Security Gate Failed!"; exit 1; fi
+      - name: Post PR Security Summary Comment
+        if: github.event_name == 'pull_request'
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          mode: upsert
+          create_if_not_exists: true
+          message: |
+            ## Security Summary
+
+            **Composite Gate Status:** `${{ steps.prsummary.outputs.gate_status }}`
+
+            ### High-Risk CVEs (EPSS ≥ ${{ env.EPSS_THRESHOLD }})
+            ```json
+            ${{ steps.prsummary.outputs.epss_hr }}
+            ```
+
+            ### LLM Security Findings
+            ```json
+            ${{ steps.prsummary.outputs.llm_out }}
+            ```
+
+            _Automated scan from DevSecOps pipeline._
 
 ################################################################################
-# 3) DEPLOYMENT (Conditional)
+# 5) BUILD + SIGN + SBOM
 ################################################################################
-  build_deploy:
-    needs: ai_and_gate
-    if: github.event.inputs.run_full_deploy == 'true' || github.ref == 'refs/heads/main'
+  build_and_sign:
+    needs: composite_gate
+    if: github.event.inputs.run_full_deploy == 'true'
+    runs-on: self-hosted
+
+    outputs:
+      image_ref: ${{ steps.export.outputs.image_ref }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install Syft + Cosign
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b $HOME/.local/bin
+          curl -sSfL \
+            https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+            -o $HOME/.local/bin/cosign
+          chmod +x $HOME/.local/bin/cosign
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Build & Push Image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          cache-from: type=registry,ref=${{ env.DOCKERHUB_REPO }}:latest
+          cache-to: type=inline
+          tags: |
+            ${{ env.DOCKERHUB_REPO }}:latest
+            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
+
+      - name: Export Image Ref
+        id: export
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          image_ref="${{ env.DOCKERHUB_REPO }}@${digest}"
+          echo "image_ref=${image_ref}" >> $GITHUB_OUTPUT
+          echo "IMAGE_REF=${image_ref}" >> $GITHUB_ENV
+          echo "[INFO] Image reference exported: $image_ref"
+
+      - name: Generate SBOM & Cosign Attestation
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -e
+          echo "[SBOM] Generating CycloneDX SBOM..."
+          syft "${IMAGE_REF}" -o cyclonedx-json=sbom.json
+
+          echo "[COSIGN] Signing image..."
+          cosign sign --yes "${IMAGE_REF}"
+
+          echo "[COSIGN] Attesting image with SBOM..."
+          cosign attest --yes \
+            --predicate sbom.json \
+            --type cyclonedx \
+            "${IMAGE_REF}"
+
+################################################################################
+# 6) DEPLOY (ANSIBLE)
+################################################################################
+  deploy:
+    needs: build_and_sign
+    if: needs.build_and_sign.result == 'success'
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - name: Docker Build & Sign
+
+      - name: Deploy Application
         run: |
-          docker build -t ${DOCKERHUB_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
-          # Tambahkan Cosign Sign di sini jika diperlukan
-      - name: Ansible Deploy
-        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-          -e "image_tag=${IMAGE_TAG}"
+            --private-key ~/.ssh/id_rsa \
+            -e "image_ref=${{ needs.build_and_sign.outputs.image_ref }}" \
+            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
 
 ################################################################################
-# 4) DAST & NOTIFY
+# 7) DAST (ZAP)
 ################################################################################
-  dast_and_notify:
-    needs: build_deploy
+  dast_scan:
+    needs: deploy
     runs-on: self-hosted
-    if: always()
     steps:
-      - name: ZAP DAST Scan
-        if: needs.build_deploy.result == 'success'
+      - name: ZAP Baseline Scan
         run: |
-          docker run --rm -v "$(pwd):/zap/wrk/" ghcr.io/zaproxy/zaproxy:stable \
-          zap-baseline.py -t "${APP_URL}" -J zap_report.json || true
+          docker run --rm --cpus="1.0" --memory="1g" -v "$(pwd):/zap/wrk/" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t "${APP_URL}" -J zap_report.json || true
 
+      - name: Upload to DefectDojo
+        run: |
+          [[ ! -f zap_report.json ]] && exit 0
+          curl -sS -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=ZAP Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement_name=DAST-${{ github.run_number }}" \
+            -F "verified=true" \
+            -F "file=@zap_report.json"
+
+      - run: docker image prune -f
+
+################################################################################
+# 8) NOTIFICATIONS
+################################################################################
+  notify:
+    needs: [composite_gate, deploy, dast_scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
       - name: Slack Notification
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_COLOR: ${{ needs.ai_and_gate.result == 'success' && 'good' || 'danger' }}
-          SLACK_MESSAGE: "VulnBank Security Report: ${{ needs.ai_and_gate.result }}"
+          SLACK_COLOR: ${{ contains(needs.*.result, 'failure') && 'danger' || 'good' }}
+          SLACK_TITLE: "VulnBank Security Report"
+          SLACK_MESSAGE: |
+            Pipeline Run ID: ${{ github.run_id }}
+            Composite Gate: ${{ needs.composite_gate.result }}
+            Deploy: ${{ needs.deploy.result }}
+            DAST: ${{ needs.dast_scan.result }}
+            Check GitHub Actions Summary for full security details.
