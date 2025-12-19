@@ -73,7 +73,6 @@ jobs:
       - name: Remove old CodeQL cache (critical)
         run: |
           rm -rf ~/.cache/codeql || true
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
@@ -207,7 +206,7 @@ jobs:
         if: matrix.scan == 'trivy'
         run: |
           trivy fs . --scanners vuln --format json --output ${REPORT_DIR}/trivy-fs.json || echo "{}" > ${REPORT_DIR}/trivy-fs.json
-          [ -s ${REPORT_DIR}/trivy-fs.json ] || echo "{}" > ${REPORT_DIR}/trivy-fs.json
+          [ -s ${REPORT_DIR}/trivy.json ] || echo "{}" > ${REPORT_DIR}/trivy.json
 
       - name: Trivy Image Scan
         if: matrix.scan == 'trivy'
@@ -215,12 +214,10 @@ jobs:
           IMAGE="${DOCKERHUB_REPO}:${IMAGE_TAG}"
           echo "[INFO] Pulling image for Trivy scan: $IMAGE"
           docker pull "$IMAGE" || true
-
           trivy image "$IMAGE" \
             --format json \
             --scanners vuln \
             --output ${REPORT_DIR}/trivy-image.json || echo "{}" > ${REPORT_DIR}/trivy-image.json
-
           [ -s ${REPORT_DIR}/trivy-image.json ] || echo "{}" > ${REPORT_DIR}/trivy-image.json
 
       # Snyk (full scan + fallback)
@@ -239,13 +236,10 @@ jobs:
           # Snyk Code (SAST)
           snyk code test --sarif > snyk-code.sarif || echo '{"runs":[{"results":[]}]}'>snyk-code.sarif
           snyk code test --json > ${REPORT_DIR}/snyk-code.json || echo "{}" > ${REPORT_DIR}/snyk-code.json
-
           # Snyk SCA (Dependencies)
           snyk test --json > ${REPORT_DIR}/snyk-sca.json || echo "{}" > ${REPORT_DIR}/snyk-sca.json
-
           # Snyk IaC (Terraform, Dockerfile, K8s)
           snyk iac test --json > ${REPORT_DIR}/snyk-iac.json || echo "{}" > ${REPORT_DIR}/snyk-iac.json
-
           # Guarantee JSON files never empty
           [ -s ${REPORT_DIR}/snyk-code.json ] || echo "{}" > ${REPORT_DIR}/snyk-code.json
           [ -s ${REPORT_DIR}/snyk-sca.json ] || echo "{}" > ${REPORT_DIR}/snyk-sca.json
@@ -321,7 +315,7 @@ jobs:
               echo "{}" > "$f"
             fi
           done
-
+          
 ################################################################################
 # 4) EPSS + KEV + Composite Security Gate
 ################################################################################
@@ -339,51 +333,42 @@ jobs:
         with:
           path: all-reports
 
-      - name: EPSS Gate (autodiscovery Snyk + Trivy, with fallback)
+      - name: EPSS Gate (autodiscovery Snyk + Trivy)
         run: |
           mkdir -p "${REPORT_DIR}"
 
-          echo "[EPSS] Discovering Trivy & Snyk SCA reports from all-reports..."
-          INPUT_ARGS=$(find all-reports -type f \( \
+          INPUT_ARGS=""
+          for f in $(find all-reports -type f \( \
               -name "trivy-fs.json" -o \
               -name "trivy-image.json" -o \
               -name "snyk-sca.json" \
-            \) -printf "--input %p " 2>/dev/null || true)
+            \) 2>/dev/null); do
+            INPUT_ARGS="$INPUT_ARGS --input $f"
+          done
 
-          if [ -z "${INPUT_ARGS}" ]; then
-            echo "[EPSS] No Trivy/Snyk SCA JSON found. Creating empty EPSS findings."
-            cat <<EOF > "${REPORT_DIR}/epss-findings.json"
-{"threshold":"${EPSS_THRESHOLD}","high_risk":[]}
-EOF
+          echo "[EPSS] Found inputs: $INPUT_ARGS"
+
+          if [ -z "$INPUT_ARGS" ]; then
+            echo '{"threshold":"'${EPSS_THRESHOLD}'","high_risk":[]}' > "${REPORT_DIR}/epss-findings.json"
           else
-            echo "[EPSS] Running EPSS gate with inputs: ${INPUT_ARGS}"
             ${PYTHON_BIN} scripts/epss_gate.py \
               --threshold "${EPSS_THRESHOLD}" \
               --output "${REPORT_DIR}/epss-findings.json" \
-              ${INPUT_ARGS} || true
+              $INPUT_ARGS || true
           fi
 
-          # Hard fallback to guarantee file exists & valid
-          if [ ! -s "${REPORT_DIR}/epss-findings.json" ]; then
-            echo "[EPSS] Fallback: writing minimal EPSS findings JSON."
-            cat <<EOF > "${REPORT_DIR}/epss-findings.json"
-{"threshold":"${EPSS_THRESHOLD}","high_risk":[]}
-EOF
-          fi
+          # fallback jika tidak ada file
+          [ -s "${REPORT_DIR}/epss-findings.json" ] || \
+            echo '{"threshold":"'${EPSS_THRESHOLD}'","high_risk":[]}' > "${REPORT_DIR}/epss-findings.json"
 
       - name: Run Composite Security Gate
-        env:
-          EPSS_FINDINGS: security-reports/epss-findings.json
-          LLM_FINDINGS: security-reports/llm-findings.json
-          COMPOSITE_THRESHOLD: ${{ env.COMPOSITE_THRESHOLD }}
         run: |
           ${PYTHON_BIN} scripts/composite_security_gate.py
 
       - name: Render Composite Dashboard
-        env:
-          COMPOSITE_FINDINGS: security-reports/composite-findings.json
-          COMPOSITE_DASHBOARD: security-reports/composite-dashboard.md
         run: |
+          export COMPOSITE_FINDINGS="security-reports/composite-findings.json"
+          export COMPOSITE_DASHBOARD="security-reports/composite-dashboard.md"
           python3 scripts/render_composite_dashboard.py >> $GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v4
@@ -404,6 +389,14 @@ EOF
           echo "epss_hr=$(jq -c '.high_risk' security-reports/epss-findings.json)" >> $GITHUB_OUTPUT
           echo "llm_out=$(jq -c '.' security-reports/llm-findings.json)" >> $GITHUB_OUTPUT
 
+      - name: Post PR Dashboard
+        if: github.event_name == 'pull_request'
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          filePath: security-reports/composite-dashboard.md
+          comment_tag: security_dashboard  # Tag agar komentar di-update, bukan spam komentar baru
+          mode: upsert
+
       - name: Post PR Security Summary Comment
         if: github.event_name == 'pull_request'
         uses: thollander/actions-comment-pull-request@v2
@@ -412,19 +405,15 @@ EOF
           create_if_not_exists: true
           message: |
             ## Security Summary
-
             **Composite Gate Status:** `${{ steps.prsummary.outputs.gate_status }}`
-
             ### High-Risk CVEs (EPSS ≥ ${{ env.EPSS_THRESHOLD }})
             ```json
             ${{ steps.prsummary.outputs.epss_hr }}
             ```
-
             ### LLM Security Findings
             ```json
             ${{ steps.prsummary.outputs.llm_out }}
             ```
-
             _Automated scan from DevSecOps pipeline._
 
 ################################################################################
@@ -488,10 +477,8 @@ EOF
           set -e
           echo "[SBOM] Generating CycloneDX SBOM..."
           syft "${IMAGE_REF}" -o cyclonedx-json=sbom.json
-
           echo "[COSIGN] Signing image..."
           cosign sign --yes "${IMAGE_REF}"
-
           echo "[COSIGN] Attesting image with SBOM..."
           cosign attest --yes \
             --predicate sbom.json \
@@ -513,7 +500,6 @@ EOF
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_rsa \
             -e "image_ref=${{ needs.build_and_sign.outputs.image_ref }}" \
@@ -521,133 +507,35 @@ EOF
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
 
 ################################################################################
-# 7) DAST (ZAP) - PRODUCE ARTIFACT ONLY
+# 7) DAST (ZAP)
 ################################################################################
   dast_scan:
     needs: deploy
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-
       - name: ZAP Baseline Scan
         run: |
-          mkdir -p "${REPORT_DIR}"
-          docker run --rm -v "$(pwd):/zap/wrk/" \
+          docker run --rm --cpus="1.0" --memory="1g" -v "$(pwd):/zap/wrk/" \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py -t "${APP_URL}" -J zap_report.json || true
 
-          if [ -f zap_report.json ]; then
-            mv zap_report.json "${REPORT_DIR}/zap_report.json"
-          else
-            echo "{}" > "${REPORT_DIR}/zap_report.json"
-          fi
-
-      - name: Upload ZAP Report Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports-zap
-          path: ${{ env.REPORT_DIR }}/zap_report.json
-
+      - name: Upload to DefectDojo
+        run: |
+          [[ ! -f zap_report.json ]] && exit 0
+          curl -sS -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=ZAP Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement_name=DAST-${{ github.run_number }}" \
+            -F "verified=true" \
+            -F "file=@zap_report.json"
       - run: docker image prune -f
 
 ################################################################################
-# 8) DEFECTDOJO IMPORT (PER SCAN TYPE)
-################################################################################
-  defectdojo_import:
-    needs: [composite_gate, dast_scan]
-    if: always()
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all reports for DefectDojo
-        uses: actions/download-artifact@v4
-        with:
-          path: all-reports
-
-      - name: Import scans into DefectDojo (per scan type)
-        env:
-          DD_URL: ${{ env.DEFECTDOJO_URL }}
-          DD_API_KEY: ${{ env.DEFECTDOJO_API_KEY }}
-          DD_PRODUCT_ID: ${{ env.DEFECTDOJO_PRODUCT_ID }}
-          DD_ENGAGEMENT_NAME: ${{ env.DEFECTDOJO_ENGAGEMENT_NAME }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "${DD_URL:-}" ] || [ -z "${DD_API_KEY:-}" ] || [ -z "${DD_PRODUCT_ID:-}" ]; then
-            echo "[DefectDojo] Missing configuration, skipping imports."
-            exit 0
-          fi
-
-          BASE_URL="${DD_URL%/}"
-
-          import_scan() {
-            local scan_type="$1"
-            local file="$2"
-
-            if [ ! -s "$file" ]; then
-              echo "[DefectDojo] Skip empty $scan_type -> $file"
-              return 0
-            fi
-
-            echo "[DefectDojo] Importing $scan_type from $file"
-            curl -sS -X POST "${BASE_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DD_API_KEY}" \
-              -F "scan_type=${scan_type}" \
-              -F "file=@${file}" \
-              -F "product=${DD_PRODUCT_ID}" \
-              -F "engagement_name=${DD_ENGAGEMENT_NAME}" \
-              -F "active=true" \
-              -F "verified=true" \
-              -F "close_old_findings=false" \
-              -F "push_to_jira=false" \
-              || echo "[DefectDojo] WARN: Failed import for ${scan_type}"
-          }
-
-          # Trivy (FS + Image)
-          find all-reports -type f \( -name "trivy-fs.json" -o -name "trivy-image.json" \) | while read f; do
-            import_scan "Trivy Scan" "$f"
-          done
-
-          # Snyk Code
-          find all-reports -type f -name "snyk-code.json" | while read f; do
-            import_scan "Snyk Scan" "$f"
-          done
-
-          # Snyk SCA
-          find all-reports -type f -name "snyk-sca.json" | while read f; do
-            import_scan "Snyk Scan" "$f"
-          done
-
-          # Snyk IaC
-          find all-reports -type f -name "snyk-iac.json" | while read f; do
-            import_scan "Snyk IaC Scan" "$f"
-          done
-
-          # Semgrep
-          find all-reports -type f -name "semgrep.json" | while read f; do
-            import_scan "Semgrep JSON Report" "$f"
-          done
-
-          # Checkov (Ansible + Dockerfile)
-          find all-reports -type f -name "checkov_ansible.json" | while read f; do
-            import_scan "Checkov Scan" "$f"
-          done
-
-          find all-reports -type f -name "checkov_docker.json" | while read f; do
-            import_scan "Checkov Scan" "$f"
-          done
-
-          # ZAP (DAST)
-          find all-reports -type f -name "zap_report.json" | while read f; do
-            import_scan "ZAP Scan" "$f"
-          done
-
-################################################################################
-# 9) NOTIFICATIONS
+# 8) NOTIFICATIONS
 ################################################################################
   notify:
-    needs: [composite_gate, deploy, dast_scan, defectdojo_import]
+    needs: [composite_gate, deploy, dast_scan]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -662,5 +550,4 @@ EOF
             Composite Gate: ${{ needs.composite_gate.result }}
             Deploy: ${{ needs.deploy.result }}
             DAST: ${{ needs.dast_scan.result }}
-            DefectDojo Import: ${{ needs.defectdojo_import.result }}
             Check GitHub Actions Summary for full security details.
