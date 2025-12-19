@@ -272,6 +272,9 @@ jobs:
   composite_gate:
     needs: ai_security
     runs-on: self-hosted
+    permissions:
+      pull-requests: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -315,20 +318,24 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: thollander/actions-comment-pull-request@v2
         with:
+          mode: upsert
+          create_if_not_exists: true
           message: |
-            ## Security Summary (Automated)
-            
+            ## Security Summary
+
             **Composite Gate Status:** `$(jq -r .status security-reports/composite-findings.json)`
 
-            **High-Risk CVEs (EPSS ≥ 0.5):**
+            ### High-Risk CVEs (EPSS ≥ ${EPSS_THRESHOLD})
             ```json
             $(jq '.high_risk' security-reports/epss-findings.json)
             ```
 
-            **LLM Security Findings (excerpt):**
+            ### LLM Security Findings
             ```json
             $(cat security-reports/llm-findings.json 2>/dev/null || echo "{}")
             ```
+
+            _Automated scan from DevSecOps pipeline._
 
 ################################################################################
 # 5) BUILD + SIGN + SBOM
