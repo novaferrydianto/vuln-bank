@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline (Self-Hosted Clean + Snyk)
+name: Vuln Bank DevSecOps Pipeline (Self-Hosted Complete)
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
 
 permissions:
   contents: read
-  security-events: write
   issues: write
+  security-events: write
   id-token: write
 
 concurrency:
@@ -22,33 +22,29 @@ env:
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
 
-  # Docker image
   IMAGE_REPO: ${{ secrets.DOCKERHUB_REPO }}
   IMAGE_TAG: ${{ github.sha }}
   DOCKERFILE_PATH: containers/app/Dockerfile
 
-  # DAST target (app running on VM2)
   DAST_TARGET_URL: http://192.168.107.135:5500
 
-  # Slack
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-  # SonarQube (VM4)
   SONAR_HOST_URL: "http://192.168.107.132:9000"
-  SONAR_PROJECT_KEY: "vuln-bank"
+  SONAR_PROJECT_KEY: vuln-bank
 
-  # DefectDojo
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
   DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
 jobs:
-  # ==========================================================
+
+  # =====================================================
   # 1. SECURITY SCANS
-  # ==========================================================
+  # =====================================================
   security_scans:
-    name: Security Scans (Secrets / SCA / SAST / Misconfig / SBOM / SonarQube / Snyk)
+    name: Security Scans (Secrets / SCA / SAST / Misconfig / SBOM / Snyk / SonarQube)
     runs-on: self-hosted
 
     steps:
@@ -59,9 +55,9 @@ jobs:
           mkdir -p ${REPORT_DIR}
           mkdir -p ${REPORT_DIR}/snyk
 
-      # ------------------------------
-      # Secret Scanning (Gitleaks)
-      # ------------------------------
+      # ---------------------------
+      # GITLEAKS
+      # ---------------------------
       - name: Secret Scan (Gitleaks)
         run: |
           gitleaks detect \
@@ -69,20 +65,20 @@ jobs:
             --report-format json \
             --report-path "${REPORT_DIR}/gitleaks.json" || true
 
-      # ------------------------------
-      # SCA Scan (Trivy FS)
-      # ------------------------------
-      - name: SCA Scan (Trivy filesystem)
+      # ---------------------------
+      # TRIVY FS (SCA)
+      # ---------------------------
+      - name: SCA Scan (Trivy FS)
         run: |
           trivy fs \
-            --security-checks vuln,secret \
+            --scanners vuln,secret \
             --format json \
             --output "${REPORT_DIR}/trivy-sca.json" \
             .
 
-      # ------------------------------
-      # SAST Python (Bandit)
-      # ------------------------------
+      # ---------------------------
+      # BANDIT
+      # ---------------------------
       - name: SAST Python (Bandit)
         run: |
           bandit -r \
@@ -90,22 +86,26 @@ jobs:
             containers/app containers/db \
             -f json -o "${REPORT_DIR}/bandit.json" || true
 
-      # ------------------------------
-      # SAST Multi-Language (Semgrep)
-      # ------------------------------
-      - name: SAST Semgrep
+      # ---------------------------
+      # SEMGREP FIXED
+      # ---------------------------
+      - name: SAST Semgrep (Fixed)
         run: |
-          semgrep --config auto \
-            --include app.py \
-            --include auth.py \
-            --include database.py \
-            --include-dir templates \
-            --include-dir static \
-            --json > "${REPORT_DIR}/semgrep.json" || true
+          semgrep scan \
+            --config auto \
+            --json \
+            app.py \
+            auth.py \
+            database.py \
+            containers/app \
+            containers/db \
+            templates \
+            static \
+            > "${REPORT_DIR}/semgrep.json" || true
 
-      # ------------------------------
-      # Misconfiguration (Trivy Config)
-      # ------------------------------
+      # ---------------------------
+      # TRIVY MISCONFIG
+      # ---------------------------
       - name: Misconfig Scan (Trivy Config)
         run: |
           trivy config \
@@ -113,21 +113,23 @@ jobs:
             --output "${REPORT_DIR}/trivy-misconfig.json" \
             .
 
-      # ------------------------------
-      # Misconfiguration (Checkov)
-      # ------------------------------
+      # ---------------------------
+      # CHECKOV
+      # ---------------------------
       - name: Misconfig Scan (Checkov)
-        run: checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
+        run: |
+          checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
 
-      # ------------------------------
-      # SBOM (Syft)
-      # ------------------------------
-      - name: Generate SBOM (Syft)
-        run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
+      # ---------------------------
+      # SYFT SBOM
+      # ---------------------------
+      - name: SBOM Scan (Syft)
+        run: |
+          syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
-      # ------------------------------
-      # SonarQube Scan
-      # ------------------------------
+      # ---------------------------
+      # SONARQUBE LOCAL
+      # ---------------------------
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -138,51 +140,59 @@ jobs:
             -Dsonar.host.url=${SONAR_HOST_URL} \
             -Dsonar.login=${SONAR_TOKEN}
 
-      # ------------------------------
-      # SNYK SECTION
-      # ------------------------------
+      # ---------------------------
+      # SNYK AUTH
+      # ---------------------------
       - name: Snyk Authenticate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk auth "${SNYK_TOKEN}"
+        run: snyk auth "$SNYK_TOKEN"
 
-      # Snyk SCA
-      - name: Snyk SCA (Python)
+      # ---------------------------
+      # SNYK SCA
+      # ---------------------------
+      - name: Snyk SCA (pip)
         run: |
           snyk test \
             --file=requirements.txt \
             --package-manager=pip \
             --json > "${REPORT_DIR}/snyk/snyk-sca.json" || true
 
-      # Snyk Code (SAST)
-      - name: Snyk Code Scan
-        run: snyk code test --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
+      # ---------------------------
+      # SNYK SAST
+      # ---------------------------
+      - name: Snyk Code Test (SAST)
+        run: |
+          snyk code test \
+            --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
 
-      # Snyk Container
+      # ---------------------------
+      # SNYK CONTAINER
+      # ---------------------------
       - name: Snyk Container Scan
         run: |
           snyk container test "${IMAGE_REPO}:${IMAGE_TAG}" \
             --file=${DOCKERFILE_PATH} \
             --json > "${REPORT_DIR}/snyk/snyk-container.json" || true
 
-      # ------------------------------
-      # Upload Reports
-      # ------------------------------
+      # ---------------------------
+      # UPLOAD REPORTS
+      # ---------------------------
       - uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-  # ==========================================================
-  # 2. EPSS GATE (BLOCK DEPLOYMENT)
-  # ==========================================================
+  # =====================================================
+  # 2. EPSS GATE
+  # =====================================================
   epss_gate:
     name: EPSS Gate
     runs-on: self-hosted
     needs: security_scans
 
     outputs:
-      can_deploy: ${{ steps.gate.outputs.can_deploy }}
+      can_deploy: ${{ steps.decision.outputs.can_deploy }}
 
     steps:
       - uses: actions/checkout@v4
@@ -192,35 +202,33 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Run EPSS Gate
-        id: epss
+      - name: EPSS Gate Execution
         run: |
           python3 scripts/epss_gate.py \
             --input "${REPORT_DIR}/trivy-sca.json" \
             --output "${REPORT_DIR}/epss-findings.json" \
-            --threshold "${EPSS_THRESHOLD}" || exit 1
+            --threshold "${EPSS_THRESHOLD}"
 
-      - name: Set Deployment Gate
-        id: gate
+      - name: Decision
+        id: decision
         run: echo "can_deploy=true" >> "$GITHUB_OUTPUT"
 
-  # ==========================================================
-  # 3. BUILD & PUSH DOCKER IMAGE
-  # ==========================================================
+  # =====================================================
+  # 3. BUILD & PUSH
+  # =====================================================
   build_and_push:
     name: Build & Push Docker Image
     runs-on: self-hosted
     needs: epss_gate
-
     if: needs.epss_gate.outputs.can_deploy == 'true'
 
     outputs:
-      image: ${{ steps.image_ref.outputs.image }}
+      image: ${{ steps.out.outputs.image }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docker login
+      - name: Docker Login
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" \
             | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
@@ -231,18 +239,17 @@ jobs:
       - name: Push image
         run: docker push ${IMAGE_REPO}:${IMAGE_TAG}
 
-      - name: Export image ref
-        id: image_ref
+      - name: Output image
+        id: out
         run: echo "image=${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-  # ==========================================================
-  # 4. DEPLOY VIA ANSIBLE (VM2 & VM3)
-  # ==========================================================
+  # =====================================================
+  # 4. DEPLOY (ANSIBLE)
+  # =====================================================
   deploy:
-    name: Deploy to VMs with Ansible
+    name: Deploy to VMs (Ansible)
     runs-on: self-hosted
     needs: build_and_push
-
     if: github.ref == 'refs/heads/main'
 
     steps:
@@ -254,7 +261,7 @@ jobs:
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_ansible
           chmod 600 ~/.ssh/id_ansible
 
-      - name: Deploy with Ansible
+      - name: Deploy via Ansible
         run: |
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_ansible \
@@ -265,9 +272,9 @@ jobs:
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
 
-  # ==========================================================
-  # 5. DAST (OWASP ZAP)
-  # ==========================================================
+  # =====================================================
+  # 5. DAST SCAN
+  # =====================================================
   dast:
     name: DAST Scan (OWASP ZAP)
     runs-on: self-hosted
@@ -276,7 +283,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run ZAP Baseline
+      - name: Run ZAP DAST
         run: |
           docker compose -f docker-compose.dast.yml down || true
           docker compose -f docker-compose.dast.yml up --abort-on-container-exit
@@ -287,11 +294,11 @@ jobs:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
 
-  # ==========================================================
-  # 6. DEFECTDOJO IMPORT
-  # ==========================================================
+  # =====================================================
+  # 6. DEFECTDOJO IMPORT (ZAP + SNYK)
+  # =====================================================
   defectdojo_import:
-    name: Import to DefectDojo
+    name: Import Scan Results to DefectDojo
     runs-on: self-hosted
     needs: dast
 
@@ -308,24 +315,77 @@ jobs:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
 
-      - name: Skip if DefectDojo variables missing
+      - name: Check ENV
         run: |
           if [ -z "${DEFECTDOJO_URL}" ] || [ -z "${DEFECTDOJO_API_KEY}" ]; then
-             echo "DefectDojo variables not set. Skipping import."
-             exit 0
+            echo "Missing DefectDojo credentials. Skipping import."
+            exit 0
           fi
 
-      - name: Import ZAP to DefectDojo
+      # ---------------------------
+      # ZAP
+      # ---------------------------
+      - name: Import ZAP Scan to DefectDojo
         run: |
-          if [ -f "${REPORT_DIR}/zap/zap_alerts.json" ]; then
+          FILE="${REPORT_DIR}/zap/zap_alerts.json"
+          if [ -f "$FILE" ]; then
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=ZAP Scan" \
-              -F "file=@${REPORT_DIR}/zap/zap_alerts.json" \
+              -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
               -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
               -F "active=true" \
               -F "verified=true"
-          else
-            echo "No ZAP report found, skipping."
+          fi
+
+      # ---------------------------
+      # SNYK SCA
+      # ---------------------------
+      - name: Import Snyk SCA to DefectDojo
+        run: |
+          FILE="${REPORT_DIR}/snyk/snyk-sca.json"
+          if [ -f "$FILE" ]; then
+            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+              -F "scan_type=Snyk Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+              -F "active=true" \
+              -F "verified=true"
+          fi
+
+      # ---------------------------
+      # SNYK CODE
+      # ---------------------------
+      - name: Import Snyk Code Scan to DefectDojo
+        run: |
+          FILE="${REPORT_DIR}/snyk/snyk-sast.json"
+          if [ -f "$FILE" ]; then
+            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+              -F "scan_type=Snyk Code Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+              -F "active=true" \
+              -F "verified=true"
+          fi
+
+      # ---------------------------
+      # SNYK CONTAINER
+      # ---------------------------
+      - name: Import Snyk Container Scan to DefectDojo
+        run: |
+          FILE="${REPORT_DIR}/snyk/snyk-container.json"
+          if [ -f "$FILE" ]; then
+            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+              -F "scan_type=Snyk Container Scan" \
+              -F "file=@${FILE}" \
+              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+              -F "active=true" \
+              -F "verified=true"
           fi
