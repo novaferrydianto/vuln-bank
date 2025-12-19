@@ -420,6 +420,7 @@ jobs:
         id: export
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
+
           if [ -z "$DIGEST" ]; then
             echo "WARN: digest empty, fallback to tag"
             IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
@@ -427,8 +428,9 @@ jobs:
             IMAGE_REF="${IMAGE_REPO}@${DIGEST}"
           fi
 
-          echo "image_ref=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TO_SIGN=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_ENV
+          echo "IMAGE_REF_RESOLVED=${IMAGE_REF}"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> "$GITHUB_ENV"
 
       - name: Generate SBOM (CycloneDX)
         run: syft "${IMAGE_TO_SIGN}" -o cyclonedx-json=sbom.json
@@ -461,16 +463,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify Signed Image
+      - name: Verify Signed Image (Strict Keyless)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          
+
+          IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
+          if [ -z "$IMAGE_REF" ]; then
+            echo "ERROR: IMAGE_REF is empty, cannot verify"
+            exit 1
+          fi
+
           cosign verify \
             --certificate-identity "https://github.com/novaferrydianto/vuln-bank/.github/workflows/devsecops.yml@refs/heads/main" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github\.com/novaferrydianto/vuln-bank/\.github/workflows/.*\.yml@refs/heads/main$" \
-            --insecure-ignore-tlog \
-            "${{ needs.build_and_sign.outputs.image_ref }}"
+            "$IMAGE_REF"
 
       - name: Execute Ansible Deployment
         env:
