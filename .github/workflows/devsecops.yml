@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline (v3.6 Copilot Edition)
+name: Vuln Bank DevSecOps Pipeline
 
 on:
   pull_request:
@@ -56,16 +56,26 @@ jobs:
 # 0) AUTO-FIX (Copilot Autofix)
 ################################################################################
   autofix:
-    name: Copilot Autofix (Optional)
+    name: Copilot Autofix (via CodeQL)
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      pull-requests: write
+      contents: write
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Run Copilot Autofix
-        uses: github/copilot-autofix-action@v1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
         with:
-          apply: true
+          languages: python # Sesuaikan dengan bahasa Vuln Bank (Python)
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
 
 ################################################################################
 # 1) SETUP
@@ -196,17 +206,24 @@ jobs:
         with:
           path: all-reports
 
-      # LLM SECURITY SCAN
+      # STEP 1: LLM SECURITY SCAN
       - name: Run LLM Security Pipeline
         run: |
           ${PYTHON_BIN} scripts/llm_pipeline.py
 
-      # Copilot Security Scan
-      - name: GitHub Copilot Security Scan
-        uses: github/copilot-analysis-action@v1
-        with:
-          output: ${{ env.COPILOT_SECURITY_REPORT }}
+      # STEP 2: COPY CODEQL SARIF (already generated in previous job)
+      - name: Copy CodeQL SARIF for Composite Gate
+        run: |
+          mkdir -p security-reports
+          CODEQL_SARIF_FILE="$(find all-reports -name '*.sarif' | head -n 1 || true)"
+          if [ -z "$CODEQL_SARIF_FILE" ]; then
+            echo "[WARN] No CodeQL SARIF found, creating empty SARIF."
+            echo '{"runs":[{"results":[]}]}'>security-reports/codeql-results.sarif
+          else
+            cp "$CODEQL_SARIF_FILE" security-reports/codeql-results.sarif
+          fi
 
+      # Upload AI Security Report
       - name: Upload AI Reports
         uses: actions/upload-artifact@v4
         with:
@@ -237,9 +254,9 @@ jobs:
 
       - name: Render Composite Dashboard
         run: |
-          COMPOSITE_FINDINGS="security-reports/composite-findings.json" \
-          COMPOSITE_DASHBOARD="security-reports/composite-dashboard.md" \
-          ${PYTHON_BIN} scripts/render_composite_dashboard.py
+          export COMPOSITE_FINDINGS="security-reports/epss-findings.json"
+          export COMPOSITE_DASHBOARD="security-reports/composite-dashboard.md"
+          python3 scripts/render_composite_dashboard.py >> $GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v4
         with:
@@ -355,3 +372,18 @@ jobs:
 
       - run: docker image prune -f
 
+################################################################################
+# 8) NOTIFICATIONS
+################################################################################
+  notify:
+    needs: [composite_gate, deploy, dast_scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack Notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_COLOR: ${{ contains(needs.*.result, 'failure') && 'danger' || 'good' }}
+          SLACK_TITLE: "VulnBank Security Report"
+          SLACK_MESSAGE: "Pipeline Status: ${{ github.run_id }}\nCheck GitHub Actions Summary for Details."
