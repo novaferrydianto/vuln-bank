@@ -392,35 +392,33 @@ jobs:
           chmod +x $HOME/.local/bin/cosign
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Build and Push
+      - name: Build Image
+        run: |
+          docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
+
+      - name: Push Image
+        run: |
+          docker push ${IMAGE_REPO}:${IMAGE_TAG}
+
+      - name: Get Digest
         id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ env.DOCKERFILE_PATH }}
-          push: true
-          tags: |
-            ${{ env.IMAGE_REPO }}:latest
-            ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${IMAGE_REPO}:${IMAGE_TAG})
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "IMAGE_REF=$DIGEST" >> $GITHUB_ENV
 
       - name: Export Image Ref
         id: export
         run: |
-          DIGEST="${{ steps.build.outputs.digest }}"
-
-          if [ -z "$DIGEST" ]; then
-            echo "WARNING: digest empty — fallback to tag"
-            IMAGE_REF="$IMAGE_REPO:$IMAGE_TAG"
-          else
-            IMAGE_REF="$IMAGE_REPO@$DIGEST"
-          fi
-
+          IMAGE_REF="${{ steps.build.outputs.digest }}"
           echo "Resolved IMAGE_REF = $IMAGE_REF"
 
-          # WAJIB: output untuk job
-          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          if [ -z "$IMAGE_REF" ]; then
+            echo "FATAL: digest not found!"
+            exit 1
+          fi
 
-          # WAJIB: env untuk job berikutnya
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
           echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
 
