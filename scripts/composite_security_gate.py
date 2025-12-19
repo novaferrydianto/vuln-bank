@@ -1,66 +1,55 @@
 #!/usr/bin/env python3
-import json
-import os
-from pathlib import Path
+import os, json, datetime
 
-REPORT_DIR = Path("security-reports")
-EPSS_FILE = REPORT_DIR / "epss-findings.json"
-LLM_FILE = REPORT_DIR / "llm-findings.json"
-CODEQL_FILE = REPORT_DIR / "codeql-results.sarif"
-
-COMPOSITE_OUT = REPORT_DIR / "composite-findings.json"
-THRESHOLD = float(os.getenv("COMPOSITE_THRESHOLD", "0.65"))
-
-
-def safe_json(path: Path) -> dict:
-    if not path.exists():
+def load_json(path):
+    if not os.path.isfile(path):
         return {}
-    try:
-        text = path.read_text().strip()
-        return json.loads(text) if text else {}
-    except Exception:
-        return {}
-
-
-def load_sarif(path: Path) -> int:
-    data = safe_json(path)
-    runs = data.get("runs", [])
-    if not runs:
-        return 0
-    return len(runs[0].get("results", []))
-
-
-def compute_risk() -> dict:
-    epss = safe_json(EPSS_FILE)
-    llm = safe_json(LLM_FILE)
-    codeql_count = load_sarif(CODEQL_FILE)
-
-    high_epss = len(epss.get("high_risk", []))
-    llm_issues = len(llm.get("issues", [])) if isinstance(llm, dict) else 0
-
-    score = (
-        (1 if high_epss > 0 else 0) * 0.5
-        + (1 if codeql_count > 0 else 0) * 0.3
-        + (1 if llm_issues > 0 else 0) * 0.2
-    )
-
-    status = "FAIL" if score >= THRESHOLD else "PASS"
-
-    return {
-        "score": round(score, 4),
-        "status": status,
-        "epss_high": high_epss,
-        "codeql_findings": codeql_count,
-        "llm_issues": llm_issues,
-        "threshold": THRESHOLD,
-    }
-
+    with open(path) as f:
+        return json.load(f)
 
 def main():
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    result = compute_risk()
-    COMPOSITE_OUT.write_text(json.dumps(result, indent=2))
+    REPORT = os.environ.get("REPORT_DIR", "security-reports")
+    path = f"{REPORT}/epss-findings.json"
 
+    data = load_json(path)
+
+    threshold = data.get("threshold", 0)
+    total = data.get("total_trivy_high_crit", 0)
+    high_risk = data.get("high_risk", [])
+
+    ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    print(f"## 🛡️ Security Intelligence Dashboard\n")
+    print(f"Generated at: `{ts}`  ")
+    print(f"EPSS Threshold: `{threshold}`  \n")
+
+    print("### 📊 Summary Statistics\n")
+    print(f"- 🔍 **Total Unique CVEs:** {total}")
+    print(f"- ⚠️ **High-Risk Findings:** {len(high_risk)}")
+    print(f"- 🎛️ **Gate Status:** {'❌ FAIL' if len(high_risk)>0 else '✅ PASS'}\n")
+
+    print("### 🧨 High-Risk Vulnerabilities (Prioritized)\n")
+
+    if len(high_risk) == 0:
+        print("| Severity | CVE ID | EPSS Score | CVSS | Reasons | Sources |")
+        print("|----------|--------|-------------|------|----------|---------|")
+        print("| - | No high-risk vulnerabilities found | - | - | - | - |")
+        return
+
+    print("| Severity | CVE ID | EPSS Score | CVSS | Reasons | Sources |")
+    print("|----------|--------|-------------|------|----------|---------|")
+
+    for item in high_risk:
+        sev = item.get("severity", "-")
+        cve = item.get("cve", "-")
+        epss = item.get("epss", "-")
+        cvss = item.get("cvss", "-")
+        reasons = ",".join(item.get("reasons", []))
+        pkg = item.get("pkg_name", "-")
+
+        print(f"| {sev} | {cve} | {epss} | {cvss} | {reasons} | {pkg} |")
+
+    print("\n_Summary generated at run-time_")
 
 if __name__ == "__main__":
     main()

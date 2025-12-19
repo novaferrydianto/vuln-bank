@@ -39,12 +39,11 @@ env:
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
 jobs:
-
   # =====================================================
   # 1. SECURITY SCANS
   # =====================================================
   security_scans:
-    name: Security Scans (Secrets / SCA / SAST / Misconfig / SBOM / Snyk / SonarQube)
+    name: Security Scans
     runs-on: self-hosted
 
     steps:
@@ -52,8 +51,8 @@ jobs:
 
       - name: Prepare directories
         run: |
-          mkdir -p ${REPORT_DIR}
-          mkdir -p ${REPORT_DIR}/snyk
+          mkdir -p "${REPORT_DIR}"
+          mkdir -p "${REPORT_DIR}/snyk"
 
       - name: Secret Scan (Gitleaks)
         run: |
@@ -77,7 +76,7 @@ jobs:
             containers/app containers/db \
             -f json -o "${REPORT_DIR}/bandit.json" || true
 
-      - name: SAST Semgrep (Fixed)
+      - name: SAST Semgrep
         run: |
           semgrep scan \
             --config auto \
@@ -145,7 +144,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
   # =====================================================
-  # 2. EPSS GATE
+  # 2. EPSS GATE + DASHBOARD
   # =====================================================
   epss_gate:
     name: EPSS Gate
@@ -168,14 +167,24 @@ jobs:
           python3 scripts/epss_gate.py \
             --input "${REPORT_DIR}/trivy-sca.json" \
             --output "${REPORT_DIR}/epss-findings.json" \
-            --threshold "${EPSS_THRESHOLD}"
+            --threshold "${EPSS_THRESHOLD}" || true
+
+      - name: EPSS Dashboard Summary
+        run: |
+          python3 scripts/composite_security_gate.py >> "$GITHUB_STEP_SUMMARY"
 
       - name: Decision
         id: decision
-        run: echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+        run: |
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+            echo "can_deploy=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
 
   # =====================================================
-  # 3. NOTIFICATION (CRITICAL + EPSS HIGH)
+  # 3. SLACK NOTIFY
   # =====================================================
   notify:
     name: Slack Notification (Critical or EPSS High)
@@ -193,90 +202,102 @@ jobs:
       - name: Parse Findings
         id: parse
         run: |
-          CRIT_FOUND="false"
-          EPSS_FOUND="false"
+          CRIT=false
+          EPSS=false
 
           if jq -e '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH")' \
-            "${REPORT_DIR}/trivy-sca.json" >/dev/null 2>&1; then
-            CRIT_FOUND="true"
+             "${REPORT_DIR}/trivy-sca.json" >/dev/null 2>&1; then
+             CRIT=true
           fi
 
-          for f in "${REPORT_DIR}/snyk/snyk-sca.json" \
-                   "${REPORT_DIR}/snyk/snyk-sast.json" \
-                   "${REPORT_DIR}/snyk/snyk-container.json"; do
-            if [ -f "$f" ]; then
-              if jq -e '.vulnerabilities[] | select(.severity=="high" or .severity=="critical")' \
-                "$f" >/dev/null 2>&1; then
-                CRIT_FOUND="true"
-              fi
-            fi
-          done
-
-          if jq -e '.results[] | select(.extra.severity=="ERROR" or .extra.severity=="WARNING")' \
-            "${REPORT_DIR}/semgrep.json" >/dev/null 2>&1; then
-            CRIT_FOUND="true"
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+             EPSS=true
           fi
 
-          if jq -e '.high_risk | length > 0' \
-            "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
-            EPSS_FOUND="true"
-          fi
-
-          echo "crit=$CRIT_FOUND" >> "$GITHUB_OUTPUT"
-          echo "epss=$EPSS_FOUND" >> "$GITHUB_OUTPUT"
+          echo "crit=$CRIT" >> "$GITHUB_OUTPUT"
+          echo "epss=$EPSS" >> "$GITHUB_OUTPUT"
 
       - name: Send Slack Alert
         if: steps.parse.outputs.crit == 'true' || steps.parse.outputs.epss == 'true'
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           TEXT="⚠️ *Vuln Bank Security Alert* ⚠️"
-
           if [ "${{ steps.parse.outputs.crit }}" = "true" ]; then
-            TEXT="$TEXT\n• *Critical/High vulnerabilities detected*"
+            TEXT="$TEXT\n• Critical/High vulnerabilities detected"
           fi
-
           if [ "${{ steps.parse.outputs.epss }}" = "true" ]; then
-            TEXT="$TEXT\n• *EPSS High-Risk CVEs detected (>= ${EPSS_THRESHOLD})*"
+            TEXT="$TEXT\n• EPSS High-Risk CVEs detected"
           fi
-
-          TEXT="$TEXT\n\nCommit: $GITHUB_SHA\nRepo: $GITHUB_REPOSITORY"
-
           curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\": \"$TEXT\"}" "$SLACK_WEBHOOK_URL"
+            --data "{\"text\": \"$TEXT\"}" \
+            $SLACK_WEBHOOK_URL
 
   # =====================================================
-  # 4. BUILD & PUSH
+  # 4. CREATE GITHUB ISSUES
+  # =====================================================
+  create_issues:
+    name: Create GitHub Issues (High / Critical / EPSS High)
+    runs-on: self-hosted
+    needs: [security_scans, epss_gate]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Create Issues from EPSS + SCA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 scripts/epss_create_issues.py \
+            --repo "$REPO" \
+            --epss "${REPORT_DIR}/epss-findings.json" \
+            --snyk-sca "${REPORT_DIR}/snyk/snyk-sca.json"
+
+  # =====================================================
+  # 5. BUILD + PUSH + COSIGN SIGN
   # =====================================================
   build_and_push:
-    name: Build & Push Docker Image
+    name: Build & Push Docker Image (with Cosign Sign)
     runs-on: self-hosted
-    needs: [epss_gate, notify]
+    needs: [epss_gate, notify, create_issues]
     if: needs.epss_gate.outputs.can_deploy == 'true'
 
     outputs:
-      image: ${{ steps.out.outputs.image }}
+      image_ref: ${{ steps.img.outputs.image_ref }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Docker Login
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
-            | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" |
+            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Build image
+      - name: Build Image
         run: docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
 
-      - name: Push image
+      - name: Push Image
         run: docker push ${IMAGE_REPO}:${IMAGE_TAG}
 
-      - name: Output image
-        id: out
-        run: echo "image=${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+      - name: Cosign Sign (Keyless Signing)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign \
+            --keyless \
+            ${IMAGE_REPO}:${IMAGE_TAG}
+
+      - name: Set image_ref output
+        id: img
+        run: |
+          echo "image_ref=${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
   # =====================================================
-  # 5. DEPLOY (ANSIBLE)
+  # 6. DEPLOY (VERIFY COSIGN BEFORE DEPLOY)
   # =====================================================
   deploy:
     name: Deploy to VMs (Ansible)
@@ -287,7 +308,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup SSH Key
+      - name: Verify Cosign Signature (Keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign verify \
+            --keyless \
+            ${{ needs.build_and_push.outputs.image_ref }}
+
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_ansible
@@ -297,7 +326,7 @@ jobs:
         run: |
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
             --private-key ~/.ssh/id_ansible \
-            -e "image_ref=${{ needs.build_and_push.outputs.image }}" \
+            -e "image_ref=${{ needs.build_and_push.outputs.image_ref }}" \
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
@@ -305,7 +334,7 @@ jobs:
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
 
   # =====================================================
-  # 6. DAST SCAN
+  # 7. DAST ZAP
   # =====================================================
   dast:
     name: DAST Scan (OWASP ZAP)
@@ -327,7 +356,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}/zap
 
   # =====================================================
-  # 7. DEFECTDOJO IMPORT (ZAP + SNYK)
+  # 8. DEFECTDOJO IMPORT
   # =====================================================
   defectdojo_import:
     name: Import Scan Results to DefectDojo
@@ -347,14 +376,7 @@ jobs:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
 
-      - name: Check ENV
-        run: |
-          if [ -z "${DEFECTDOJO_URL}" ] || [ -z "${DEFECTDOJO_API_KEY}" ]; then
-            echo "Missing DefectDojo credentials. Skipping import."
-            exit 0
-          fi
-
-      - name: Import ZAP Scan
+      - name: Import ZAP Report
         run: |
           FILE="${REPORT_DIR}/zap/zap_alerts.json"
           if [ -f "$FILE" ]; then
@@ -377,12 +399,10 @@ jobs:
               -F "scan_type=Snyk Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-              -F "active=true" \
-              -F "verified=true"
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
 
-      - name: Import Snyk Code Scan
+      - name: Import Snyk SAST
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-sast.json"
           if [ -f "$FILE" ]; then
@@ -391,12 +411,10 @@ jobs:
               -F "scan_type=Snyk Code Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-              -F "active=true" \
-              -F "verified=true"
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
 
-      - name: Import Snyk Container Scan
+      - name: Import Snyk Container
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-container.json"
           if [ -f "$FILE" ]; then
@@ -405,7 +423,25 @@ jobs:
               -F "scan_type=Snyk Container Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-              -F "active=true" \
-              -F "verified=true"
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
           fi
+
+  # =====================================================
+  # 9. DEFECTDOJO CLEANUP (ENGAGEMENT + FINDINGS)
+  # =====================================================
+  cleanup_defectdojo:
+    name: Cleanup & Enrich DefectDojo
+    runs-on: self-hosted
+    needs: defectdojo_import
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cleanup DefectDojo
+        run: python3 scripts/cleanup_defectdojo.py
+        env:
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+          DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
