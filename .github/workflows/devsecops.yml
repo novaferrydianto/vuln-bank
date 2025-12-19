@@ -294,7 +294,6 @@ jobs:
     name: Import to DefectDojo
     runs-on: self-hosted
     needs: dast
-    if: env.DEFECTDOJO_URL != '' && env.DEFECTDOJO_API_KEY != ''
 
     steps:
       - uses: actions/checkout@v4
@@ -309,6 +308,13 @@ jobs:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
 
+      - name: Skip if DefectDojo variables missing
+        run: |
+          if [ -z "${DEFECTDOJO_URL}" ] || [ -z "${DEFECTDOJO_API_KEY}" ]; then
+             echo "DefectDojo variables not set. Skipping import."
+             exit 0
+          fi
+
       - name: Import ZAP to DefectDojo
         run: |
           if [ -f "${REPORT_DIR}/zap/zap_alerts.json" ]; then
@@ -320,4 +326,6 @@ jobs:
               -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
               -F "active=true" \
               -F "verified=true"
+          else
+            echo "No ZAP report found, skipping."
           fi
