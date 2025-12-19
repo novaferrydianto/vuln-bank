@@ -173,6 +173,7 @@ jobs:
           FILE="${REPORT_DIR}/bandit.json"
           if [ -f "$FILE" ]; then
             curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=Bandit Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
@@ -420,6 +421,13 @@ jobs:
         id: export
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
+          if [ -z "$DIGEST" ]; then
+            echo "WARN: digest empty, fallback to tag"
+            IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
+          else
+            IMAGE_REF="${IMAGE_REPO}@${DIGEST}"
+          fi
+          
           echo "image_ref=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_OUTPUT
           echo "IMAGE_TO_SIGN=${IMAGE_REPO}@${DIGEST}" >> $GITHUB_ENV
 
@@ -432,7 +440,7 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           cosign sign --yes "${IMAGE_TO_SIGN}"
-          cosign attest --yes \
+          cosign attest \
             --predicate sbom.json \
             --type cyclonedx \
             "${IMAGE_TO_SIGN}"
@@ -457,7 +465,7 @@ jobs:
       - name: Verify Signed Image
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          cosign verify --yes "${{ needs.build_and_sign.outputs.image_ref }}"
+          cosign verify "${{ needs.build_and_sign.outputs.image_ref }}"
 
       - name: Execute Ansible Deployment
         env:
