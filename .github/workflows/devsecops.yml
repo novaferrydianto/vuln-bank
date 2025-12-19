@@ -145,6 +145,7 @@ jobs:
           trufflehog git file://$(pwd) \
             --json --only-verified --no-update \
             > ${REPORT_DIR}/trufflehog.json || true
+          [ -s ${REPORT_DIR}/trufflehog.json ] || echo "{}" > ${REPORT_DIR}/trufflehog.json
 
       # Semgrep
       - name: Semgrep
@@ -155,6 +156,7 @@ jobs:
             --config p/security-audit \
             --config p/python \
             --json > ${REPORT_DIR}/semgrep.json || true
+          [ -s ${REPORT_DIR}/semgrep.json ] || echo "{}" > ${REPORT_DIR}/semgrep.json
 
       # Checkov
       - name: Checkov
@@ -162,25 +164,36 @@ jobs:
         run: |
           checkov -d ansible --output json > ${REPORT_DIR}/checkov_ansible.json || true
           checkov -f "${DOCKERFILE_PATH}" --output json > ${REPORT_DIR}/checkov_docker.json || true
+          [ -s ${REPORT_DIR}/checkov_ansible.json ] || echo "{}" > ${REPORT_DIR}/checkov_ansible.json
+          [ -s ${REPORT_DIR}/checkov_docker.json ] || echo "{}" > ${REPORT_DIR}/checkov_docker.json
 
       # Trivy
       - name: Trivy Config
         if: matrix.scan == 'trivy'
         run: |
-          trivy config . \
-            --format json \
-            --output ${REPORT_DIR}/trivy.json || true
+          trivy config . --format json --output ${REPORT_DIR}/trivy.json || true
+          [ -s ${REPORT_DIR}/trivy.json ] || echo "{}" > ${REPORT_DIR}/trivy.json
 
-      # Snyk
+      # Snyk (full scan + fallback)
       - name: Snyk Scan
         if: matrix.scan == 'snyk'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
+          # Snyk Code (SAST)
           snyk code test --sarif > snyk-code.sarif || echo '{"runs":[{"results":[]}]}'>snyk-code.sarif
-          snyk code test --json > ${REPORT_DIR}/snyk-code.json || true
-          snyk test --json > ${REPORT_DIR}/snyk-sca.json || true
-          snyk iac test --json > ${REPORT_DIR}/snyk-iac.json || true
+          snyk code test --json > ${REPORT_DIR}/snyk-code.json || echo "{}" > ${REPORT_DIR}/snyk-code.json
+
+          # Snyk SCA (Dependencies)
+          snyk test --json > ${REPORT_DIR}/snyk-sca.json || echo "{}" > ${REPORT_DIR}/snyk-sca.json
+
+          # Snyk IaC (Terraform, Dockerfile, K8s)
+          snyk iac test --json > ${REPORT_DIR}/snyk-iac.json || echo "{}" > ${REPORT_DIR}/snyk-iac.json
+
+          # Guarantee JSON files never empty
+          [ -s ${REPORT_DIR}/snyk-code.json ] || echo "{}" > ${REPORT_DIR}/snyk-code.json
+          [ -s ${REPORT_DIR}/snyk-sca.json ] || echo "{}" > ${REPORT_DIR}/snyk-sca.json
+          [ -s ${REPORT_DIR}/snyk-iac.json ] || echo "{}" > ${REPORT_DIR}/snyk-iac.json
 
       - name: Upload SARIF artifact (Snyk)
         if: matrix.scan == 'snyk'
@@ -243,6 +256,15 @@ jobs:
         with:
           name: ai-security
           path: security-reports/*.json
+
+      - name: Normalize empty JSON files
+        run: |
+          echo "[Normalize] Ensuring no empty JSON files..."
+          find security-reports -type f -name "*.json" | while read f; do
+            if [ ! -s "$f" ]; then
+              echo "{}" > "$f"
+            fi
+          done
 
 ################################################################################
 # 4) EPSS + KEV + Composite Security Gate
@@ -315,13 +337,16 @@ jobs:
     needs: composite_gate
     if: github.event.inputs.run_full_deploy == 'true'
     runs-on: self-hosted
+
     outputs:
       image_ref: ${{ steps.export.outputs.image_ref }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      - name: Docker Login
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -331,7 +356,8 @@ jobs:
           mkdir -p $HOME/.local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b $HOME/.local/bin
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+          curl -sSfL \
+            https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
             -o $HOME/.local/bin/cosign
           chmod +x $HOME/.local/bin/cosign
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -351,17 +377,27 @@ jobs:
         id: export
         run: |
           digest="${{ steps.build.outputs.digest }}"
-          echo "image_ref=${DOCKERHUB_REPO}@${digest}" >> $GITHUB_OUTPUT
+          image_ref="${{ env.DOCKERHUB_REPO }}@${digest}"
+          echo "image_ref=${image_ref}" >> $GITHUB_OUTPUT
+          echo "IMAGE_REF=${image_ref}" >> $GITHUB_ENV
+          echo "[INFO] Image reference exported: $image_ref"
 
-      - name: Generate SBOM + Attestation
+      - name: Generate SBOM & Cosign Attestation
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          syft "${{ steps.export.outputs.image_ref }}" -o cyclonedx-json=sbom.json
-          cosign sign --yes "${{ steps.export.outputs.image_ref }}"
+          set -e
+          echo "[SBOM] Generating CycloneDX SBOM..."
+          syft "${IMAGE_REF}" -o cyclonedx-json=sbom.json
+
+          echo "[COSIGN] Signing image..."
+          cosign sign --yes "${IMAGE_REF}"
+
+          echo "[COSIGN] Attesting image with SBOM..."
           cosign attest --yes \
-            --predicate sbom.json --type cyclonedx \
-            "${{ steps.export.outputs.image_ref }}"
+            --predicate sbom.json \
+            --type cyclonedx \
+            "${IMAGE_REF}"
 
 ################################################################################
 # 6) DEPLOY (ANSIBLE)
