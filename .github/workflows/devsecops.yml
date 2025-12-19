@@ -19,6 +19,7 @@ concurrency:
 
 env:
   APP_NAME: vuln-bank
+  APP_URL: "http://192.168.107.135"   # <--- PATCH FIXED
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
 
@@ -66,8 +67,7 @@ jobs:
           trivy fs \
             --scanners vuln,secret \
             --format json \
-            --output "${REPORT_DIR}/trivy-sca.json" \
-            .
+            --output "${REPORT_DIR}/trivy-sca.json" .
 
       - name: SAST Python (Bandit)
         run: |
@@ -81,29 +81,23 @@ jobs:
           semgrep scan \
             --config auto \
             --json \
-            app.py \
-            auth.py \
-            database.py \
-            containers/app \
-            containers/db \
-            templates \
-            static \
+            app.py auth.py database.py \
+            containers/app containers/db \
+            templates static \
             > "${REPORT_DIR}/semgrep.json" || true
 
       - name: Misconfig Scan (Trivy Config)
         run: |
           trivy config \
             --format json \
-            --output "${REPORT_DIR}/trivy-misconfig.json" \
-            .
+            --output "${REPORT_DIR}/trivy-misconfig.json" .
 
       - name: Misconfig Scan (Checkov)
         run: |
           checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
 
       - name: SBOM Scan (Syft)
-        run: |
-          syft dir:. -o json > "${REPORT_DIR}/sbom.json"
+        run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
       - name: SonarQube Scan
         env:
@@ -122,15 +116,12 @@ jobs:
 
       - name: Snyk SCA (pip)
         run: |
-          snyk test \
-            --file=requirements.txt \
+          snyk test --file=requirements.txt \
             --package-manager=pip \
             --json > "${REPORT_DIR}/snyk/snyk-sca.json" || true
 
       - name: Snyk Code Test (SAST)
-        run: |
-          snyk code test \
-            --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
+        run: snyk code test --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
 
       - name: Snyk Container Scan
         run: |
@@ -152,7 +143,7 @@ jobs:
     needs: security_scans
 
     outputs:
-      can_deploy: ${{ steps.decision.outputs.can_deploy }}
+      can_deploy: ${{ steps.dec.outputs.can_deploy }}
 
     steps:
       - uses: actions/checkout@v4
@@ -170,11 +161,10 @@ jobs:
             --threshold "${EPSS_THRESHOLD}" || true
 
       - name: EPSS Dashboard Summary
-        run: |
-          python3 scripts/composite_security_gate.py >> "$GITHUB_STEP_SUMMARY"
+        run: python3 scripts/composite_security_gate.py >> "$GITHUB_STEP_SUMMARY"
 
       - name: Decision
-        id: decision
+        id: dec
         run: |
           if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
@@ -184,7 +174,7 @@ jobs:
           fi
 
   # =====================================================
-  # 3. SLACK ALERT
+  # 3. SLACK NOTIFY
   # =====================================================
   notify:
     name: Slack Notification
@@ -206,13 +196,9 @@ jobs:
           EPSS=false
 
           if jq -e '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH")' \
-             "${REPORT_DIR}/trivy-sca.json"; then
-             CRIT=true
-          fi
+             "${REPORT_DIR}/trivy-sca.json"; then CRIT=true; fi
 
-          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then
-             EPSS=true
-          fi
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then EPSS=true; fi
 
           echo "crit=$CRIT" >> "$GITHUB_OUTPUT"
           echo "epss=$EPSS" >> "$GITHUB_OUTPUT"
@@ -220,22 +206,20 @@ jobs:
       - name: Send Slack Alert
         if: steps.parse.outputs.crit == 'true' || steps.parse.outputs.epss == 'true'
         run: |
-          MSG="⚠️ Vuln Bank Security Alert"
-          curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\": \"$MSG\"}" \
-            $SLACK_WEBHOOK_URL
+          MSG="⚠️ Vuln Bank Security Alert — Critical/EPSS High detected."
+          curl -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\": \"$MSG\"}" "$SLACK_WEBHOOK_URL"
 
   # =====================================================
-  # 4. GITHUB ISSUES
+  # 4. GitHub Issues
   # =====================================================
   create_issues:
-    name: Create GitHub Issues from Findings
+    name: Create GitHub Issues
     runs-on: self-hosted
     needs: [security_scans, epss_gate]
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: security-reports
@@ -252,87 +236,138 @@ jobs:
             --snyk-sca "${REPORT_DIR}/snyk/snyk-sca.json"
 
   # =====================================================
-  # 5. BUILD + PUSH + COSIGN SIGN (PATCHED)
+  # 5. BUILD & SIGN (COSIGN v3 PATCH)
   # =====================================================
-  build_and_push:
-    name: Build & Push Docker Image (with Cosign Keyless)
+  build_and_sign:
+    name: Build + Push + Sign + SBOM
+    needs: epss_gate
     runs-on: self-hosted
-    needs: [epss_gate, notify, create_issues]
     if: needs.epss_gate.outputs.can_deploy == 'true'
 
     outputs:
-      image_ref: ${{ steps.img.outputs.image_ref }}
+      image_ref: ${{ steps.export.outputs.image_ref }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure correct Cosign v3
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install Tools (Cosign & Syft)
         run: |
-          export PATH="/usr/local/bin:$PATH"
+          mkdir -p $HOME/.local/bin
+
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b $HOME/.local/bin
+
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+            -o $HOME/.local/bin/cosign
+          chmod +x $HOME/.local/bin/cosign
+
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.local/bin:$PATH"
+
+      - name: Debug Cosign Binary
+        run: |
           which cosign
           cosign version
 
-      - name: Docker Login
+      - name: Build and Push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_REPO }}:latest
+            ${{ env.DOCKERHUB_REPO }}:${{ env.IMAGE_TAG }}
+
+      - name: Export Image Ref
+        id: export
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" |
-            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE_REF="${{ env.DOCKERHUB_REPO }}@${DIGEST}"
+          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> $GITHUB_ENV
 
-      - name: Build Image
-        run: docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
+      - name: Generate SBOM (CycloneDX)
+        run: syft "${IMAGE_TO_SIGN}" -o cyclonedx-json=sbom.json
 
-      - name: Push Image
-        run: docker push ${IMAGE_REPO}:${IMAGE_TAG}
-
-      - name: Cosign Sign (Keyless)
+      - name: Sign Image & Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          export PATH="/usr/local/bin:$PATH"
-          cosign sign --keyless ${IMAGE_REPO}:${IMAGE_TAG}
+          export PATH="$HOME/.local/bin:$PATH"
 
-      - name: Set image_ref output
-        id: img
-        run: |
-          echo "image_ref=${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "${IMAGE_TO_SIGN}"
+
+          cosign attest --yes \
+            --predicate sbom.json \
+            --type cyclonedx \
+            "${IMAGE_TO_SIGN}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
 
   # =====================================================
-  # 6. DEPLOY + COSIGN VERIFY (PATCHED)
+  # 6. DEPLOY (PATCHED: Added Cosign Verify)
   # =====================================================
   deploy:
-    name: Deploy to VMs (Ansible)
+    name: Deploy (Ansible)
+    needs: build_and_sign
     runs-on: self-hosted
-    needs: build_and_push
-    if: github.ref == 'refs/heads/main'
+    if: needs.build_and_sign.result == 'success'
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cosign Verify (Keyless)
+      - name: Verify Signed Image
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          cosign verify --yes "${{ needs.build_and_sign.outputs.image_ref }}"
+
+      - name: Execute Ansible
         env:
-          COSIGN_EXPERIMENTAL: "1"
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          export PATH="/usr/local/bin:$PATH"
-          cosign verify --keyless ${{ needs.build_and_push.outputs.image_ref }}
+          echo "Deploying image: ${IMAGE_REF}"
+          if [ -z "${IMAGE_REF}" ]; then
+            IMAGE_REF="${{ env.IMAGE_REPO }}:latest"
+          fi
 
-      - name: Setup SSH
-        run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_ansible
-          chmod 600 ~/.ssh/id_ansible
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
+          chmod 600 ~/.ssh/id_runner_temp
 
-      - name: Deploy via Ansible
-        run: |
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            --private-key ~/.ssh/id_ansible \
-            -e "image_ref=${{ needs.build_and_push.outputs.image_ref }}" \
-            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
-            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}" \
+            --private-key ~/.ssh/id_runner_temp \
+            -e "image_ref=${IMAGE_REF}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
-            -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}"
+            -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
+            -e "deepseek_key=${{ secrets.DEEPSEEK_API_KEY }}" \
+            -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
+
+      - name: Notify Slack on Success
+        if: success()
+        env:
+          SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
+        run: |
+          msg="🚀 Deployment Success\n• Image: ${IMAGE_REF}\n• Target: ${{ env.APP_URL }}"
+          curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"$msg\"}" \
+              "$SLACK_URL"
 
   # =====================================================
-  # 7. DAST ZAP
+  # 7. DAST (OWASP ZAP)
   # =====================================================
   dast:
     name: DAST Scan (OWASP ZAP)
@@ -354,7 +389,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}/zap
 
   # =====================================================
-  # 8. DEFECTDOJO IMPORT
+  # 8. IMPORT TO DEFECTDOJO
   # =====================================================
   defectdojo_import:
     name: Import Scan Results to DefectDojo
@@ -378,7 +413,7 @@ jobs:
         run: |
           FILE="${REPORT_DIR}/zap/zap_alerts.json"
           if [ -f "$FILE" ]; then
-            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=ZAP Scan" \
               -F "file=@${FILE}" \
@@ -392,7 +427,7 @@ jobs:
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-sca.json"
           if [ -f "$FILE" ]; then
-            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=Snyk Scan" \
               -F "file=@${FILE}" \
@@ -404,7 +439,7 @@ jobs:
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-sast.json"
           if [ -f "$FILE" ]; then
-            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -F "scan_type=Snyk Code Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
@@ -415,7 +450,7 @@ jobs:
         run: |
           FILE="${REPORT_DIR}/snyk/snyk-container.json"
           if [ -f "$FILE" ]; then
-            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -F "scan_type=Snyk Container Scan" \
               -F "file=@${FILE}" \
               -F "product=${DEFECTDOJO_PRODUCT_ID}" \
