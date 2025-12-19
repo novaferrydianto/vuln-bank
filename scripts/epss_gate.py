@@ -14,7 +14,6 @@ def safe_load_json(path: str, base_dir: str) -> Any:
     base_real = os.path.realpath(base_dir)
     target_real = os.path.realpath(path)
 
-    # Block attempts to escape workspace
     if not target_real.startswith(base_real + os.sep):
         raise ValueError(f"Unsafe path detected: {path}")
 
@@ -29,86 +28,93 @@ def safe_load_json(path: str, base_dir: str) -> Any:
 
 
 # ======================================================
-# Extract vulns from Trivy / Snyk
+# PARSERS (modular — LOW COMPLEXITY)
+# ======================================================
+
+def parse_trivy(data, path):
+    vulns = []
+    for result in data.get("Results", []):
+        for v in result.get("Vulnerabilities", []):
+            cve = v.get("VulnerabilityID")
+            if not cve:
+                continue
+            vulns.append({
+                "file": path,
+                "source": "trivy",
+                "cve": cve,
+                "severity": v.get("Severity", "UNKNOWN").upper(),
+                "pkg": v.get("PkgName") or v.get("PkgPath"),
+                "version": v.get("InstalledVersion"),
+            })
+    return vulns
+
+
+def parse_snyk_sca(data, path):
+    vulns = []
+    for v in data.get("vulnerabilities", []):
+        ids = v.get("identifiers", {})
+        cve_list = ids.get("CVE") or v.get("id")
+        cve = cve_list[0] if isinstance(cve_list, list) else cve_list
+        if not cve:
+            continue
+
+        vulns.append({
+            "file": path,
+            "source": "snyk-sca",
+            "cve": cve,
+            "severity": v.get("severity", "UNKNOWN").upper(),
+            "pkg": v.get("packageName"),
+            "version": v.get("version"),
+        })
+    return vulns
+
+
+def parse_snyk_code(data, path):
+    vulns = []
+    for v in data.get("issues", []):
+        cve = v.get("issueData", {}).get("cve") or v.get("cve")
+        if not cve:
+            continue
+        vulns.append({
+            "file": path,
+            "source": "snyk-code",
+            "cve": cve,
+            "severity": v.get("severity", "UNKNOWN").upper(),
+            "pkg": v.get("package"),
+            "version": v.get("version"),
+        })
+    return vulns
+
+
+# ======================================================
+# Dispatcher (removes branching explosion)
+# ======================================================
+
+PARSERS = {
+    "Results": parse_trivy,
+    "vulnerabilities": parse_snyk_sca,
+    "issues": parse_snyk_code,
+}
+
+
+# ======================================================
+# UNIFIED EXTRACTOR (Cognitive Complexity < 10)
 # ======================================================
 def extract_vulns(files: List[str], base_dir: str) -> List[Dict[str, Any]]:
-    vulns = []
+    results = []
 
     for path in files:
         data = safe_load_json(path, base_dir)
         if not data:
             continue
 
-        # -------------------------------
-        # TRIVY FORMAT
-        # -------------------------------
-        if "Results" in data:
-            for result in data.get("Results", []):
-                for v in result.get("Vulnerabilities", []):
-                    cve = v.get("VulnerabilityID")
-                    if not cve:
-                        continue
-                    vulns.append(
-                        {
-                            "file": path,
-                            "source": "trivy",
-                            "cve": cve,
-                            "severity": v.get("Severity", "UNKNOWN").upper(),
-                            "pkg": v.get("PkgName") or v.get("PkgPath"),
-                            "version": v.get("InstalledVersion"),
-                        }
-                    )
-            continue
+        # Auto-detect parser by key
+        for key, parser in PARSERS.items():
+            if key in data:
+                results.extend(parser(data, path))
+                break
 
-        # -------------------------------
-        # SNYK SCA FORMAT
-        # -------------------------------
-        if "vulnerabilities" in data:
-            for v in data["vulnerabilities"]:
-                cve_list = (
-                    v.get("identifiers", {}).get("CVE")
-                    or v.get("id")  # fallback Snyk ID
-                )
-                cve = cve_list[0] if isinstance(cve_list, list) else cve_list
-                if not cve:
-                    continue
-
-                vulns.append(
-                    {
-                        "file": path,
-                        "source": "snyk-sca",
-                        "cve": cve,
-                        "severity": v.get("severity", "UNKNOWN").upper(),
-                        "pkg": v.get("packageName"),
-                        "version": v.get("version"),
-                    }
-                )
-            continue
-
-        # -------------------------------
-        # SNYK CODE (SAST)
-        # -------------------------------
-        if "issues" in data:
-            for v in data["issues"]:
-                cve = (
-                    v.get("issueData", {}).get("cve")
-                    or v.get("cve")
-                )
-                if not cve:
-                    continue
-
-                vulns.append(
-                    {
-                        "file": path,
-                        "source": "snyk-code",
-                        "cve": cve,
-                        "severity": v.get("severity", "UNKNOWN").upper(),
-                        "pkg": v.get("package"),
-                        "version": v.get("version"),
-                    }
-                )
-
-    return vulns
+    return results
 
 
 # ======================================================
@@ -222,33 +228,25 @@ def compute_risk(vulns, epss_map, kev_set, threshold: float):
 # ======================================================
 def main():
     p = argparse.ArgumentParser(description="EPSS + KEV Security Gate")
-    p.add_argument("--mode", default="C", help="A=Block if any high_risk B=Block CRITICAL only C=Report only")
-    p.add_argument("--threshold", required=True, help="EPSS threshold, e.g. 0.5")
+    p.add_argument("--mode", default="C")
+    p.add_argument("--threshold", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--input", action="append", required=True)
     args = p.parse_args()
 
     threshold = float(args.threshold)
 
-    # Deduce base directory from all input files
     base_dir = os.path.commonpath(
         [os.path.dirname(os.path.realpath(p)) for p in args.input]
     )
 
-    # Extract vulnerabilities
     vulns = extract_vulns(args.input, base_dir)
-
-    # Collect CVEs
     cves = {v["cve"] for v in vulns if v.get("cve")}
 
-    # Fetch EPSS + KEV
     epss_map = fetch_epss_map(cves)
     kev_set = fetch_kev_set()
-
-    # Compute risk
     risk = compute_risk(vulns, epss_map, kev_set, threshold)
 
-    # Prepare output
     result = {
         "mode": args.mode,
         "threshold": threshold,
@@ -265,15 +263,11 @@ def main():
         result["gate_failed"] = any(
             r.get("severity") == "CRITICAL" for r in risk["high_risk"]
         )
-    else:
-        result["gate_failed"] = False
 
-    # Write output
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, "w") as f:
         json.dump(result, f, indent=2)
 
-    # Exit with failure to block CI
     if result["gate_failed"]:
         raise SystemExit(1)
 

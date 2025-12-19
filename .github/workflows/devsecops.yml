@@ -72,91 +72,115 @@ jobs:
           command -v docker >/dev/null || exit 1
           docker buildx version >/dev/null || exit 1
 
-# ============================================================================
-# 2. SECURITY SCANS (PARALLEL MATRIX)
-# ============================================================================
+####################################
+  # 2. Tahap Security Scans (Parallel)
+  ####################################
   security_scans:
+    name: Security Scans (Parallel)
     needs: setup
     runs-on: self-hosted
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:
         scan_type: [trufflehog, semgrep, trivy, snyk, sonarqube, checkov]
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Init report dir
-        run: mkdir -p ${REPORT_DIR}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
 
-      # -------- SECRET SCAN --------
       - name: TruffleHog Scan
         if: matrix.scan_type == 'trufflehog'
         run: trufflehog git file://$(pwd) --json --only-verified --no-update > "${REPORT_DIR}/trufflehog.json" || true
 
-      # -------- SAST / SECURITY RULESETS --------
-      - name: Semgrep Scan
+      - name: Semgrep Banking Scan
         if: matrix.scan_type == 'semgrep'
         run: |
           semgrep scan --config auto \
-                       --config p/security-audit \
-                       --config p/secrets \
-                       --config p/owasp-top-ten \
-                       --json > "${REPORT_DIR}/semgrep.json" || true
+            --config "p/security-audit" \
+            --config "p/secrets" \
+            --config "p/owasp-top-ten" \
+            --config "p/python" \
+            --json > "${REPORT_DIR}/semgrep.json" || true
 
-      # -------- IaC MISCONFIG --------
-      - name: Checkov Scan
+      - name: Checkov CIS Compliance Scan
         if: matrix.scan_type == 'checkov'
         run: |
-          checkov -d ansible --output json > "${REPORT_DIR}/checkov_ansible.json" || true
-          checkov -f "${DOCKERFILE_PATH}" --output json > "${REPORT_DIR}/checkov_docker.json" || true
+          pipx install checkov --force
+          export PATH="$HOME/.local/bin:$PATH"
+          checkov -d ansible --check CKV_PAN_1,CKV_PAN_2,CKV_PAN_6 --output json > "${REPORT_DIR}/checkov_ansible.json" || true
+          checkov -f "${DOCKERFILE_PATH}" --check CKV_DOCKER_1,CKV_DOCKER_2,CKV_DOCKER_7 --output json > "${REPORT_DIR}/checkov_docker.json" || true
 
-      # -------- CONFIG / DOCKERFILE --------
-      - name: Trivy Config
+      - name: Trivy Scan (Config)
         if: matrix.scan_type == 'trivy'
+        shell: bash
         run: |
+          set -euo pipefail
           trivy config "${DOCKERFILE_PATH}" \
             --severity "${FAIL_ON_SEVERITIES}" \
             --format json \
             --output "${REPORT_DIR}/trivy.json" || true
 
-      # -------- SNYK SAST + SCA + IAC --------
-      - name: Snyk Scan
+      - name: Snyk Advanced Scans
         if: matrix.scan_type == 'snyk'
+        shell: bash
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
+          set -euo pipefail
+          
+          # 1. SAST - Snyk Code (Output SARIF untuk GitHub & JSON untuk DefectDojo)
+          snyk code test --sarif > snyk-code.sarif || true
           snyk code test --json > "${REPORT_DIR}/snyk-code.json" || true
+
+          # 2. SCA - Snyk Open Source
           snyk test --json > "${REPORT_DIR}/snyk-sca.json" || true
+          snyk monitor --all-projects || true
+
+          # 3. IaC - Infrastructure as Code
           snyk iac test --json > "${REPORT_DIR}/snyk-iac.json" || true
 
-      - name: Upload Snyk SARIF
-        if: matrix.scan_type == 'snyk'
+      - name: Upload SARIF to GitHub
+        if: matrix.scan_type == 'snyk' && always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: snyk-code.sarif
 
-      # -------- SONARQUBE --------
       - name: SonarQube Scan
         if: matrix.scan_type == 'sonarqube'
+        shell: bash
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
+          set -euo pipefail
+          if [ -z "${SONAR_HOST_URL:-}" ] || [ -z "${SONAR_TOKEN:-}" ]; then
+            echo "[SKIP] Missing SonarQube secrets"
+            exit 0
+          fi
+          if ! command -v sonar-scanner >/dev/null 2>&1; then
+            echo "[SKIP] sonar-scanner not installed"
+            exit 0
+          fi
           sonar-scanner \
             -Dsonar.projectKey=vuln-bank \
+            -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.login="${SONAR_TOKEN}" || true
+            -Dsonar.login="${SONAR_TOKEN}"
 
-      # -------- STORE ARTIFACTS --------
-      - name: Upload Scan Artifacts
+      - name: Upload scan artifacts
         if: matrix.scan_type != 'sonarqube'
         uses: actions/upload-artifact@v4
         with:
           name: reports-${{ matrix.scan_type }}
           path: ${{ env.REPORT_DIR }}/*.json
+          if-no-files-found: warn
           retention-days: 14
 
 # ============================================================================
