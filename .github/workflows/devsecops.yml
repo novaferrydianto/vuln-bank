@@ -272,8 +272,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          EPSS_FILE: "${REPORT_DIR}/epss-findings.json"
-          SNYK_FILE: "${REPORT_DIR}/snyk/snyk-sca.json"
+          EPSS_FILE: ${{ env.REPORT_DIR }}/epss-findings.json
+          SNYK_FILE: ${{ env.REPORT_DIR }}/snyk/snyk-sca.json
         run: |
           python3 scripts/epss_create_issues.py
 
