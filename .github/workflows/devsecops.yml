@@ -411,18 +411,15 @@ jobs:
         id: export
         run: |
           IMAGE_REF="${{ steps.build.outputs.digest }}"
-          echo "Resolved IMAGE_REF = $IMAGE_REF"
-
-          if [ -z "$IMAGE_REF" ]; then
-            echo "FATAL: digest not found!"
-            exit 1
-          fi
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+          echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
 
           echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
           echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
 
-      - name: Generate SBOM
+      - name: SBOM for Container
         run: syft "$IMAGE_TO_SIGN" -o cyclonedx-json=sbom.json
 
       - name: Sign Image & Attest SBOM
@@ -445,40 +442,31 @@ jobs:
 # =====================================================================
   deploy:
     name: Deploy (Ansible)
-    needs: build_and_sign
     runs-on: self-hosted
+    needs: build_and_sign
     if: needs.build_and_sign.result == 'success'
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify Signed Image (Strict)
+      - name: Verify Image Signature (Strict)
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
-
           IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
 
           if [ -z "$IMAGE_REF" ]; then
-            echo "FATAL: IMAGE_REF empty — cannot verify"
-            echo "Debug: needs.build_and_sign.outputs.image_ref is empty"
+            echo "FATAL: IMAGE_REF empty"
             exit 1
           fi
-
-          echo "Verifying image: $IMAGE_REF"
 
           cosign verify \
             --certificate-identity "https://github.com/novaferrydianto/vuln-bank/.github/workflows/devsecops.yml@refs/heads/main" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "$IMAGE_REF"
 
-      - name: Execute Ansible Deployment
+      - name: Deploy with Ansible
         env:
           IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          if [ -z "${IMAGE_REF}" ]; then
-            IMAGE_REF="${IMAGE_REPO}:latest"
-          fi
-
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
@@ -493,15 +481,12 @@ jobs:
             -e "dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}" \
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
 
-      - name: Notify Slack on Success
+      - name: Slack Deployment Success
         if: success()
-        env:
-          SLACK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          IMAGE_REF: ${{ needs.build_and_sign.outputs.image_ref }}
         run: |
-          msg="🚀 Deployment Success\n• Image: ${IMAGE_REF}\n• Target: ${APP_URL}"
+          msg="Deployment Success\nImage: ${{ needs.build_and_sign.outputs.image_ref }}\nTarget: ${APP_URL}"
           curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"$msg\"}" "$SLACK_URL"
+            --data "{\"text\":\"$msg\"}" "$SLACK_WEBHOOK_URL"
 
 # =====================================================================
 # 8. DAST (ZAP)
