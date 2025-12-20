@@ -103,12 +103,15 @@ jobs:
           echo "SonarQube CE → mainline analysis only (no branch/PR features)"
 
           sonar-scanner \
-            -Dsonar.host.url=${SONAR_HOST_URL} \
-            -Dsonar.login=${SONAR_TOKEN} \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.token="${SONAR_TOKEN}" \
+            -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+            -Dsonar.projectName="${SONAR_PROJECT_KEY}" \
+            -Dsonar.sources=. \
             -Dsonar.qualitygate.wait=true \
-            -Dsonar.tests= \
-            -Dsonar.test.inclusions= \
-            -Dsonar.test.exclusions=**
+            -Dsonar.tests="" \
+            -Dsonar.test.inclusions="" \
+            -Dsonar.test.exclusions=""
 
       - name: Snyk Authenticate
         env:
