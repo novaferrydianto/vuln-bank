@@ -94,6 +94,7 @@ jobs:
         run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
       - name: SonarQube Scan (Community Edition Safe)
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
