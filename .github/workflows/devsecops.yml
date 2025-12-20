@@ -126,7 +126,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
 # =====================================================================
-# 2. IMPORT STATIC SCANS → DEFECTDOJO
+# 2. IMPORT STATIC SCANS → DEFECTDOJO  (PATCHED & STABLE)
 # =====================================================================
   defectdojo_import_scans:
     name: Import Static Scans to DefectDojo
@@ -141,128 +141,42 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      # Gitleaks
-      - name: Import Gitleaks
+      - name: Import Static Reports
         run: |
-          FILE="${REPORT_DIR}/gitleaks.json"
-          if [ -f "$FILE" ]; then
-            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=Gitleaks Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
+          # Export secrets explicitly for this shell session
+          DD_URL="${DEFECTDOJO_URL}"
+          DD_KEY="${DEFECTDOJO_API_KEY}"
+          PROD="${DEFECTDOJO_PRODUCT_ID}"
+          ENG="${DEFECTDOJO_ENGAGEMENT_ID}"
 
-      # Trivy SCA
-      - name: Import Trivy SCA
-        run: |
-          FILE="${REPORT_DIR}/trivy-sca.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=Trivy Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
+          import_file() {
+            FILE="$1"
+            TYPE="$2"
 
-      # Bandit
-      - name: Import Bandit
-        run: |
-          FILE="${REPORT_DIR}/bandit.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-              -F "scan_type=Bandit Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
+            if [ ! -f "$FILE" ]; then
+              echo "[SKIP] $TYPE - file missing: $FILE"
+              return 0
+            fi
 
-      # Semgrep
-      - name: Import Semgrep
-        run: |
-          FILE="${REPORT_DIR}/semgrep.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Semgrep JSON Report" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
+            echo "[UPLOAD] $TYPE → DefectDojo"
+            curl -sS -X POST "${DD_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DD_KEY}" \
+              -F "scan_type=${TYPE}" \
+              -F "product=${PROD}" \
+              -F "engagement=${ENG}" \
+              -F "file=@${FILE}"
+          }
 
-      # Trivy Config
-      - name: Import Trivy Config
-        run: |
-          FILE="${REPORT_DIR}/trivy-misconfig.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Trivy Config Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      # Checkov
-      - name: Import Checkov
-        run: |
-          FILE="${REPORT_DIR}/checkov.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Checkov Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      # SBOM (Syft)
-      - name: Import SBOM
-        run: |
-          FILE="${REPORT_DIR}/sbom.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=CycloneDX Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      # Snyk SCA
-      - name: Import Snyk SCA
-        run: |
-          FILE="${REPORT_DIR}/snyk/snyk-sca.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Snyk Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      # Snyk SAST
-      - name: Import Snyk SAST
-        run: |
-          FILE="${REPORT_DIR}/snyk/snyk-sast.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Snyk Code Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
-
-      # Snyk Container
-      - name: Import Snyk Container
-        run: |
-          FILE="${REPORT_DIR}/snyk/snyk-container.json"
-          if [ -f "$FILE" ]; then
-            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-              -F "scan_type=Snyk Container Scan" \
-              -F "file=@${FILE}" \
-              -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}"
-          fi
+          import_file "${REPORT_DIR}/gitleaks.json"            "Gitleaks Scan"
+          import_file "${REPORT_DIR}/trivy-sca.json"           "Trivy Scan"
+          import_file "${REPORT_DIR}/bandit.json"              "Bandit Scan"
+          import_file "${REPORT_DIR}/semgrep.json"             "Semgrep JSON Report"
+          import_file "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Config Scan"
+          import_file "${REPORT_DIR}/checkov.json"             "Checkov Scan"
+          import_file "${REPORT_DIR}/sbom.json"                "CycloneDX Scan"
+          import_file "${REPORT_DIR}/snyk/snyk-sca.json"       "Snyk Scan"
+          import_file "${REPORT_DIR}/snyk/snyk-sast.json"      "Snyk Code Scan"
+          import_file "${REPORT_DIR}/snyk/snyk-container.json" "Snyk Container Scan"
 
 # =====================================================================
 # 3. EPSS GATE (AFTER IMPORT OF STATIC SCANS)
@@ -403,19 +317,36 @@ jobs:
       - name: Get Digest
         id: build
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${IMAGE_REPO}:${IMAGE_TAG})
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
-          echo "IMAGE_REF=$DIGEST" >> $GITHUB_ENV
+          set -euo pipefail
+
+          DIGEST=$(docker inspect --format='{{ index .RepoDigests 0 }}' ${IMAGE_REPO}:${IMAGE_TAG} || true)
+
+          if [ -z "$DIGEST" ]; then
+            echo "ERROR: Docker returned no digest. Dumping full inspect:"
+            docker inspect ${IMAGE_REPO}:${IMAGE_TAG}
+            exit 1
+          fi
+
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_REF=$DIGEST" >> "$GITHUB_ENV"
 
       - name: Export Image Ref
         id: export
         run: |
-          IMAGE_REF="${{ steps.build.outputs.digest }}"
-          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
-          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
-          echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
+          set -euo pipefail
 
+          IMAGE_REF="${{ steps.build.outputs.digest }}"
+          echo "Resolved IMAGE_REF = $IMAGE_REF"
+
+          if [ -z "$IMAGE_REF" ]; then
+            echo "FATAL: image digest is EMPTY — cannot continue"
+            exit 1
+          fi
+
+          # Correct output registration (only ONCE)
           echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+          # For subsequent steps
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
           echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
 
