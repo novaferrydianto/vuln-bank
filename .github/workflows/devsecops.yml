@@ -20,6 +20,7 @@ concurrency:
 env:
   APP_NAME: vuln-bank
   APP_URL: "http://192.168.107.135"
+
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
 
@@ -50,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # penting untuk Sonar SCM blame
+          fetch-depth: 0  # perlu untuk SCM blame Sonar
 
       - name: Prepare directories
         run: |
@@ -90,40 +91,32 @@ jobs:
         run: |
           checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
 
-      - name: SBOM Scan (Syft)
+      - name: SBOM Scan (Syft FS)
         run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
-      - name: SonarQube Scan (Branch / PR Aware + Quality Gate)
+      - name: SonarQube Scan (Community Edition Safe)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            echo "Running SonarQube for PR decoration..."
-
-            sonar-scanner \
-              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-              -Dsonar.host.url=${SONAR_HOST_URL} \
-              -Dsonar.login=${SONAR_TOKEN} \
-              -Dsonar.qualitygate.wait=true \
-              -Dsonar.tests= \
-              -Dsonar.test.inclusions= \
-              -Dsonar.test.exclusions=** \
-              -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} \
-              -Dsonar.pullrequest.branch=${{ github.head_ref }} \
-              -Dsonar.pullrequest.base=${{ github.base_ref }}
-
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            BRANCH="${GITHUB_HEAD_REF}"
           else
-            echo "Running SonarQube for branch analysis..."
-
-            sonar-scanner \
-              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-              -Dsonar.host.url=${SONAR_HOST_URL} \
-              -Dsonar.login=${SONAR_TOKEN} \
-              -Dsonar.qualitygate.wait=true \
-              -Dsonar.branch.name=${{ github.ref_name }}
+            BRANCH="${GITHUB_REF_NAME}"
           fi
+
+          echo "SonarQube CE → branch: $BRANCH"
+
+          sonar-scanner \
+            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+            -Dsonar.host.url=${SONAR_HOST_URL} \
+            -Dsonar.login=${SONAR_TOKEN} \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.tests= \
+            -Dsonar.test.inclusions= \
+            -Dsonar.test.exclusions=** \
+            -Dsonar.branch.name="${BRANCH}"
 
       - name: Snyk Authenticate
         env:
@@ -162,7 +155,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          set -e
+          set -euo pipefail
 
           METRICS="bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,security_rating,reliability_rating,maintainability_rating,security_hotspots"
 
@@ -177,7 +170,7 @@ jobs:
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
 
 # =====================================================================
-# 2. IMPORT STATIC SCANS → DEFECTDOJO  (PATCHED & STABLE)
+# 2. IMPORT STATIC SCANS → DEFECTDOJO
 # =====================================================================
   defectdojo_import_scans:
     name: Import Static Scans to DefectDojo
@@ -194,6 +187,8 @@ jobs:
 
       - name: Import Static Reports
         run: |
+          set -euo pipefail
+
           DD_URL="${DEFECTDOJO_URL}"
           DD_KEY="${DEFECTDOJO_API_KEY}"
           PROD="${DEFECTDOJO_PRODUCT_ID}"
@@ -229,7 +224,7 @@ jobs:
           import_file "${REPORT_DIR}/snyk/snyk-container.json" "Snyk Container Scan"
 
 # =====================================================================
-# 3. EPSS GATE (AFTER IMPORT OF STATIC SCANS) — FIXED
+# 3. EPSS GATE (STRICT)
 # =====================================================================
   epss_gate:
     name: EPSS Gate
@@ -247,7 +242,7 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Run EPSS Gate (no silent failure)
+      - name: Run EPSS Gate (strict)
         run: |
           set -euo pipefail
 
@@ -259,6 +254,13 @@ jobs:
           if [ ! -s "${REPORT_DIR}/epss-findings.json" ]; then
             echo "FATAL: EPSS gate did not produce epss-findings.json"
             ls -lah "${REPORT_DIR}"
+            exit 1
+          fi
+
+          # Basic schema validation
+          if ! jq -e '.threshold' "${REPORT_DIR}/epss-findings.json" > /dev/null; then
+            echo "FATAL: epss-findings.json malformed (no threshold)"
+            cat "${REPORT_DIR}/epss-findings.json" || true
             exit 1
           fi
 
@@ -284,7 +286,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}/epss-findings.json
 
 # =====================================================================
-# 4. NOTIFICATION
+# 4. NOTIFICATION (SLACK)
 # =====================================================================
   notify:
     name: Slack Notification
@@ -307,13 +309,15 @@ jobs:
       - name: Parse Findings
         id: parse
         run: |
+          set -euo pipefail
+
           CRIT=false
           EPSS=false
 
           if jq -e '.Results[].Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH")' \
-              "${REPORT_DIR}/trivy-sca.json"; then CRIT=true; fi
+              "${REPORT_DIR}/trivy-sca.json" > /dev/null; then CRIT=true; fi
 
-          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then EPSS=true; fi
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" > /dev/null; then EPSS=true; fi
 
           echo "crit=$CRIT" >> "$GITHUB_OUTPUT"
           echo "epss=$EPSS" >> "$GITHUB_OUTPUT"
@@ -326,7 +330,7 @@ jobs:
             --data "{\"text\": \"$MSG\"}" "$SLACK_WEBHOOK_URL"
 
 # =====================================================================
-# 5. CREATE GITHUB ISSUES (EPSS + SNYK) — WITH EPSS ARTIFACT
+# 5. CREATE GITHUB ISSUES (EPSS + SNYK)
 # =====================================================================
   create_issues:
     name: Create GitHub Issues
@@ -350,15 +354,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          EPSS_FILE: ${{ env.REPORT_DIR }}/epss-findings.json
-          SNYK_FILE: ${{ env.REPORT_DIR }}/snyk/snyk-sca.json
+          EPSS_FILE: security-reports/epss-findings.json
+          SNYK_FILE: security-reports/snyk/snyk-sca.json
         run: |
+          set -euo pipefail
           python3 scripts/epss_create_issues.py
 
 # =====================================================================
-# 6. BUILD & SIGN (COSIGN v3) — WITH IMAGE_REF ARTIFACT
+# 6. BUILD & SIGN (COSIGN v3) — IMAGE_REF ARTIFACT
 # =====================================================================
   build_and_sign:
+    name: Build, Push, Sign Image
     runs-on: self-hosted
     needs: epss_gate
     if: needs.epss_gate.outputs.can_deploy == 'true'
@@ -376,32 +382,36 @@ jobs:
 
       - name: Install Tools (Syft + Cosign)
         run: |
-          mkdir -p $HOME/.local/bin
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin"
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b $HOME/.local/bin
+            | sh -s -- -b "$HOME/.local/bin"
           curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
-            -o $HOME/.local/bin/cosign
-          chmod +x $HOME/.local/bin/cosign
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+            -o "$HOME/.local/bin/cosign"
+          chmod +x "$HOME/.local/bin/cosign"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build Image
         run: |
-          docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
+          set -euo pipefail
+          docker build -t "${IMAGE_REPO}:${IMAGE_TAG}" -f "${DOCKERFILE_PATH}" .
 
       - name: Push Image
         run: |
-          docker push ${IMAGE_REPO}:${IMAGE_TAG}
+          set -euo pipefail
+          docker push "${IMAGE_REPO}:${IMAGE_TAG}"
 
       - name: Get Digest
         id: build
         run: |
           set -euo pipefail
 
-          DIGEST=$(docker inspect --format='{{ index .RepoDigests 0 }}' ${IMAGE_REPO}:${IMAGE_TAG} || true)
+          DIGEST=$(docker inspect --format='{{ index .RepoDigests 0 }}' "${IMAGE_REPO}:${IMAGE_TAG}" || true)
 
           if [ -z "$DIGEST" ]; then
             echo "ERROR: Docker returned no digest. Dumping full inspect:"
-            docker inspect ${IMAGE_REPO}:${IMAGE_TAG}
+            docker inspect "${IMAGE_REPO}:${IMAGE_TAG}" || true
             exit 1
           fi
 
@@ -427,6 +437,7 @@ jobs:
 
       - name: Save Image Ref to file
         run: |
+          set -euo pipefail
           echo "$IMAGE_REF" > image-ref.txt
           cat image-ref.txt
 
@@ -436,13 +447,17 @@ jobs:
           name: image-ref
           path: image-ref.txt
 
-      - name: SBOM for Container
-        run: syft "$IMAGE_TO_SIGN" -o cyclonedx-json=sbom.json
+      - name: SBOM for Container (CycloneDX)
+        run: |
+          set -euo pipefail
+          syft "$IMAGE_TO_SIGN" -o cyclonedx-json=sbom.json
 
       - name: Sign Image & Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
+          set -euo pipefail
+
           cosign sign --yes "$IMAGE_TO_SIGN"
           cosign attest \
             --predicate sbom.json \
@@ -455,7 +470,7 @@ jobs:
           path: sbom.json
 
 # =====================================================================
-# 7. DEPLOY (ANSIBLE + VERIFY SIGNATURE) — USING IMAGE_REF ARTIFACT
+# 7. DEPLOY (ANSIBLE + VERIFY SIGNATURE)
 # =====================================================================
   deploy:
     name: Deploy (Ansible)
@@ -496,6 +511,8 @@ jobs:
 
       - name: Verify Image Signature (Strict)
         run: |
+          set -euo pipefail
+
           IMAGE_REF="${IMAGE_REF}"
 
           if [ -z "$IMAGE_REF" ]; then
@@ -512,6 +529,8 @@ jobs:
         env:
           IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
+          set -euo pipefail
+
           mkdir -p ~/.ssh
           echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
           chmod 600 ~/.ssh/id_runner_temp
@@ -529,6 +548,8 @@ jobs:
       - name: Slack Deployment Success
         if: success()
         run: |
+          set -euo pipefail
+
           msg="Deployment Success\nImage: ${IMAGE_REF}\nTarget: ${APP_URL}"
           curl -X POST -H 'Content-type: application/json' \
             --data "{\"text\":\"$msg\"}" "$SLACK_WEBHOOK_URL"
@@ -546,6 +567,8 @@ jobs:
 
       - name: Run ZAP DAST
         run: |
+          set -euo pipefail
+
           docker compose -f docker-compose.dast.yml down || true
           docker compose -f docker-compose.dast.yml up --abort-on-container-exit
           docker compose -f docker-compose.dast.yml down
@@ -573,6 +596,8 @@ jobs:
 
       - name: Import ZAP Report
         run: |
+          set -euo pipefail
+
           FILE="${REPORT_DIR}/zap/zap_alerts.json"
           if [ -f "$FILE" ]; then
             curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
@@ -583,10 +608,12 @@ jobs:
               -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
               -F "active=true" \
               -F "verified=true"
+          else
+            echo "[SKIP] ZAP report not found: $FILE"
           fi
 
 # =====================================================================
-# 10. DEFECTDOJO CLEANUP (FINAL STEP)
+# 10. DEFECTDOJO CLEANUP (FINAL)
 # =====================================================================
   cleanup_defectdojo:
     name: Cleanup & Enrich DefectDojo
@@ -598,7 +625,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cleanup DefectDojo
-        run: python3 scripts/cleanup_defectdojo.py
+        run: |
+          set -euo pipefail
+          python3 scripts/cleanup_defectdojo.py
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
