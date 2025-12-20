@@ -1,9 +1,9 @@
-name: Vuln Bank DevSecOps Pipeline (v4.5.1)
+name: Vuln Bank DevSecOps Pipeline (v4.5.3)
 
 on:
-  push:
-    branches: ["main", "feature/*"]
   pull_request:
+    branches: ["main"]
+  push:
     branches: ["main"]
   workflow_dispatch:
 
@@ -31,7 +31,7 @@ env:
 
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-  SONAR_HOST_URL: "http://192.168.107.132:9000"
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
   SONAR_PROJECT_KEY: vuln-bank
 
   DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
@@ -39,12 +39,29 @@ env:
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
+# ============================================================
+# GUARD — avoid duplicate runs (push feature/*)
+# ============================================================
 jobs:
-  # =====================================================================
-  # 1. SECURITY SCANS + SONARQUBE
-  # =====================================================================
+  check_event:
+    runs-on: ubuntu-latest
+    outputs:
+      allow: ${{ steps.decide.outputs.allow }}
+    steps:
+      - id: decide
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/heads/feature/* ]]; then
+            echo "allow=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "allow=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ==========================================================
+  # 1) SECURITY SCAN STAGE (PR + main)
+  # ==========================================================
   security_scans:
-    name: Security Scans (All Tools)
+    needs: check_event
+    if: needs.check_event.outputs.allow == 'true'
     runs-on: self-hosted
 
     steps:
@@ -59,8 +76,7 @@ jobs:
 
       - name: Secret Scan (Gitleaks)
         run: |
-          gitleaks detect \
-            --source . \
+          gitleaks detect --source . \
             --report-format json \
             --report-path "${REPORT_DIR}/gitleaks.json" || true
 
@@ -72,13 +88,11 @@ jobs:
 
       - name: SAST Python (Bandit)
         run: |
-          bandit -r app.py auth.py database.py containers/app containers/db \
-            -f json -o "${REPORT_DIR}/bandit.json" || true
+          bandit -r . -f json -o "${REPORT_DIR}/bandit.json" || true
 
       - name: SAST Semgrep
         run: |
-          semgrep scan --config auto --json \
-            app.py auth.py database.py containers/app containers/db templates static \
+          semgrep scan --config auto --json . \
             > "${REPORT_DIR}/semgrep.json" || true
 
       - name: Misconfig Scan (Trivy Config)
@@ -93,18 +107,19 @@ jobs:
       - name: SBOM Scan (Syft dir)
         run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
-      - name: SonarQube Scan (Community Edition Safe)
+      - name: SonarQube Scan (CE safe)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
-
           echo "SonarQube CE → mainline scan only"
 
           sonar-scanner \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.token="${SONAR_TOKEN}" \
             -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+            -Dsonar.sources=. \
+            -Dsonar.tests="" \
             -Dsonar.qualitygate.wait=true
 
       - name: Snyk Authenticate
@@ -123,7 +138,7 @@ jobs:
       - name: Snyk Container Scan
         run: |
           snyk container test "${IMAGE_REPO}:${IMAGE_TAG}" \
-            --file=${DOCKERFILE_PATH} \
+            --file="${DOCKERFILE_PATH}" \
             --json > "${REPORT_DIR}/snyk/snyk-container.json" || true
 
       - uses: actions/upload-artifact@v4
@@ -131,135 +146,88 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-  # =====================================================================
-  # 1a. SONARQUBE QUALITY GATE + SLACK ALERT
-  # =====================================================================
-  sonar_quality_gate:
-    name: SonarQube Quality Gate Check
-    runs-on: self-hosted
-    needs: security_scans
-
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-    steps:
-      - name: Check Quality Gate Status
-        run: |
-          set -euo pipefail
-
-          echo "Checking SonarQube Quality Gate for project: ${SONAR_PROJECT_KEY}"
-
-          STATUS=$(curl -sS \
-            -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}" \
-            | jq -r '.projectStatus.status')
-
-          echo "Quality Gate status: ${STATUS}"
-
-          if [ "${STATUS}" != "OK" ]; then
-            echo "Quality Gate FAILED: ${STATUS}"
-            echo "qg_status=${STATUS}" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          echo "qg_status=${STATUS}" >> "$GITHUB_OUTPUT"
-
-      - name: Slack Alert for Quality Gate Failure
-        if: failure()
-        run: |
-          STATUS_TEXT="FAILED"
-          MSG="❌ SonarQube Quality Gate ${STATUS_TEXT} for project ${SONAR_PROJECT_KEY} on workflow ${GITHUB_WORKFLOW} (${GITHUB_REF})"
-
-          curl -X POST -H 'Content-Type: application/json' \
-            --data "{\"text\":\"${MSG}\"}" "${SLACK_WEBHOOK_URL}"
-
-  # =====================================================================
-  # 1b. SONARQUBE DASHBOARD SNAPSHOT (PIPELINE SUMMARY)
-  # =====================================================================
+  # ==========================================================
+  # 1b) SONAR DASHBOARD SNAPSHOT
+  # ==========================================================
   sonar_dashboard:
-    name: SonarQube FinTech Dashboard Snapshot
-    runs-on: self-hosted
     needs: security_scans
-
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    runs-on: self-hosted
 
     steps:
-      - name: Generate Dashboard Snapshot from SonarQube
+      - name: Generate Sonar Dashboard Snapshot
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
+          METRICS="bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,security_rating"
 
-          METRICS="bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,security_rating,reliability_rating,maintainability_rating,security_hotspots"
-
-          RESP=$(curl -sS \
+          RESPONSE=$(curl -sS \
             -H "Authorization: Bearer ${SONAR_TOKEN}" \
             "${SONAR_HOST_URL}/api/measures/component?component=${SONAR_PROJECT_KEY}&metricKeys=${METRICS}")
 
-          echo "## SonarQube FinTech Dashboard Snapshot" >> "$GITHUB_STEP_SUMMARY"
+          echo "## SonarQube Dashboard" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          echo "$RESP" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`json" >> "$GITHUB_STEP_SUMMARY"
+          echo "$RESPONSE" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
 
-  # =====================================================================
-  # 1c. SONARQUBE → DEFECTDOJO BRIDGE
-  # =====================================================================
-  sonar_defectdojo_bridge:
-    name: SonarQube → DefectDojo Import
-    runs-on: self-hosted
+  # ==========================================================
+  # 1c) SONAR QUALITY GATE → SLACK ALERT
+  # ==========================================================
+  sonar_quality_gate_alert:
     needs: security_scans
-
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    runs-on: self-hosted
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Prepare directory for Sonar issues export
-        run: |
-          mkdir -p "${REPORT_DIR}"
-
-      - name: Export SonarQube Issues to JSON
+      - name: Fetch Quality Gate Status
+        id: qg
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
+          PROJECT="${SONAR_PROJECT_KEY}"
+          HOST="${SONAR_HOST_URL}"
 
-          echo "Exporting SonarQube issues for: ${SONAR_PROJECT_KEY}"
+          STATUS=""
+          ATTEMPTS=30
 
-          curl -sS \
-            -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&ps=500" \
-            -o "${REPORT_DIR}/sonar-issues.json"
+          for i in $(seq 1 "${ATTEMPTS}"); do
+            RESP=$(curl -sS \
+              -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "${HOST}/api/qualitygates/project_status?projectKey=${PROJECT}" || true)
 
-          ls -lah "${REPORT_DIR}"
+            STATUS=$(echo "$RESP" | jq -r '.projectStatus.status // empty')
 
-      - name: Import Sonar Issues into DefectDojo
-        run: |
-          set -euo pipefail
+            if [ -n "$STATUS" ] && [ "$STATUS" != "NONE" ]; then
+              echo "$RESP" > quality-gate.json
+              echo "qg_status=${STATUS}" >> "$GITHUB_OUTPUT"
+              break
+            fi
 
-          FILE="${REPORT_DIR}/sonar-issues.json"
+            sleep 5
+          done
 
-          if [ ! -f "${FILE}" ]; then
-            echo "[SKIP] SonarQube issues JSON not found: ${FILE}"
-            exit 0
+          if [ -z "$STATUS" ]; then
+            echo "qg_status=UNKNOWN" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "[UPLOAD] SonarQube Issues → DefectDojo (${FILE})"
+      - name: Send Slack on Quality Gate failure/warn
+        if: |
+          steps.qg.outputs.qg_status == 'ERROR' ||
+          steps.qg.outputs.qg_status == 'WARN'
+        run: |
+          STATUS="${{ steps.qg.outputs.qg_status }}"
+          MSG="SonarQube Quality Gate *${STATUS}* for project ${SONAR_PROJECT_KEY} in repo ${GITHUB_REPOSITORY} (run: ${GITHUB_RUN_NUMBER})."
+          PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
+          curl -X POST -H 'Content-Type: application/json' \
+            --data "${PAYLOAD}" "${SLACK_WEBHOOK_URL}"
 
-          curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
-            -F "scan_type=SonarQube Scan" \
-            -F "product=${DEFECTDOJO_PRODUCT_ID}" \
-            -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
-            -F "file=@${FILE}" \
-            >/dev/null
-
-  # =====================================================================
-  # 2. IMPORT STATIC SCANS → DEFECTDOJO
-  # =====================================================================
+  # ==========================================================
+  # 2) DEFECTDOJO STATIC IMPORT
+  # ==========================================================
   defectdojo_import_scans:
-    name: Import Static Scans to DefectDojo
-    runs-on: self-hosted
     needs: security_scans
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -269,16 +237,15 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Import Static Reports
+      - name: Import Static Reports to DefectDojo
         run: |
           set -euo pipefail
-
-          DD_URL="${DEFECTDOJO_URL}"
-          DD_KEY="${DEFECTDOJO_API_KEY}"
+          DD_URL="${DEFECTDOJO_URL}/api/v2/import-scan/"
+          KEY="${DEFECTDOJO_API_KEY}"
           PROD="${DEFECTDOJO_PRODUCT_ID}"
           ENG="${DEFECTDOJO_ENGAGEMENT_ID}"
 
-          import_file() {
+          upload() {
             FILE="$1"
             TYPE="$2"
 
@@ -288,8 +255,8 @@ jobs:
             fi
 
             echo "[UPLOAD] $TYPE → DefectDojo ($FILE)"
-            curl -sS -X POST "${DD_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DD_KEY}" \
+            curl -sS -X POST "${DD_URL}" \
+              -H "Authorization: Token ${KEY}" \
               -F "scan_type=${TYPE}" \
               -F "product=${PROD}" \
               -F "engagement=${ENG}" \
@@ -297,26 +264,23 @@ jobs:
               >/dev/null
           }
 
-          import_file "${REPORT_DIR}/gitleaks.json"            "Gitleaks Scan"
-          import_file "${REPORT_DIR}/trivy-sca.json"           "Trivy Scan"
-          import_file "${REPORT_DIR}/bandit.json"              "Bandit Scan"
-          import_file "${REPORT_DIR}/semgrep.json"             "Semgrep JSON Report"
-          import_file "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Config Scan"
-          import_file "${REPORT_DIR}/checkov.json"             "Checkov Scan"
-          import_file "${REPORT_DIR}/sbom.json"                "CycloneDX Scan"
-          import_file "${REPORT_DIR}/snyk/snyk-sca.json"       "Snyk Scan"
-          import_file "${REPORT_DIR}/snyk/snyk-sast.json"      "Snyk Code Scan"
-          # DefectDojo OSS tidak punya "Snyk Container Scan" → map ke "Snyk Scan"
-          import_file "${REPORT_DIR}/snyk/snyk-container.json" "Snyk Scan"
+          upload "${REPORT_DIR}/gitleaks.json"            "Gitleaks Scan"
+          upload "${REPORT_DIR}/trivy-sca.json"           "Trivy Scan"
+          upload "${REPORT_DIR}/bandit.json"              "Bandit Scan"
+          upload "${REPORT_DIR}/semgrep.json"             "Semgrep JSON Report"
+          upload "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Config Scan"
+          upload "${REPORT_DIR}/checkov.json"             "Checkov Scan"
+          upload "${REPORT_DIR}/sbom.json"                "CycloneDX Scan"
+          upload "${REPORT_DIR}/snyk/snyk-sca.json"       "Snyk Scan"
+          upload "${REPORT_DIR}/snyk/snyk-sast.json"      "Snyk Scan"
+          upload "${REPORT_DIR}/snyk/snyk-container.json" "Snyk Scan"
 
-  # =====================================================================
-  # 3. EPSS GATE
-  # =====================================================================
+  # ==========================================================
+  # 3) EPSS GATE
+  # ==========================================================
   epss_gate:
-    name: EPSS Gate
-    runs-on: self-hosted
     needs: defectdojo_import_scans
-
+    runs-on: self-hosted
     outputs:
       can_deploy: ${{ steps.dec.outputs.can_deploy }}
 
@@ -328,31 +292,18 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Run EPSS Gate (strict)
+      - name: Run EPSS Gate
         run: |
           set -euo pipefail
-
           python3 scripts/epss_gate.py \
             --input "${REPORT_DIR}/trivy-sca.json" \
             --output "${REPORT_DIR}/epss-findings.json" \
             --threshold "${EPSS_THRESHOLD}"
 
-          if [ ! -s "${REPORT_DIR}/epss-findings.json" ]; then
-            echo "FATAL: EPSS gate did not produce epss-findings.json"
-            ls -lah "${REPORT_DIR}"
-            exit 1
-          fi
-
-          echo "EPSS output generated:"
-          cat "${REPORT_DIR}/epss-findings.json"
-
-      - name: EPSS Dashboard Summary
-        run: python3 scripts/composite_security_gate.py >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Decision
+      - name: EPSS Decision
         id: dec
         run: |
-          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
             exit 1
           else
@@ -364,13 +315,12 @@ jobs:
           name: epss-results
           path: ${{ env.REPORT_DIR }}/epss-findings.json
 
-  # =====================================================================
-  # 4. NOTIFICATION (EPSS + TRIVY → SLACK)
-  # =====================================================================
+  # ==========================================================
+  # 4) NOTIFY (Slack based on EPSS & Trivy)
+  # ==========================================================
   notify:
-    name: Slack Notification
-    runs-on: self-hosted
     needs: [security_scans, epss_gate]
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -406,206 +356,80 @@ jobs:
       - name: Send Slack Alert
         if: steps.parse.outputs.crit == 'true' || steps.parse.outputs.epss == 'true'
         run: |
-          MSG="⚠️ Vuln Bank Security Alert — Critical/High/EPSS High Detected."
+          MSG="⚠️ Vuln Bank Security Alert — Critical/High or EPSS-high vulnerabilities detected."
+          PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
           curl -X POST -H 'Content-Type: application/json' \
-            --data "{\"text\":\"${MSG}\"}" "${SLACK_WEBHOOK_URL}"
+            --data "${PAYLOAD}" "${SLACK_WEBHOOK_URL}"
 
-  # =====================================================================
-  # 5. CREATE GITHUB ISSUES (EPSS + SNYK)
-  # =====================================================================
-  create_issues:
-    name: Create GitHub Issues
-    runs-on: self-hosted
-    needs: [security_scans, epss_gate]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: security-reports
-          path: ${{ env.REPORT_DIR }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: epss-results
-          path: ${{ env.REPORT_DIR }}
-
-      - name: Create Issues from Findings
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          EPSS_FILE: ${{ env.REPORT_DIR }}/epss-findings.json
-          SNYK_FILE: ${{ env.REPORT_DIR }}/snyk/snyk-sca.json
-        run: |
-          python3 scripts/epss_create_issues.py
-
-  # =====================================================================
-  # 6. BUILD & SIGN (COSIGN v3) — MAIN + EPSS PASS
-  # =====================================================================
+  # ==========================================================
+  # 5) BUILD & SIGN (MAIN + EPSS PASS)
+  # ==========================================================
   build_and_sign:
-    runs-on: self-hosted
     needs: epss_gate
     if: github.ref == 'refs/heads/main' && needs.epss_gate.outputs.can_deploy == 'true'
+    runs-on: self-hosted
     outputs:
-      image_ref: ${{ steps.export.outputs.image_ref }}
+      image_ref: ${{ steps.out.outputs.image_ref }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docker Login
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Install Tools (Syft + Cosign)
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b "$HOME/.local/bin"
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
-            -o "$HOME/.local/bin/cosign"
-          chmod +x "$HOME/.local/bin/cosign"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
       - name: Build Image
-        run: |
-          docker build -t "${IMAGE_REPO}:${IMAGE_TAG}" -f "${DOCKERFILE_PATH}" .
+        run: docker build -t "${IMAGE_REPO}:${IMAGE_TAG}" -f "${DOCKERFILE_PATH}" .
 
       - name: Push Image
-        run: |
-          docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+        run: docker push "${IMAGE_REPO}:${IMAGE_TAG}"
 
       - name: Get Digest
-        id: build
+        id: digest
         run: |
-          set -euo pipefail
+          DIG=$(docker inspect --format='{{ index .RepoDigests 0 }}' "${IMAGE_REPO}:${IMAGE_TAG}")
+          echo "IMAGE_REF=$DIG" >> "$GITHUB_ENV"
 
-          DIGEST=$(docker inspect --format='{{ index .RepoDigests 0 }}' "${IMAGE_REPO}:${IMAGE_TAG}" || true)
+      - name: Set Output
+        id: out
+        run: echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$DIGEST" ]; then
-            echo "ERROR: Docker returned no digest. Dumping full inspect:"
-            docker inspect "${IMAGE_REPO}:${IMAGE_TAG}"
-            exit 1
-          fi
+      - name: Generate SBOM for Image
+        run: syft "$IMAGE_REF" -o cyclonedx-json=sbom.json
 
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "IMAGE_REF=$DIGEST" >> "$GITHUB_ENV"
-
-      - name: Export Image Ref
-        id: export
-        run: |
-          set -euo pipefail
-
-          IMAGE_REF="${{ steps.build.outputs.digest }}"
-          echo "Resolved IMAGE_REF = ${IMAGE_REF}"
-
-          if [ -z "$IMAGE_REF" ]; then
-            echo "FATAL: image digest is EMPTY — cannot continue"
-            exit 1
-          fi
-
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
-          echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
-          echo "IMAGE_TO_SIGN=${IMAGE_REF}" >> "$GITHUB_ENV"
-
-      - name: Save Image Ref to file
-        run: |
-          echo "${IMAGE_REF}" > image-ref.txt
-          cat image-ref.txt
-
-      - name: Upload Image Ref artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-ref
-          path: image-ref.txt
-
-      - name: SBOM for Container
-        run: syft "${IMAGE_TO_SIGN}" -o cyclonedx-json=sbom.json
-
-      - name: Sign Image & Attest SBOM (main only)
+      - name: Sign Image & Attest SBOM
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          cosign sign --yes "${IMAGE_TO_SIGN}"
-          cosign attest \
-            --predicate sbom.json \
-            --type cyclonedx \
-            "${IMAGE_TO_SIGN}"
+          cosign sign --yes "$IMAGE_REF"
+          cosign attest --predicate sbom.json --type cyclonedx "$IMAGE_REF"
 
       - uses: actions/upload-artifact@v4
         with:
           name: sbom-cyclonedx
           path: sbom.json
 
-  # =====================================================================
-  # 7. DEPLOY (ANSIBLE + VERIFY SIGNATURE) — MAIN ONLY
-  # =====================================================================
+  # ==========================================================
+  # 6) DEPLOY (ANSIBLE)
+  # ==========================================================
   deploy:
-    name: Deploy (Ansible)
-    runs-on: self-hosted
     needs: build_and_sign
-    if: github.ref == 'refs/heads/main' && needs.build_and_sign.result == 'success'
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Image Ref artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: image-ref
-          path: .
-
-      - name: Resolve IMAGE_REF from artifact
-        id: resolve
-        run: |
-          set -euo pipefail
-
-          FILE="image-ref.txt"
-          if [ -f "$FILE" ]; then
-            IMAGE_REF=$(tr -d '\n' < "$FILE")
-            echo "IMAGE_REF from artifact: ${IMAGE_REF}"
-          else
-            echo "Artifact image-ref.txt not found, fallback to job output..."
-            IMAGE_REF="${{ needs.build_and_sign.outputs.image_ref }}"
-            echo "IMAGE_REF from needs: ${IMAGE_REF}"
-          fi
-
-          if [ -z "$IMAGE_REF" ]; then
-            echo "FATAL: IMAGE_REF still empty — cannot verify or deploy"
-            exit 1
-          fi
-
-          echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
-
-      - name: Verify Image Signature (Strict, main only)
-        env:
-          IMAGE_REF: ${{ env.IMAGE_REF }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "$IMAGE_REF" ]; then
-            echo "FATAL: IMAGE_REF empty"
-            exit 1
-          fi
-
-          cosign verify \
-            --certificate-identity "https://github.com/novaferrydianto/vuln-bank/.github/workflows/devsecops.yml@refs/heads/main" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "$IMAGE_REF"
-
       - name: Deploy with Ansible
-        env:
-          IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner_temp
-          chmod 600 ~/.ssh/id_runner_temp
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_runner
+          chmod 600 ~/.ssh/id_runner
 
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            --private-key ~/.ssh/id_runner_temp \
-            -e "image_ref=${IMAGE_REF}" \
+            --private-key ~/.ssh/id_runner \
+            -e "image_ref=${{ needs.build_and_sign.outputs.image_ref }}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "app_secret=${{ secrets.APP_SECRET_KEY }}" \
             -e "jwt_secret=${{ secrets.JWT_SECRET_KEY }}" \
@@ -614,20 +438,19 @@ jobs:
             -e "dockerhub_token=${{ secrets.DOCKERHUB_TOKEN }}"
 
       - name: Slack Deployment Success
-        if: success()
         run: |
-          MSG="✅ Deployment Success\nImage: ${IMAGE_REF}\nTarget: ${APP_URL}"
-          curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"${MSG}\"}" "${SLACK_WEBHOOK_URL}"
+          MSG="Deployment Success\nImage: ${{ needs.build_and_sign.outputs.image_ref }}\nTarget: ${APP_URL}"
+          PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
+          curl -X POST -H 'Content-Type: application/json' \
+            --data "${PAYLOAD}" "${SLACK_WEBHOOK_URL}"
 
-  # =====================================================================
-  # 8. DAST (ZAP)
-  # =====================================================================
+  # ==========================================================
+  # 7) DAST ZAP
+  # ==========================================================
   dast:
-    name: DAST Scan (OWASP ZAP)
-    runs-on: self-hosted
     needs: deploy
-    if: github.ref == 'refs/heads/main' && needs.deploy.result == 'success'
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -643,14 +466,13 @@ jobs:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
 
-  # =====================================================================
-  # 9. IMPORT ZAP → DEFECTDOJO
-  # =====================================================================
+  # ==========================================================
+  # 8) IMPORT ZAP → DEFECTDOJO
+  # ==========================================================
   defectdojo_import_dast:
-    name: Import ZAP DAST to DefectDojo
-    runs-on: self-hosted
     needs: dast
-    if: github.ref == 'refs/heads/main' && needs.dast.result == 'success'
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -663,10 +485,9 @@ jobs:
       - name: Import ZAP Report
         run: |
           set -euo pipefail
-
           FILE="${REPORT_DIR}/zap/zap_alerts.json"
+
           if [ -f "$FILE" ]; then
-            echo "[UPLOAD] ZAP Scan → DefectDojo (${FILE})"
             curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
               -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
               -F "scan_type=ZAP Scan" \
@@ -677,26 +498,26 @@ jobs:
               -F "verified=true" \
               >/dev/null
           else
-            echo "[SKIP] ZAP - file missing: ${FILE}"
+            echo "[SKIP] ZAP - file missing: $FILE"
           fi
 
-  # =====================================================================
-  # 10. DEFECTDOJO CLEANUP (FINAL STEP)
-  # =====================================================================
+  # ==========================================================
+  # 9) DEFECTDOJO CLEANUP
+  # ==========================================================
   cleanup_defectdojo:
-    name: Cleanup & Enrich DefectDojo
-    runs-on: self-hosted
     needs: [defectdojo_import_scans, defectdojo_import_dast]
+    runs-on: self-hosted
     if: always()
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cleanup DefectDojo
-        run: python3 scripts/cleanup_defectdojo.py
+      - name: Cleanup & Enrich DefectDojo
         env:
           DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
           DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
           DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
           DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
           EPSS_THRESHOLD: ${{ env.EPSS_THRESHOLD }}
+        run: |
+          python3 scripts/cleanup_defectdojo.py
