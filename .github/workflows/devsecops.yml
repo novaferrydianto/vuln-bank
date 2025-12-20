@@ -1,4 +1,4 @@
-name: Vuln Bank DevSecOps Pipeline (v4.3)
+name: Vuln Bank DevSecOps Pipeline (v4.4)
 
 on:
   push:
@@ -20,6 +20,7 @@ concurrency:
 env:
   APP_NAME: vuln-bank
   APP_URL: "http://192.168.107.135"
+
   REPORT_DIR: security-reports
   EPSS_THRESHOLD: "0.5"
 
@@ -39,8 +40,12 @@ env:
   DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
   DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
 
+  SARIF_DIR: security-reports/sarif
+  SBOM_APP_FILE: security-reports/sbom-app.json
+  SBOM_IMAGE_FILE: security-reports/sbom-image.json
+
 # =====================================================================
-# 1. SECURITY SCANS + SONARQUBE (RUNS FOR MAIN & PR)
+# 1. SECURITY SCANS + SONARQUBE (MAIN & PR)
 # =====================================================================
 jobs:
   security_scans:
@@ -56,6 +61,7 @@ jobs:
         run: |
           mkdir -p "${REPORT_DIR}"
           mkdir -p "${REPORT_DIR}/snyk"
+          mkdir -p "${SARIF_DIR}"
 
       - name: Secret Scan (Gitleaks)
         run: |
@@ -64,39 +70,52 @@ jobs:
             --report-format json \
             --report-path "${REPORT_DIR}/gitleaks.json" || true
 
-      - name: SCA Scan (Trivy FS)
+      - name: SCA Scan (Trivy FS JSON)
         run: |
           trivy fs --scanners vuln,secret \
             --format json \
             --output "${REPORT_DIR}/trivy-sca.json" .
+
+      - name: SCA Scan (Trivy FS SARIF for GitHub)
+        run: |
+          trivy fs --scanners vuln,secret \
+            --format sarif \
+            --output "${SARIF_DIR}/trivy-sca.sarif" .
 
       - name: SAST Python (Bandit)
         run: |
           bandit -r app.py auth.py database.py containers/app containers/db \
             -f json -o "${REPORT_DIR}/bandit.json" || true
 
-      - name: SAST Semgrep
+      - name: SAST Semgrep (JSON + SARIF)
         run: |
-          semgrep scan --config auto --json \
+          semgrep scan --config auto \
+            --json \
             app.py auth.py database.py containers/app containers/db templates static \
             > "${REPORT_DIR}/semgrep.json" || true
+
+          semgrep scan --config auto \
+            --sarif \
+            app.py auth.py database.py containers/app containers/db templates static \
+            > "${SARIF_DIR}/semgrep.sarif" || true
 
       - name: Misconfig Scan (Trivy Config)
         run: |
           trivy config --format json \
             --output "${REPORT_DIR}/trivy-misconfig.json" .
 
-      - name: Misconfig Scan (Checkov)
+      - name: Misconfig Scan (Checkov JSON + SARIF)
         run: |
           checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
+          checkov -d . -o sarif > "${SARIF_DIR}/checkov.sarif" || true
 
-      - name: SBOM Scan (Syft dir)
-        run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
+      - name: SBOM App (Syft dir)
+        run: |
+          syft dir:. -o json > "${SBOM_APP_FILE}"
 
       - name: SonarQube Scan (Community Edition Safe)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
           set -euo pipefail
 
@@ -126,7 +145,7 @@ jobs:
       - name: Snyk Code Test (SAST)
         run: snyk code test --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
 
-      - name: Snyk Container Scan
+      - name: Snyk Container Scan (optional, may fail if image not yet pushed)
         run: |
           snyk container test "${IMAGE_REPO}:${IMAGE_TAG}" \
             --file=${DOCKERFILE_PATH} \
@@ -137,6 +156,11 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sarif-reports
+          path: ${{ env.SARIF_DIR }}
+
 # =====================================================================
 # 1b. SONARQUBE DASHBOARD SNAPSHOT (PIPELINE SUMMARY)
 # =====================================================================
@@ -144,6 +168,9 @@ jobs:
     name: SonarQube FinTech Dashboard Snapshot
     runs-on: self-hosted
     needs: security_scans
+
+    env:
+      SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
 
     steps:
       - name: Generate Dashboard Snapshot from SonarQube
@@ -160,12 +187,65 @@ jobs:
 
           echo "## SonarQube FinTech Dashboard Snapshot" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
           echo "$RESP" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
 # =====================================================================
-# 2. IMPORT STATIC SCANS → DEFECTDOJO  (STABLE, NO HTML NOISE)
+# 1c. UPLOAD SARIF → GITHUB SECURITY DASHBOARD
+# =====================================================================
+  upload_sarif:
+    name: Upload SARIF to GitHub Security
+    runs-on: self-hosted
+    needs: security_scans
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sarif-reports
+          path: ${{ env.SARIF_DIR }}
+
+      - name: Upload SARIF (Trivy / Semgrep / Checkov)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.SARIF_DIR }}
+
+# =====================================================================
+# 1d. OPENSSF SCORECARD (REPO SECURITY POSTURE)
+# =====================================================================
+  scorecard:
+    name: OpenSSF Scorecard
+    runs-on: self-hosted
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      id-token: write
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@v2.3.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+
+# =====================================================================
+# 2. IMPORT STATIC SCANS → DEFECTDOJO
 # =====================================================================
   defectdojo_import_scans:
     name: Import Static Scans to DefectDojo
@@ -180,7 +260,7 @@ jobs:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - name: Import Static Reports
+      - name: Import Static Reports (with simple retry)
         run: |
           set -euo pipefail
 
@@ -199,13 +279,24 @@ jobs:
             fi
 
             echo "[UPLOAD] $TYPE → DefectDojo ($FILE)"
-            curl -sS -X POST "${DD_URL}/api/v2/import-scan/" \
-              -H "Authorization: Token ${DD_KEY}" \
-              -F "scan_type=${TYPE}" \
-              -F "product=${PROD}" \
-              -F "engagement=${ENG}" \
-              -F "file=@${FILE}" \
-              >/dev/null
+
+            for i in 1 2 3; do
+              if curl -sS -X POST "${DD_URL}/api/v2/import-scan/" \
+                -H "Authorization: Token ${DD_KEY}" \
+                -F "scan_type=${TYPE}" \
+                -F "product=${PROD}" \
+                -F "engagement=${ENG}" \
+                -F "file=@${FILE}" \
+                >/dev/null; then
+                echo "[OK] ${TYPE} uploaded"
+                return 0
+              fi
+              echo "[WARN] ${TYPE} upload failed (attempt ${i}), retrying..."
+              sleep 5
+            done
+
+            echo "[ERROR] ${TYPE} upload failed after retries"
+            return 1
           }
 
           import_file "${REPORT_DIR}/gitleaks.json"            "Gitleaks Scan"
@@ -214,15 +305,13 @@ jobs:
           import_file "${REPORT_DIR}/semgrep.json"             "Semgrep JSON Report"
           import_file "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Config Scan"
           import_file "${REPORT_DIR}/checkov.json"             "Checkov Scan"
-          import_file "${REPORT_DIR}/sbom.json"                "CycloneDX Scan"
+          import_file "${SBOM_APP_FILE}"                       "CycloneDX Scan"
           import_file "${REPORT_DIR}/snyk/snyk-sca.json"       "Snyk Scan"
           import_file "${REPORT_DIR}/snyk/snyk-sast.json"      "Snyk Code Scan"
-          # NOTE: DefectDojo OSS tidak punya "Snyk Container Scan"
-          # Kita map ke "Snyk Scan" juga (container subset)
           import_file "${REPORT_DIR}/snyk/snyk-container.json" "Snyk Scan"
 
 # =====================================================================
-# 3. EPSS GATE (AFTER IMPORT OF STATIC SCANS)
+# 3. EPSS GATE
 # =====================================================================
   epss_gate:
     name: EPSS Gate
@@ -264,7 +353,7 @@ jobs:
       - name: Decision
         id: dec
         run: |
-          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json"; then
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
             exit 1
           else
@@ -353,7 +442,48 @@ jobs:
           python3 scripts/epss_create_issues.py
 
 # =====================================================================
-# 6. BUILD & SIGN (COSIGN v3) — ONLY ON MAIN + EPSS PASS
+# 6. AUTO-LABEL PR RISK (LOW / HIGH)
+# =====================================================================
+  risk_labels:
+    name: Label PR Risk Level
+    runs-on: self-hosted
+    needs: [security_scans, epss_gate]
+    if: github.event_name == 'pull_request'
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: epss-results
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Compute Risk Level & Label PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          RISK="low"
+          if jq -e '.high_risk | length > 0' "${REPORT_DIR}/epss-findings.json" >/dev/null 2>&1; then
+            RISK="high"
+          fi
+
+          LABEL="risk:${RISK}"
+          NUMBER=${{ github.event.pull_request.number }}
+
+          echo "Applying label '${LABEL}' to PR #${NUMBER}"
+
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${NUMBER}/labels" \
+            -d "{\"labels\":[\"${LABEL}\"]}" >/dev/null
+
+# =====================================================================
+# 7. BUILD & SIGN (COSIGN v3) — ONLY ON MAIN + EPSS PASS
 # =====================================================================
   build_and_sign:
     runs-on: self-hosted
@@ -422,19 +552,9 @@ jobs:
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
           echo "IMAGE_TO_SIGN=$IMAGE_REF" >> "$GITHUB_ENV"
 
-      - name: Save Image Ref to file
+      - name: SBOM for Container Image
         run: |
-          echo "$IMAGE_REF" > image-ref.txt
-          cat image-ref.txt
-
-      - name: Upload Image Ref artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-ref
-          path: image-ref.txt
-
-      - name: SBOM for Container
-        run: syft "$IMAGE_TO_SIGN" -o cyclonedx-json=sbom.json
+          syft "$IMAGE_TO_SIGN" -o json > "${SBOM_IMAGE_FILE}"
 
       - name: Sign Image & Attest SBOM (main only)
         env:
@@ -442,17 +562,17 @@ jobs:
         run: |
           cosign sign --yes "$IMAGE_TO_SIGN"
           cosign attest \
-            --predicate sbom.json \
+            --predicate "${SBOM_IMAGE_FILE}" \
             --type cyclonedx \
             "$IMAGE_TO_SIGN"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sbom-cyclonedx
-          path: sbom.json
+          name: sbom-image
+          path: ${{ env.SBOM_IMAGE_FILE }}
 
 # =====================================================================
-# 7. DEPLOY (ANSIBLE + VERIFY SIGNATURE) — MAIN ONLY
+# 8. DEPLOY (ANSIBLE + VERIFY SIGNATURE) — MAIN ONLY
 # =====================================================================
   deploy:
     name: Deploy (Ansible)
@@ -533,7 +653,7 @@ jobs:
             --data "{\"text\":\"$msg\"}" "$SLACK_WEBHOOK_URL"
 
 # =====================================================================
-# 8. DAST (ZAP)
+# 9. DAST (ZAP)
 # =====================================================================
   dast:
     name: DAST Scan (OWASP ZAP)
@@ -556,7 +676,7 @@ jobs:
           path: ${{ env.REPORT_DIR }}/zap
 
 # =====================================================================
-# 9. IMPORT ZAP → DEFECTDOJO
+# 10. IMPORT ZAP → DEFECTDOJO
 # =====================================================================
   defectdojo_import_dast:
     name: Import ZAP DAST to DefectDojo
@@ -593,7 +713,7 @@ jobs:
           fi
 
 # =====================================================================
-# 10. DEFECTDOJO CLEANUP (FINAL STEP)
+# 11. DEFECTDOJO CLEANUP (FINAL STEP)
 # =====================================================================
   cleanup_defectdojo:
     name: Cleanup & Enrich DefectDojo
