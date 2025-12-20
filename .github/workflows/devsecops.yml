@@ -50,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Sonar SCM blame needs full history
+          fetch-depth: 0
 
       - name: Prepare directories
         run: |
@@ -94,16 +94,15 @@ jobs:
         run: syft dir:. -o json > "${REPORT_DIR}/sbom.json"
 
       - name: SonarQube Scan (Community Edition Safe)
-        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
           set -euo pipefail
 
           echo "SonarQube CE → mainline analysis only (no branch/PR features)"
 
           sonar-scanner \
-            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
             -Dsonar.host.url=${SONAR_HOST_URL} \
             -Dsonar.login=${SONAR_TOKEN} \
             -Dsonar.qualitygate.wait=true \
