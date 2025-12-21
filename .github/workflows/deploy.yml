@@ -403,7 +403,7 @@ jobs:
           set -euo pipefail
           payload=$(cat <<JSON
           {
-          "text": "*Vuln Bank* deployment completed on *main*.\n• Image: ${{ needs.build_and_push.outputs.image_ref }}\n• DAST target: ${DAST_TARGET_URL}\n• Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            "text": "*Vuln Bank* deployment completed on *main*.\n• Image: ${{ needs.build_and_push.outputs.image_ref }}\n• DAST target: ${DAST_TARGET_URL}\n• Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           }
           JSON
           )
