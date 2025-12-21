@@ -499,7 +499,7 @@ jobs:
           import_file "${REPORT_DIR}/trivy-sca.json"           "Trivy Scan"
           import_file "${REPORT_DIR}/bandit.json"              "Bandit Scan"
           import_file "${REPORT_DIR}/semgrep.json"             "Semgrep JSON Report"
-          import_file "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Config Scan"
+          import_file "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Scan"
           import_file "${REPORT_DIR}/checkov.json"             "Checkov Scan"
           import_file "${REPORT_DIR}/sbom-cyclonedx.json"      "CycloneDX Scan"
           import_file "${REPORT_DIR}/snyk/snyk-sca.json"       "Snyk Scan"
