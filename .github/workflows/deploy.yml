@@ -171,7 +171,7 @@ jobs:
           trivy config --format json --output "${REPORT_DIR}/trivy-config.json" .
           trivy config --format sarif --output "${REPORT_DIR}/sarif/trivy-config.sarif" . || true
 
-       - name: "Misconfig (Checkov IaC) [scan-only: skip if missing]"
+      - name: "Misconfig (Checkov IaC) [scan-only: skip if missing]"
         shell: bash
         run: |
           set -euo pipefail
