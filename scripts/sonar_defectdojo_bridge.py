@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """
-sonar_defectdojo_bridge.py (v4.7)
+sonar_defectdojo_bridge.py (final)
 
-Fixes:
-- DefectDojo 400 "Attribute 'test' is required" by creating a Test first
-- DefectDojo expects environment as pk (int), not string -> resolves environment ID
-- Ruff UP015 compliance (no explicit "r" open mode)
-- Ruff UP007 compliance (use `X | Y` instead of Optional[X])
-- More robust: resolves test_type ID dynamically (falls back if lookup fails)
-- Skips creating empty tests/imports when there are 0 findings
+Purpose:
+- Convert SonarQube Issues + Security Hotspots into DefectDojo "Generic Findings Import".
+- Create a DefectDojo Test first (DefectDojo requires 'test' for import-scan, or requires
+  target_start/target_end + environment as PK when creating tests, depending on instance).
+
+Fixes applied:
+- Ruff UP007: uses X | Y instead of Optional[X]
+- DefectDojo 'environment' expects PK (int), not string.
+- DefectDojo test create often requires target_start/target_end.
+- Robust lookups for test_type id + environment id.
+- Skips import if 0 findings.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import subprocess
 import sys
 from typing import Any
 
-# Severity mapping (DefectDojo expected values vary; these are commonly accepted)
+
 SEVERITY_MAP: dict[str, str] = {
     "BLOCKER": "Critical",
     "CRITICAL": "Critical",
@@ -34,7 +39,6 @@ def load_json(path: str) -> dict[str, Any]:
     if not os.path.isfile(path):
         print(f"[WARN] File not found: {path}", file=sys.stderr)
         return {}
-    # Ruff UP015: omit "r"
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -93,6 +97,7 @@ def map_hotspot(hs: dict[str, Any]) -> dict[str, Any]:
             f"Vulnerability Probability: {prob}",
             f"Component: {comp}",
             f"Line: {line or 'N/A'}",
+            f"Key: {hs.get('key')}",
         ]
     )
 
@@ -108,7 +113,7 @@ def map_hotspot(hs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
 def _dd_env() -> dict[str, str]:
@@ -122,121 +127,96 @@ def _dd_env() -> dict[str, str]:
         "key": os.environ["DEFECTDOJO_API_KEY"],
         "prod": os.environ["DEFECTDOJO_PRODUCT_ID"],
         "eng": os.environ["DEFECTDOJO_ENGAGEMENT_ID"],
+        "env_name": os.environ.get("DEFECTDOJO_ENVIRONMENT", "Development"),
     }
 
 
-def _curl_json(url: str, token: str) -> dict[str, Any]:
-    cmd = ["curl", "-sS", "-X", "GET", url, "-H", f"Authorization: Token {token}"]
-    out = _run(cmd)
-    if out.returncode != 0:
-        return {}
-    try:
-        return json.loads(out.stdout) if out.stdout.strip() else {}
-    except Exception:
-        return {}
+def _auth_headers(key: str) -> list[str]:
+    return ["-H", f"Authorization: Token {key}"]
 
 
 def resolve_test_type_id(dd: str, key: str, name: str = "Generic Findings Import") -> int | None:
-    """
-    DefectDojo stores test types; IDs may differ per instance.
-    We try to fetch test_type by name.
-    Endpoint: /api/v2/test_types/?name=<...>
-    """
+    # /api/v2/test_types/?name=<...>
     q = name.replace(" ", "%20")
-    data = _curl_json(f"{dd}/api/v2/test_types/?name={q}", key)
-    results = data.get("results") or []
-    if results:
-        tid = results[0].get("id")
-        try:
-            return int(tid) if tid is not None else None
-        except Exception:
-            return None
+    url = f"{dd}/api/v2/test_types/?name={q}"
+    out = _run(["curl", "-sS", "-X", "GET", url, *_auth_headers(key)])
+    if out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout)
+        results = data.get("results") or []
+        if results and results[0].get("id") is not None:
+            return int(results[0]["id"])
+    except Exception:
+        return None
     return None
 
 
-def resolve_environment_id(dd: str, key: str, name: str = "Development") -> int | None:
+def resolve_environment_id(dd: str, key: str, name: str) -> int | None:
     """
-    DefectDojo expects environment as pk (int), not string.
-
-    Different Dojo versions expose different endpoints. We try a few common patterns:
-    - /api/v2/environments/?name=<name>
-    - /api/v2/development_environments/ (older / custom builds)
-    If all fail, return None and caller may fall back (or hard fail).
+    DefectDojo expects environment as PK (int), not string.
+    Endpoint: /api/v2/environments/?name=<...>
+    If not found, we fallback to None and later fallback to "Development" default ID if possible.
     """
     q = name.replace(" ", "%20")
-
-    # Most common (modern) endpoint
-    data = _curl_json(f"{dd}/api/v2/environments/?name={q}", key)
-    results = data.get("results") or []
-    if results:
-        eid = results[0].get("id")
-        try:
-            return int(eid) if eid is not None else None
-        except Exception:
-            return None
-
-    # Fallback probes (best-effort)
-    for endpoint in ("development_environments", "staging_environments", "production_environments"):
-        data2 = _curl_json(f"{dd}/api/v2/{endpoint}/?name={q}", key)
-        results2 = data2.get("results") or []
-        if results2:
-            eid = results2[0].get("id")
-            try:
-                return int(eid) if eid is not None else None
-            except Exception:
-                return None
-
+    url = f"{dd}/api/v2/environments/?name={q}"
+    out = _run(["curl", "-sS", "-X", "GET", url, *_auth_headers(key)])
+    if out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout)
+        results = data.get("results") or []
+        if results and results[0].get("id") is not None:
+            return int(results[0]["id"])
+    except Exception:
+        return None
     return None
 
 
-def create_test(title: str, environment_name: str = "Development") -> int:
+def _iso_date(d: dt.date) -> str:
+    return d.strftime("%Y-%m-%d")
+
+
+def create_test(title: str) -> int:
     env = _dd_env()
-    dd, key, prod, eng = env["dd"], env["key"], env["prod"], env["eng"]
+    dd, key, prod, eng, env_name = env["dd"], env["key"], env["prod"], env["eng"], env["env_name"]
 
-    test_type_id = resolve_test_type_id(dd, key)  # try dynamic
-    if test_type_id is None:
-        # Fallback to a common default; better than failing hard, but log it.
-        test_type_id = 17
-        print("[WARN] Could not resolve test_type ID dynamically; falling back to 17.", file=sys.stderr)
+    test_type_id = resolve_test_type_id(dd, key) or 17  # fallback
+    env_id = resolve_environment_id(dd, key, env_name) or resolve_environment_id(dd, key, "Development")
 
-    environment_id = resolve_environment_id(dd, key, environment_name)
-    if environment_id is None:
-        # If your Dojo has envs disabled/unavailable, this may still fail.
-        # You can hardcode an ID here once you confirm it from your Dojo.
-        print(
-            f"[WARN] Could not resolve environment ID for '{environment_name}'. "
-            "DefectDojo may reject test creation without a valid environment pk.",
-            file=sys.stderr,
-        )
-
+    # Some Dojo deployments require target_start/target_end; provide safe defaults (today).
+    today = dt.date.today()
     payload: dict[str, Any] = {
         "title": title,
         "engagement": int(eng),
-        # IMPORTANT: environment is pk (int). If None, we omit it and let Dojo validate.
         "test_type": int(test_type_id),
         "product": int(prod),
+        "target_start": _iso_date(today),
+        "target_end": _iso_date(today),
     }
-    if environment_id is not None:
-        payload["environment"] = int(environment_id)
 
-    cmd = [
-        "curl",
-        "-sS",
-        "-X",
-        "POST",
-        f"{dd}/api/v2/tests/",
-        "-H",
-        f"Authorization: Token {key}",
-        "-H",
-        "Content-Type: application/json",
-        "-d",
-        json.dumps(payload),
-    ]
+    # Environment: prefer PK if resolved, else omit it (some instances have default)
+    if env_id is not None:
+        payload["environment"] = int(env_id)
 
-    out = _run(cmd)
+    out = _run(
+        [
+            "curl",
+            "-sS",
+            "-X",
+            "POST",
+            f"{dd}/api/v2/tests/",
+            *_auth_headers(key),
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            json.dumps(payload),
+        ]
+    )
+
     if out.returncode != 0:
         print(out.stderr, file=sys.stderr)
-        raise RuntimeError("Failed to create DefectDojo Test")
+        raise RuntimeError("Failed to create DefectDojo Test (curl non-zero)")
 
     try:
         resp = json.loads(out.stdout)
@@ -246,6 +226,7 @@ def create_test(title: str, environment_name: str = "Development") -> int:
 
     test_id = resp.get("id")
     if not test_id:
+        # Print body for debugging
         print(out.stdout, file=sys.stderr)
         raise RuntimeError("DefectDojo Test did not return ID")
 
@@ -257,49 +238,51 @@ def upload_findings(json_path: str, test_id: int) -> None:
     env = _dd_env()
     dd, key, prod, eng = env["dd"], env["key"], env["prod"], env["eng"]
 
-    cmd = [
-        "curl",
-        "-sS",
-        "-X",
-        "POST",
-        f"{dd}/api/v2/import-scan/",
-        "-H",
-        f"Authorization: Token {key}",
-        "-F",
-        "scan_type=Generic Findings Import",
-        "-F",
-        f"test={test_id}",
-        "-F",
-        f"product={prod}",
-        "-F",
-        f"engagement={eng}",
-        "-F",
-        "active=true",
-        "-F",
-        "verified=true",
-        "-F",
-        f"file=@{json_path}",
-    ]
+    if not os.path.isfile(json_path):
+        raise RuntimeError(f"Generic findings file not found: {json_path}")
 
-    out = _run(cmd)
+    out = _run(
+        [
+            "curl",
+            "-sS",
+            "-X",
+            "POST",
+            f"{dd}/api/v2/import-scan/",
+            *_auth_headers(key),
+            "-F",
+            "scan_type=Generic Findings Import",
+            "-F",
+            f"test={test_id}",
+            "-F",
+            f"product={prod}",
+            "-F",
+            f"engagement={eng}",
+            "-F",
+            "active=true",
+            "-F",
+            "verified=true",
+            "-F",
+            f"file=@{json_path}",
+        ]
+    )
+
+    # curl may return 0 but Dojo returns JSON error; detect it
+    body = out.stdout.strip()
     if out.returncode != 0:
-        print("[ERROR] DefectDojo import failed", file=sys.stderr)
-        print(out.stdout, file=sys.stderr)
+        print(body, file=sys.stderr)
         print(out.stderr, file=sys.stderr)
-        raise RuntimeError("DefectDojo import failed")
+        raise RuntimeError("DefectDojo import failed (curl non-zero)")
 
-    # DefectDojo may still return JSON with error while curl exitcode=0; guard that too
-    if out.stdout.strip().startswith("{"):
+    if body.startswith("{"):
         try:
-            resp = json.loads(out.stdout)
-            # Common error shapes
-            if "detail" in resp and isinstance(resp["detail"], str) and resp["detail"]:
-                raise RuntimeError(f"DefectDojo import error: {resp['detail']}")
-            if "message" in resp and isinstance(resp["message"], str) and resp["message"]:
-                # If Dojo returns validation message, surface it.
-                # Note: some responses contain "pro" upsell text; ignore that unless paired with errors.
-                if "target_start" in resp or "target_end" in resp or "environment" in resp:
-                    raise RuntimeError(f"DefectDojo import validation error: {resp['message']}")
+            resp = json.loads(body)
+            # Common Dojo error shapes:
+            # {"detail":"..."} or {"message":"...","...":...}
+            if isinstance(resp, dict) and (
+                (isinstance(resp.get("detail"), str) and resp.get("detail"))
+                or (isinstance(resp.get("message"), str) and resp.get("message"))
+            ):
+                raise RuntimeError(f"DefectDojo import error: {resp}")
         except json.JSONDecodeError:
             pass
 
@@ -311,15 +294,16 @@ def main() -> None:
     parser.add_argument("--issues", required=True)
     parser.add_argument("--hotspots", required=True)
     parser.add_argument("--out", default=None)
-    parser.add_argument("--environment", default=os.environ.get("DD_ENVIRONMENT", "Development"))
     args = parser.parse_args()
 
-    issues = load_json(args.issues).get("issues", []) or []
-    hotspots = load_json(args.hotspots).get("hotspots", []) or []
+    issues = (load_json(args.issues).get("issues", []) or []) if args.issues else []
+    hotspots = (load_json(args.hotspots).get("hotspots", []) or []) if args.hotspots else []
 
     findings: list[dict[str, Any]] = []
-    findings.extend(map_issue(i) for i in issues)
-    findings.extend(map_hotspot(h) for h in hotspots)
+    for i in issues:
+        findings.append(map_issue(i))
+    for h in hotspots:
+        findings.append(map_hotspot(h))
 
     if not findings:
         print("[INFO] No Sonar issues/hotspots found. Skipping DefectDojo test/import.")
@@ -327,7 +311,6 @@ def main() -> None:
 
     report_dir = os.environ.get("REPORT_DIR", ".")
     os.makedirs(report_dir, exist_ok=True)
-
     out_path = args.out or os.path.join(report_dir, "sonar-defectdojo-generic.json")
 
     with open(out_path, "w", encoding="utf-8") as f:
@@ -336,9 +319,9 @@ def main() -> None:
     print(f"[INFO] Generic findings written: {out_path}")
     print(f"[INFO] Total findings: {len(findings)}")
 
-    sha7 = (os.environ.get("GITHUB_SHA") or "manual")[:7]
-    title = f"SonarQube Bridge Import - {sha7}"
-    test_id = create_test(title=title, environment_name=args.environment)
+    sha = os.environ.get("GITHUB_SHA", "")[:7] or "manual"
+    title = f"SonarQube Bridge Import - {sha} ({os.environ.get('DEFECTDOJO_ENVIRONMENT','')})"
+    test_id = create_test(title=title)
     upload_findings(out_path, test_id)
 
 
