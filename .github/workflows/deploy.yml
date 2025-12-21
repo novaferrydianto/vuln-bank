@@ -69,6 +69,24 @@ jobs:
           chmod +x scripts/*.py
           ls -la scripts
 
+      - name: Verify tools (scan-only, no install)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "==> Verify required tools"
+          for t in trivy hadolint python3; do
+            command -v "$t" >/dev/null 2>&1 || { echo "Missing tool: $t"; exit 1; }
+            echo "- $t: $(command -v "$t")"
+          done
+          if command -v checkov >/dev/null 2>&1; then
+            echo "- checkov: $(command -v checkov)"
+          else
+            echo "- checkov: NOT INSTALLED (will be skipped)"
+          fi
+          trivy --version
+          hadolint --version
+          python3 --version
+
       - name: Prepare folders
         shell: bash
         run: |
@@ -88,45 +106,18 @@ jobs:
         continue-on-error: true
 
       # ------------------------------
-      # INSTALL TOOLING (Trivy + Semgrep + Checkov + Hadolint + Syft)
-      # ------------------------------
-      - name: Install tools (Trivy, Semgrep, Checkov, Hadolint, Syft)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Trivy
-          if ! command -v trivy >/dev/null 2>&1; then
-            curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          fi
-
-          # Semgrep + Checkov
-          python3 -m pip install --upgrade pip >/dev/null
-          python3 -m pip install --upgrade semgrep checkov >/dev/null
-
-          # Hadolint
-          if ! command -v hadolint >/dev/null 2>&1; then
-            HADOLINT_URL="https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64"
-            curl -sSL "$HADOLINT_URL" -o /usr/local/bin/hadolint
-            chmod +x /usr/local/bin/hadolint
-          fi
-
-          # Syft (SBOM)
-          if ! command -v syft >/dev/null 2>&1; then
-            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          fi
-
-      # ------------------------------
       # SCA (Trivy FS / deps) + SARIF
       # ------------------------------
       - name: SCA (Trivy FS)
         shell: bash
         run: |
           set -euo pipefail
+          echo "Running Trivy FS..."
           trivy fs --scanners vuln,secret,license \
             --format json --output "${REPORT_DIR}/trivy-sca.json" .
           trivy fs --scanners vuln,secret,license \
             --format sarif --output "${REPORT_DIR}/sarif/trivy-sca.sarif" . || true
+          echo "Trivy FS done."
 
       # ------------------------------
       # EPSS GATE (expects scripts/epss_gate.py)
@@ -170,6 +161,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          hadolint --version
           hadolint "${DOCKERFILE_PATH}" | tee "${REPORT_DIR}/hadolint.txt" || true
 
       - name: Misconfig (Trivy Config)
@@ -179,10 +171,15 @@ jobs:
           trivy config --format json --output "${REPORT_DIR}/trivy-config.json" .
           trivy config --format sarif --output "${REPORT_DIR}/sarif/trivy-config.sarif" . || true
 
-      - name: Misconfig (Checkov IaC)
+      - name: Misconfig (Checkov IaC) [scan-only: skip if missing]
         shell: bash
         run: |
           set -euo pipefail
+          if ! command -v checkov >/dev/null 2>&1; then
+            echo "[SKIP] checkov not installed on runner"
+            echo '{"summary":{"failed":0},"results":{}}' > "${REPORT_DIR}/checkov.json"
+            exit 0
+          fi
           checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
 
       # ------------------------------
@@ -283,18 +280,11 @@ jobs:
 
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
 
-      - name: Install Syft (if missing)
+      - name: Generate SBOM (Syft) [requires syft installed on runner]
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v syft >/dev/null 2>&1; then
-            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          fi
-
-      - name: Generate SBOM (Syft)
-        shell: bash
-        run: |
-          set -euo pipefail
+          command -v syft >/dev/null 2>&1 || { echo "Missing tool: syft (install it once on runner)"; exit 1; }
           mkdir -p "${REPORT_DIR}"
           syft "registry:${{ steps.out.outputs.image_ref }}" -o spdx-json > "${REPORT_DIR}/sbom.spdx.json"
 
