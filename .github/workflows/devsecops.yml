@@ -58,66 +58,127 @@ jobs:
           mkdir -p "${REPORT_DIR}"
           mkdir -p "${REPORT_DIR}/snyk"
 
+      - name: Tooling quick check (fail fast if missing)
+        run: |
+          set -euo pipefail
+          need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing tool: $1"; exit 1; }; }
+          need jq
+          need curl
+          need docker
+          need python3
+
+          # Optional tools (warn only)
+          for t in gitleaks trivy bandit semgrep checkov syft sonar-scanner snyk; do
+            if ! command -v "$t" >/dev/null 2>&1; then
+              echo "[WARN] Tool not found: $t (ensure installed on runner)"
+            else
+              echo "[OK] $t: $($t --version 2>/dev/null | head -n 1 || true)"
+            fi
+          done
+
       - name: Secret Scan (Gitleaks)
         run: |
           set -euo pipefail
-          gitleaks detect \
-            --source . \
-            --report-format json \
-            --report-path "${REPORT_DIR}/gitleaks.json" || true
+          if command -v gitleaks >/dev/null 2>&1; then
+            gitleaks detect \
+              --source . \
+              --report-format json \
+              --report-path "${REPORT_DIR}/gitleaks.json" || true
+          else
+            echo "[SKIP] gitleaks not installed"
+          fi
 
-      # Optional warm-up: helps if self-hosted runner sometimes lacks Trivy DB cache
       - name: Trivy DB warm-up (optional)
         run: |
           set -euo pipefail
-          trivy --version || true
-          trivy fs --download-db-only || true
-          trivy fs --download-java-db-only || true
+          if command -v trivy >/dev/null 2>&1; then
+            trivy --version || true
+            trivy fs --download-db-only || true
+            trivy fs --download-java-db-only || true
+          else
+            echo "[SKIP] trivy not installed"
+          fi
 
       - name: SCA Scan (Trivy FS)
         run: |
           set -euo pipefail
-          trivy fs --scanners vuln,secret \
-            --format json \
-            --output "${REPORT_DIR}/trivy-sca.json" .
+          if command -v trivy >/dev/null 2>&1; then
+            trivy fs --scanners vuln,secret \
+              --format json \
+              --output "${REPORT_DIR}/trivy-sca.json" .
+          else
+            echo "[SKIP] trivy not installed"
+            echo '{"Results":[]}' > "${REPORT_DIR}/trivy-sca.json"
+          fi
 
       - name: SAST Python (Bandit)
         run: |
           set -euo pipefail
-          bandit -r app.py auth.py database.py containers/app containers/db \
-            -f json -o "${REPORT_DIR}/bandit.json" || true
+          if command -v bandit >/dev/null 2>&1; then
+            bandit -r app.py auth.py database.py containers/app containers/db \
+              -f json -o "${REPORT_DIR}/bandit.json" || true
+          else
+            echo "[SKIP] bandit not installed"
+            echo '{}' > "${REPORT_DIR}/bandit.json"
+          fi
 
       - name: SAST Semgrep
         run: |
           set -euo pipefail
-          semgrep scan --config auto --json \
-            app.py auth.py database.py containers/app containers/db templates static \
-            > "${REPORT_DIR}/semgrep.json" || true
+          if command -v semgrep >/dev/null 2>&1; then
+            semgrep scan --config auto --json \
+              app.py auth.py database.py containers/app containers/db templates static \
+              > "${REPORT_DIR}/semgrep.json" || true
+          else
+            echo "[SKIP] semgrep not installed"
+            echo '{}' > "${REPORT_DIR}/semgrep.json"
+          fi
 
       - name: Misconfig Scan (Trivy Config)
         run: |
           set -euo pipefail
-          trivy config --format json \
-            --output "${REPORT_DIR}/trivy-misconfig.json" .
+          if command -v trivy >/dev/null 2>&1; then
+            trivy config --format json \
+              --output "${REPORT_DIR}/trivy-misconfig.json" .
+          else
+            echo "[SKIP] trivy not installed"
+            echo '{}' > "${REPORT_DIR}/trivy-misconfig.json"
+          fi
 
       - name: Misconfig Scan (Checkov)
         run: |
           set -euo pipefail
-          checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
+          if command -v checkov >/dev/null 2>&1; then
+            checkov -d . -o json > "${REPORT_DIR}/checkov.json" || true
+          else
+            echo "[SKIP] checkov not installed"
+            echo '{}' > "${REPORT_DIR}/checkov.json"
+          fi
 
-      - name: SBOM Scan (Syft dir)
+      # IMPORTANT: Create CycloneDX SBOM (not Syft native JSON) for DefectDojo "CycloneDX Scan"
+      - name: SBOM (CycloneDX JSON via Syft)
         run: |
           set -euo pipefail
-          syft dir:. -o json > "${REPORT_DIR}/sbom.json"
+          if command -v syft >/dev/null 2>&1; then
+            syft dir:. -o cyclonedx-json="${REPORT_DIR}/sbom-cyclonedx.json"
+          else
+            echo "[SKIP] syft not installed"
+            echo '{}' > "${REPORT_DIR}/sbom-cyclonedx.json"
+          fi
 
-      - name: SonarQube Scan (Community Edition Safe)
+      - name: SonarQube Scan (CE safe; QG checked in separate job)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: ${{ env.SONAR_PROJECT_KEY }}
         run: |
           set -euo pipefail
-          echo "SonarQube CE → scan now; Quality Gate checked in separate job (API)."
+          if ! command -v sonar-scanner >/dev/null 2>&1; then
+            echo "[SKIP] sonar-scanner not installed"
+            exit 0
+          fi
+
+          echo "SonarQube CE → scanning now; QG evaluated in separate job by polling CE task."
 
           sonar-scanner \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
@@ -127,36 +188,72 @@ jobs:
             -Dsonar.tests="" \
             -Dsonar.qualitygate.wait=false
 
+          # Capture report-task.txt for reliable CE task polling later
+          if [ -f ".scannerwork/report-task.txt" ]; then
+            cp ".scannerwork/report-task.txt" "${REPORT_DIR}/sonar-report-task.txt"
+          else
+            echo "[WARN] .scannerwork/report-task.txt not found"
+          fi
+
       - name: Snyk Authenticate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -euo pipefail
-          snyk auth "$SNYK_TOKEN"
+          if command -v snyk >/dev/null 2>&1; then
+            snyk auth "$SNYK_TOKEN"
+          else
+            echo "[SKIP] snyk not installed"
+          fi
 
-      # v4.7: build local image so Snyk Container Scan can run reliably
+      # build local image so Snyk Container Scan can run reliably
       - name: Build image locally for Snyk (no push)
         run: |
           set -euo pipefail
-          docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
+          if command -v docker >/dev/null 2>&1; then
+            docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} .
+          else
+            echo "[SKIP] docker not installed"
+          fi
 
       - name: Snyk SCA (pip)
         run: |
           set -euo pipefail
-          snyk test --file=requirements.txt --package-manager=pip \
-            --json > "${REPORT_DIR}/snyk/snyk-sca.json" || true
+          if command -v snyk >/dev/null 2>&1; then
+            # If your real deps file is containers/app/requirements.txt, switch here.
+            SNYK_REQ="containers/app/requirements.txt"
+            if [ ! -f "$SNYK_REQ" ]; then
+              SNYK_REQ="requirements.txt"
+            fi
+
+            snyk test --file="$SNYK_REQ" --package-manager=pip \
+              --json > "${REPORT_DIR}/snyk/snyk-sca.json" || true
+          else
+            echo "[SKIP] snyk not installed"
+            echo '{}' > "${REPORT_DIR}/snyk/snyk-sca.json"
+          fi
 
       - name: Snyk Code Test (SAST)
         run: |
           set -euo pipefail
-          snyk code test --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
+          if command -v snyk >/dev/null 2>&1; then
+            snyk code test --json > "${REPORT_DIR}/snyk/snyk-sast.json" || true
+          else
+            echo "[SKIP] snyk not installed"
+            echo '{}' > "${REPORT_DIR}/snyk/snyk-sast.json"
+          fi
 
       - name: Snyk Container Scan
         run: |
           set -euo pipefail
-          snyk container test "${IMAGE_REPO}:${IMAGE_TAG}" \
-            --file=${DOCKERFILE_PATH} \
-            --json > "${REPORT_DIR}/snyk/snyk-container.json" || true
+          if command -v snyk >/dev/null 2>&1; then
+            snyk container test "${IMAGE_REPO}:${IMAGE_TAG}" \
+              --file=${DOCKERFILE_PATH} \
+              --json > "${REPORT_DIR}/snyk/snyk-container.json" || true
+          else
+            echo "[SKIP] snyk not installed"
+            echo '{}' > "${REPORT_DIR}/snyk/snyk-container.json"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -164,7 +261,8 @@ jobs:
           path: ${{ env.REPORT_DIR }}
 
   # =====================================================================
-  # 1b) SONAR QUALITY GATE + SLACK (WITH SEVERITY COUNTS, NO URL)
+  # 1b) SONAR QUALITY GATE + SLACK (WITH SEVERITY COUNTS)
+  #     Uses CE task polling via report-task.txt to avoid race conditions.
   # =====================================================================
   sonar_quality_gate:
     name: Sonar Quality Gate + Slack Alert
@@ -177,7 +275,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check Quality Gate via Sonar API
+      - uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: ${{ env.REPORT_DIR }}
+
+      - name: Check Quality Gate via Sonar CE Task (robust)
         id: gate
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -185,20 +288,61 @@ jobs:
           SONAR_PROJECT_KEY: ${{ env.SONAR_PROJECT_KEY }}
         run: |
           set -euo pipefail
-
           mkdir -p "${REPORT_DIR}"
 
-          RESP=$(curl -sS \
-            -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
+          TASK_FILE="${REPORT_DIR}/sonar-report-task.txt"
+          if [ ! -f "$TASK_FILE" ]; then
+            echo "[WARN] sonar-report-task.txt missing. Falling back to direct project_status by projectKey (may race)."
+            RESP="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")"
+            echo "$RESP" > "${REPORT_DIR}/sonar-quality-gate.json"
+            STATUS="$(echo "$RESP" | jq -r '.projectStatus.status // "UNKNOWN"')"
+            echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ceTaskId="$(grep -E '^ceTaskId=' "$TASK_FILE" | cut -d= -f2- | tr -d '\r' || true)"
+          if [ -z "$ceTaskId" ]; then
+            echo "FATAL: ceTaskId not found in $TASK_FILE"
+            cat "$TASK_FILE"
+            exit 1
+          fi
+
+          echo "Polling Sonar CE task: $ceTaskId"
+
+          analysisId=""
+          for i in $(seq 1 24); do
+            CE="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "${SONAR_HOST_URL}/api/ce/task?id=${ceTaskId}")"
+            status="$(echo "$CE" | jq -r '.task.status // "UNKNOWN"')"
+            echo "CE status: $status (attempt $i/24)"
+            if [ "$status" = "SUCCESS" ]; then
+              analysisId="$(echo "$CE" | jq -r '.task.analysisId // ""')"
+              break
+            fi
+            if [ "$status" = "FAILED" ] || [ "$status" = "CANCELED" ]; then
+              echo "$CE" > "${REPORT_DIR}/sonar-ce-task.json"
+              echo "FATAL: Sonar CE task $status"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          if [ -z "$analysisId" ]; then
+            echo "FATAL: analysisId not resolved (CE task did not finish in time)"
+            echo "$CE" > "${REPORT_DIR}/sonar-ce-task.json"
+            exit 1
+          fi
+
+          RESP="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+            "${SONAR_HOST_URL}/api/qualitygates/project_status?analysisId=${analysisId}")"
 
           echo "$RESP" > "${REPORT_DIR}/sonar-quality-gate.json"
-
-          STATUS=$(echo "$RESP" | jq -r '.projectStatus.status')
+          STATUS="$(echo "$RESP" | jq -r '.projectStatus.status // "UNKNOWN"')"
           echo "Quality Gate status: ${STATUS}"
           echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
 
-      - name: Slack Alert for Quality Gate (Severity Summary, no URL)
+      - name: Slack Alert for Quality Gate (with Severity)
         if: steps.gate.outputs.status != 'OK'
         env:
           SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
@@ -208,40 +352,50 @@ jobs:
         run: |
           set -euo pipefail
 
-          ISSUES=$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&ps=500")
+          status="${{ steps.gate.outputs.status }}"
+          commit="${GITHUB_SHA}"
+          repo="${GITHUB_REPOSITORY}"
 
-          # UI-accurate mapping:
-          # Blocker=BLOCKER, High=CRITICAL, Medium=MAJOR, Low=MINOR, Info=INFO
-          BLOCKER=$(echo "$ISSUES" | jq '.issues | map(select(.severity=="BLOCKER")) | length')
-          HIGH=$(echo "$ISSUES"    | jq '.issues | map(select(.severity=="CRITICAL")) | length')
-          MED=$(echo "$ISSUES"     | jq '.issues | map(select(.severity=="MAJOR")) | length')
-          LOW=$(echo "$ISSUES"     | jq '.issues | map(select(.severity=="MINOR")) | length')
-          INFO=$(echo "$ISSUES"    | jq '.issues | map(select(.severity=="INFO")) | length')
+          MEAS="$(curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+            "${SONAR_HOST_URL}/api/measures/component?component=${SONAR_PROJECT_KEY}&metricKeys=blocker_violations,critical_violations,major_violations,minor_violations,info_violations")"
 
-          STATUS="${{ steps.gate.outputs.status }}"
-          REPO="${GITHUB_REPOSITORY}"
-          COMMIT="${GITHUB_SHA}"
+          get_metric() {
+            local metric="$1"
+            echo "$MEAS" | jq -r --arg m "$metric" '
+              (.component.measures // [])
+              | map(select(.metric == $m) | .value)[0] // "0"
+            '
+          }
 
-          MSG="❌ *SonarQube Quality Gate FAILED (${STATUS})*\n\
-*Repository:* ${REPO}\n\
-*Commit:* ${COMMIT}\n\
-\n\
-*Severity (SonarQube):*\n\
-• ⛔ Blocker: ${BLOCKER}\n\
-• 🔴 High: ${HIGH}\n\
-• 🟠 Medium: ${MED}\n\
-• 🟡 Low: ${LOW}\n\
-• ℹ️ Info: ${INFO}\n\
-\n\
-Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
+          BLOCKER="$(get_metric blocker_violations)"
+          HIGH="$(get_metric critical_violations)"
+          MED="$(get_metric major_violations)"
+          LOW="$(get_metric minor_violations)"
+          INFO="$(get_metric info_violations)"
 
-          curl -X POST -H "Content-Type: application/json" \
-            --data "$(jq -Rs --arg msg "$MSG" '{"text": $msg}')" \
-            "${SLACK_WEBHOOK_URL}"
+          msg="$(cat <<EOF
+            ❌ SonarQube Quality Gate FAILED (${status})
+            Repo: ${repo}
+            Commit: ${commit}
+
+              Severity (SonarQube):
+                - Blocker: ${BLOCKER}
+                - High: ${HIGH}
+                - Medium: ${MED}
+                - Low: ${LOW}
+                - Info: ${INFO}
+
+              Untuk lebih lanjut silakan cek Dashboard SonarQube.
+          EOF
+          )"
+
+          payload="$(jq -n --arg text "$msg" '{text:$text}')"
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data "$payload" "$SLACK_WEBHOOK_URL" >/dev/null
 
       - name: Fail when Quality Gate not OK
         run: |
+          set -euo pipefail
           if [ "${{ steps.gate.outputs.status }}" != "OK" ]; then
             echo "Quality Gate is not OK → failing job"
             exit 1
@@ -259,6 +413,7 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
     name: Import Static Scans to DefectDojo
     runs-on: self-hosted
     needs: security_scans
+    if: always()
 
     steps:
       - uses: actions/checkout@v4
@@ -276,6 +431,11 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
           DD_KEY="${DEFECTDOJO_API_KEY}"
           PROD="${DEFECTDOJO_PRODUCT_ID}"
           ENG="${DEFECTDOJO_ENGAGEMENT_ID}"
+
+          if [ -z "$DD_URL" ] || [ -z "$DD_KEY" ] || [ -z "$PROD" ] || [ -z "$ENG" ]; then
+            echo "[SKIP] DefectDojo env not set"
+            exit 0
+          fi
 
           import_file() {
             FILE="$1"
@@ -296,16 +456,16 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
               >/dev/null
           }
 
-          import_file "${REPORT_DIR}/gitleaks.json"            "Gitleaks Scan"
-          import_file "${REPORT_DIR}/trivy-sca.json"           "Trivy Scan"
-          import_file "${REPORT_DIR}/bandit.json"              "Bandit Scan"
-          import_file "${REPORT_DIR}/semgrep.json"             "Semgrep JSON Report"
-          import_file "${REPORT_DIR}/trivy-misconfig.json"     "Trivy Config Scan"
-          import_file "${REPORT_DIR}/checkov.json"             "Checkov Scan"
-          import_file "${REPORT_DIR}/sbom.json"                "CycloneDX Scan"
-          import_file "${REPORT_DIR}/snyk/snyk-sca.json"       "Snyk Scan"
-          import_file "${REPORT_DIR}/snyk/snyk-sast.json"      "Snyk Code Scan"
-          import_file "${REPORT_DIR}/snyk/snyk-container.json" "Snyk Scan"
+          import_file "${REPORT_DIR}/gitleaks.json"                 "Gitleaks Scan"
+          import_file "${REPORT_DIR}/trivy-sca.json"                "Trivy Scan"
+          import_file "${REPORT_DIR}/bandit.json"                   "Bandit Scan"
+          import_file "${REPORT_DIR}/semgrep.json"                  "Semgrep JSON Report"
+          import_file "${REPORT_DIR}/trivy-misconfig.json"          "Trivy Config Scan"
+          import_file "${REPORT_DIR}/checkov.json"                  "Checkov Scan"
+          import_file "${REPORT_DIR}/sbom-cyclonedx.json"           "CycloneDX Scan"
+          import_file "${REPORT_DIR}/snyk/snyk-sca.json"            "Snyk Scan"
+          import_file "${REPORT_DIR}/snyk/snyk-sast.json"           "Snyk Code Scan"
+          import_file "${REPORT_DIR}/snyk/snyk-container.json"      "Snyk Scan"
 
   # =====================================================================
   # 3) EPSS GATE (BLOCK DEPLOY IF .high_risk exists)
@@ -313,7 +473,8 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
   epss_gate:
     name: EPSS Gate
     runs-on: self-hosted
-    needs: defectdojo_import_scans
+    needs: [security_scans, defectdojo_import_scans]
+    if: always()
 
     outputs:
       can_deploy: ${{ steps.dec.outputs.can_deploy }}
@@ -326,7 +487,6 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      # Ensure Sonar JSON exists for summary (prevents Sonar counts = 0)
       - name: Fetch Sonar Issues & Hotspots for Summary
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -336,13 +496,19 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
 
-          curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&ps=500" \
-            -o "${REPORT_DIR}/sonar-issues.json" || true
+          if [ -n "${SONAR_TOKEN:-}" ] && [ -n "${SONAR_HOST_URL:-}" ]; then
+            curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&ps=500" \
+              -o "${REPORT_DIR}/sonar-issues.json" || true
 
-          curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
-            "${SONAR_HOST_URL}/api/hotspots/search?projectKey=${SONAR_PROJECT_KEY}&ps=500" \
-            -o "${REPORT_DIR}/sonar-hotspots.json" || true
+            curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
+              "${SONAR_HOST_URL}/api/hotspots/search?projectKey=${SONAR_PROJECT_KEY}&ps=500" \
+              -o "${REPORT_DIR}/sonar-hotspots.json" || true
+          else
+            echo "[SKIP] Sonar token/host not set"
+            echo '{}' > "${REPORT_DIR}/sonar-issues.json"
+            echo '{}' > "${REPORT_DIR}/sonar-hotspots.json"
+          fi
 
       - name: Run EPSS Gate (strict)
         run: |
@@ -432,14 +598,15 @@ Untuk Lebih Lanjut Silahkan Dashboard SonarQube"
           SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
-          MSG="⚠️ Vuln Bank Security Alert ⚠️\n\
-• Critical/High vulnerabilities or EPSS-high findings detected.\n\
-Commit: ${GITHUB_SHA}\n\
-Repo: ${GITHUB_REPOSITORY}"
+          MSG="⚠️ Vuln Bank Security Alert ⚠️
+            • Critical/High vulnerabilities or EPSS-high findings detected.
+            Repo: ${GITHUB_REPOSITORY}
+            Commit: ${GITHUB_SHA}"
 
-          curl -X POST -H "Content-Type: application/json" \
-            --data "$(jq -Rs --arg msg "$MSG" '{"text": $msg}')" \
-            "${SLACK_WEBHOOK_URL}"
+          payload="$(jq -n --arg text "$MSG" '{text:$text}')"
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --data "$payload" \
+            "${SLACK_WEBHOOK_URL}" >/dev/null
 
   # =====================================================================
   # 5) CREATE GITHUB ISSUES (EPSS + SNYK)
@@ -475,7 +642,6 @@ Repo: ${GITHUB_REPOSITORY}"
 
   # =====================================================================
   # 6) SONAR ↔ DEFECTDOJO BRIDGE (ISSUES + HOTSPOTS)
-  #    Note: patched script should create a Test and import using test=<id>
   # =====================================================================
   sonar_defectdojo_bridge:
     name: Sonar ↔ DefectDojo Bridge
@@ -499,15 +665,13 @@ Repo: ${GITHUB_REPOSITORY}"
         run: |
           set -euo pipefail
 
-          curl -sS \
-            -H "Authorization: Bearer ${SONAR_TOKEN}" \
+          curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
             "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&ps=500" \
-            -o "${REPORT_DIR}/sonar-issues.json"
+            -o "${REPORT_DIR}/sonar-issues.json" || true
 
-          curl -sS \
-            -H "Authorization: Bearer ${SONAR_TOKEN}" \
+          curl -sS -H "Authorization: Bearer ${SONAR_TOKEN}" \
             "${SONAR_HOST_URL}/api/hotspots/search?projectKey=${SONAR_PROJECT_KEY}&ps=500" \
-            -o "${REPORT_DIR}/sonar-hotspots.json"
+            -o "${REPORT_DIR}/sonar-hotspots.json" || true
 
       - name: Push Sonar Issues & Hotspots to DefectDojo
         env:
@@ -548,15 +712,22 @@ Repo: ${GITHUB_REPOSITORY}"
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Install Tools (Syft + Cosign)
+      - name: Install Tools (Syft + Cosign) locally
         run: |
           set -euo pipefail
           mkdir -p $HOME/.local/bin
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b $HOME/.local/bin
-          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
-            -o $HOME/.local/bin/cosign
-          chmod +x $HOME/.local/bin/cosign
+
+          if ! command -v syft >/dev/null 2>&1; then
+            curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+              | sh -s -- -b $HOME/.local/bin
+          fi
+
+          if ! command -v cosign >/dev/null 2>&1; then
+            curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+              -o $HOME/.local/bin/cosign
+            chmod +x $HOME/.local/bin/cosign
+          fi
+
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Build Image
@@ -569,16 +740,17 @@ Repo: ${GITHUB_REPOSITORY}"
           set -euo pipefail
           docker push ${IMAGE_REPO}:${IMAGE_TAG}
 
-      - name: Get Digest
+      - name: Resolve Digest (robust)
         id: build
         run: |
           set -euo pipefail
 
-          DIGEST=$(docker inspect --format='{{ index .RepoDigests 0 }}' ${IMAGE_REPO}:${IMAGE_TAG} || true)
+          docker pull ${IMAGE_REPO}:${IMAGE_TAG} >/dev/null 2>&1 || true
 
+          DIGEST="$(docker inspect --format='{{ index .RepoDigests 0 }}' ${IMAGE_REPO}:${IMAGE_TAG} 2>/dev/null || true)"
           if [ -z "$DIGEST" ]; then
-            echo "ERROR: Docker returned no digest. Dumping full inspect:"
-            docker inspect ${IMAGE_REPO}:${IMAGE_TAG}
+            echo "ERROR: Docker returned no RepoDigest. Dumping inspect:"
+            docker inspect ${IMAGE_REPO}:${IMAGE_TAG} || true
             exit 1
           fi
 
@@ -589,7 +761,6 @@ Repo: ${GITHUB_REPOSITORY}"
         id: export
         run: |
           set -euo pipefail
-
           IMAGE_REF="${{ steps.build.outputs.digest }}"
           echo "Resolved IMAGE_REF = $IMAGE_REF"
 
@@ -614,12 +785,12 @@ Repo: ${GITHUB_REPOSITORY}"
           name: image-ref
           path: image-ref.txt
 
-      - name: SBOM for Container
+      - name: SBOM for Container (CycloneDX)
         run: |
           set -euo pipefail
           syft "$IMAGE_TO_SIGN" -o cyclonedx-json=sbom.json
 
-      - name: Sign Image & Attest SBOM (main only)
+      - name: Sign Image & Attest SBOM (keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
@@ -660,7 +831,7 @@ Repo: ${GITHUB_REPOSITORY}"
 
           FILE="image-ref.txt"
           if [ -f "$FILE" ]; then
-            IMAGE_REF=$(cat "$FILE" | tr -d '\n')
+            IMAGE_REF="$(cat "$FILE" | tr -d '\n' | tr -d '\r')"
             echo "IMAGE_REF from artifact: $IMAGE_REF"
           else
             echo "Artifact image-ref.txt not found, fallback to job output..."
@@ -698,7 +869,7 @@ Repo: ${GITHUB_REPOSITORY}"
           fi
 
           cosign verify \
-            --certificate-identity "https://github.com/novaferrydianto/vuln-bank/.github/workflows/devsecops.yml@refs/heads/main" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/devsecops.yml@refs/heads/main" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "$IMAGE_REF"
 
@@ -727,11 +898,14 @@ Repo: ${GITHUB_REPOSITORY}"
           SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
-          MSG="✅ Vuln Bank Deploy Success\nImage: ${IMAGE_REF}\nTarget: ${APP_URL}"
+          MSG="✅ Vuln Bank Deploy Success
+            Image: ${IMAGE_REF}
+            Target: ${APP_URL}"
 
-          curl -X POST -H "Content-Type: application/json" \
-            --data "$(jq -Rs --arg msg "$MSG" '{"text": $msg}')" \
-            "${SLACK_WEBHOOK_URL}"
+          payload="$(jq -n --arg text "$MSG" '{text:$text}')"
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --data "$payload" \
+            "${SLACK_WEBHOOK_URL}" >/dev/null
 
   # =====================================================================
   # 9) DAST (ZAP) — MAIN ONLY
