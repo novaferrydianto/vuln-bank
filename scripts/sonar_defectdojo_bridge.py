@@ -4,20 +4,24 @@ sonar_defectdojo_bridge.py (v4.7)
 
 Fixes:
 - DefectDojo 400 "Attribute 'test' is required" by creating a Test first
+- DefectDojo expects environment as pk (int), not string -> resolves environment ID
 - Ruff UP015 compliance (no explicit "r" open mode)
+- Ruff UP007 compliance (use `X | Y` instead of Optional[X])
 - More robust: resolves test_type ID dynamically (falls back if lookup fails)
 - Skips creating empty tests/imports when there are 0 findings
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
-import sys
 import subprocess
-from typing import Any, Dict, List, Optional
+import sys
+from typing import Any
 
 # Severity mapping (DefectDojo expected values vary; these are commonly accepted)
-SEVERITY_MAP = {
+SEVERITY_MAP: dict[str, str] = {
     "BLOCKER": "Critical",
     "CRITICAL": "Critical",
     "MAJOR": "High",
@@ -26,7 +30,7 @@ SEVERITY_MAP = {
 }
 
 
-def load_json(path: str) -> Dict[str, Any]:
+def load_json(path: str) -> dict[str, Any]:
     if not os.path.isfile(path):
         print(f"[WARN] File not found: {path}", file=sys.stderr)
         return {}
@@ -42,7 +46,7 @@ def normalize_component(component: str) -> str:
     return component
 
 
-def map_issue(issue: Dict[str, Any]) -> Dict[str, Any]:
+def map_issue(issue: dict[str, Any]) -> dict[str, Any]:
     raw = (issue.get("severity") or "INFO").upper()
     sev = SEVERITY_MAP.get(raw, "Low")
 
@@ -72,7 +76,7 @@ def map_issue(issue: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def map_hotspot(hs: Dict[str, Any]) -> Dict[str, Any]:
+def map_hotspot(hs: dict[str, Any]) -> dict[str, Any]:
     comp = normalize_component(hs.get("component", ""))
     line = hs.get("line")
     prob = (hs.get("vulnerabilityProbability") or "").upper()
@@ -103,11 +107,11 @@ def map_hotspot(hs: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _run(cmd: List[str]) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def _dd_env() -> Dict[str, str]:
+def _dd_env() -> dict[str, str]:
     required = ["DEFECTDOJO_URL", "DEFECTDOJO_API_KEY", "DEFECTDOJO_PRODUCT_ID", "DEFECTDOJO_ENGAGEMENT_ID"]
     missing = [k for k in required if not os.environ.get(k)]
     if missing:
@@ -121,46 +125,99 @@ def _dd_env() -> Dict[str, str]:
     }
 
 
-def resolve_test_type_id(dd: str, key: str, name: str = "Generic Findings Import") -> Optional[int]:
+def _curl_json(url: str, token: str) -> dict[str, Any]:
+    cmd = ["curl", "-sS", "-X", "GET", url, "-H", f"Authorization: Token {token}"]
+    out = _run(cmd)
+    if out.returncode != 0:
+        return {}
+    try:
+        return json.loads(out.stdout) if out.stdout.strip() else {}
+    except Exception:
+        return {}
+
+
+def resolve_test_type_id(dd: str, key: str, name: str = "Generic Findings Import") -> int | None:
     """
     DefectDojo stores test types; IDs may differ per instance.
     We try to fetch test_type by name.
     Endpoint: /api/v2/test_types/?name=<...>
     """
-    url = f"{dd}/api/v2/test_types/?name={name.replace(' ', '%20')}"
-    cmd = ["curl", "-sS", "-X", "GET", url, "-H", f"Authorization: Token {key}"]
-    out = _run(cmd)
-    if out.returncode != 0:
-        return None
-    try:
-        data = json.loads(out.stdout)
-        results = data.get("results") or []
-        if results:
-            tid = results[0].get("id")
-            return int(tid) if tid else None
-    except Exception:
-        return None
+    q = name.replace(" ", "%20")
+    data = _curl_json(f"{dd}/api/v2/test_types/?name={q}", key)
+    results = data.get("results") or []
+    if results:
+        tid = results[0].get("id")
+        try:
+            return int(tid) if tid is not None else None
+        except Exception:
+            return None
     return None
 
 
-def create_test(title: str) -> int:
+def resolve_environment_id(dd: str, key: str, name: str = "Development") -> int | None:
+    """
+    DefectDojo expects environment as pk (int), not string.
+
+    Different Dojo versions expose different endpoints. We try a few common patterns:
+    - /api/v2/environments/?name=<name>
+    - /api/v2/development_environments/ (older / custom builds)
+    If all fail, return None and caller may fall back (or hard fail).
+    """
+    q = name.replace(" ", "%20")
+
+    # Most common (modern) endpoint
+    data = _curl_json(f"{dd}/api/v2/environments/?name={q}", key)
+    results = data.get("results") or []
+    if results:
+        eid = results[0].get("id")
+        try:
+            return int(eid) if eid is not None else None
+        except Exception:
+            return None
+
+    # Fallback probes (best-effort)
+    for endpoint in ("development_environments", "staging_environments", "production_environments"):
+        data2 = _curl_json(f"{dd}/api/v2/{endpoint}/?name={q}", key)
+        results2 = data2.get("results") or []
+        if results2:
+            eid = results2[0].get("id")
+            try:
+                return int(eid) if eid is not None else None
+            except Exception:
+                return None
+
+    return None
+
+
+def create_test(title: str, environment_name: str = "Development") -> int:
     env = _dd_env()
     dd, key, prod, eng = env["dd"], env["key"], env["prod"], env["eng"]
 
     test_type_id = resolve_test_type_id(dd, key)  # try dynamic
     if test_type_id is None:
         # Fallback to a common default; better than failing hard, but log it.
-        # If your instance differs, dynamic lookup above should catch it.
         test_type_id = 17
         print("[WARN] Could not resolve test_type ID dynamically; falling back to 17.", file=sys.stderr)
 
-    payload = {
+    environment_id = resolve_environment_id(dd, key, environment_name)
+    if environment_id is None:
+        # If your Dojo has envs disabled/unavailable, this may still fail.
+        # You can hardcode an ID here once you confirm it from your Dojo.
+        print(
+            f"[WARN] Could not resolve environment ID for '{environment_name}'. "
+            "DefectDojo may reject test creation without a valid environment pk.",
+            file=sys.stderr,
+        )
+
+    payload: dict[str, Any] = {
         "title": title,
         "engagement": int(eng),
-        "environment": "Development",
+        # IMPORTANT: environment is pk (int). If None, we omit it and let Dojo validate.
         "test_type": int(test_type_id),
         "product": int(prod),
     }
+    if environment_id is not None:
+        payload["environment"] = int(environment_id)
 
     cmd = [
         "curl",
@@ -235,8 +292,14 @@ def upload_findings(json_path: str, test_id: int) -> None:
     if out.stdout.strip().startswith("{"):
         try:
             resp = json.loads(out.stdout)
+            # Common error shapes
             if "detail" in resp and isinstance(resp["detail"], str) and resp["detail"]:
                 raise RuntimeError(f"DefectDojo import error: {resp['detail']}")
+            if "message" in resp and isinstance(resp["message"], str) and resp["message"]:
+                # If Dojo returns validation message, surface it.
+                # Note: some responses contain "pro" upsell text; ignore that unless paired with errors.
+                if "target_start" in resp or "target_end" in resp or "environment" in resp:
+                    raise RuntimeError(f"DefectDojo import validation error: {resp['message']}")
         except json.JSONDecodeError:
             pass
 
@@ -248,12 +311,13 @@ def main() -> None:
     parser.add_argument("--issues", required=True)
     parser.add_argument("--hotspots", required=True)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--environment", default=os.environ.get("DD_ENVIRONMENT", "Development"))
     args = parser.parse_args()
 
     issues = load_json(args.issues).get("issues", []) or []
     hotspots = load_json(args.hotspots).get("hotspots", []) or []
 
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     findings.extend(map_issue(i) for i in issues)
     findings.extend(map_hotspot(h) for h in hotspots)
 
@@ -272,8 +336,9 @@ def main() -> None:
     print(f"[INFO] Generic findings written: {out_path}")
     print(f"[INFO] Total findings: {len(findings)}")
 
-    title = f"SonarQube Bridge Import - {os.environ.get('GITHUB_SHA', '')[:7] or 'manual'}"
-    test_id = create_test(title=title)
+    sha7 = (os.environ.get("GITHUB_SHA") or "manual")[:7]
+    title = f"SonarQube Bridge Import - {sha7}"
+    test_id = create_test(title=title, environment_name=args.environment)
     upload_findings(out_path, test_id)
 
 
