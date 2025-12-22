@@ -59,7 +59,7 @@ jobs:
     environment: ${{ github.event_name == 'pull_request' && 'staging' || 'production' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -313,7 +313,7 @@ jobs:
       status: ${{ steps.gate.outputs.status }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -458,7 +458,7 @@ jobs:
     if: always()
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -518,7 +518,7 @@ jobs:
       can_deploy: ${{ steps.dec.outputs.can_deploy }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -564,7 +564,7 @@ jobs:
     if: always()
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -622,7 +622,7 @@ jobs:
     if: always()
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -655,7 +655,7 @@ jobs:
     if: always()
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Prepare report dir
         shell: bash
@@ -720,7 +720,7 @@ jobs:
       image_ref: ${{ steps.export.outputs.image_ref }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Docker Login
         uses: docker/login-action@v3
@@ -804,7 +804,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.build_and_sign.result == 'success'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download Image Ref artifact
         uses: actions/download-artifact@v4
@@ -866,7 +866,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.deploy.result == 'success'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Run ZAP DAST (docker compose)
         shell: bash
@@ -891,7 +891,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.dast.result == 'success'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -926,7 +926,7 @@ jobs:
     if: always()
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Cleanup DefectDojo
         shell: bash
