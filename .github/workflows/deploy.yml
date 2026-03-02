@@ -315,7 +315,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
@@ -460,7 +460,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
@@ -520,7 +520,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
@@ -566,12 +566,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: epss-results
           path: ${{ env.REPORT_DIR }}
@@ -624,12 +624,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: security-reports
           path: ${{ env.REPORT_DIR }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: epss-results
           path: ${{ env.REPORT_DIR }}
@@ -807,7 +807,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download Image Ref artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: image-ref
           path: .
@@ -893,7 +893,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dast-reports
           path: ${{ env.REPORT_DIR }}/zap
